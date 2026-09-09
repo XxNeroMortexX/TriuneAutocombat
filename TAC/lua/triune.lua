@@ -1,4 +1,4 @@
-﻿---@diagnostic disable: undefined-global, undefined-field
+---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- Triune AutoCombat -- Gem & AA loadout builder (PHASE 1: UI + data + persistence)
 -- ----------------------------------------------------------------------------
@@ -4373,7 +4373,7 @@ function runtime.listPresets()
     if loadout.presets then
         for k, v in pairs(loadout.presets) do
             count = count + 1
-            print(string.format('  â€¢ "\ay%s\ax" (saved: %s)', k, tostring(v.savedAt or 'unknown')))
+            print(string.format('  • "\ay%s\ax" (saved: %s)', k, tostring(v.savedAt or 'unknown')))
         end
     end
     if count == 0 then
@@ -8294,7 +8294,7 @@ function UI.drawAutoAATab()
             runtime.saveLoadout(true)
         end
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('%s', 'Delegate AA purchasing to MQ2AAspend plugin.\nâ€¢ Checked: MQ2AAspend attempts purchases first; Triune automatically falls back to native window training if MQ2AAspend fails.\nâ€¢ Unchecked: Triune trains all prioritized AAs directly via native window training.')
+            ImGui.SetTooltip('%s', 'Delegate AA purchasing to MQ2AAspend plugin.\n• Checked: MQ2AAspend attempts purchases first; Triune automatically falls back to native window training if MQ2AAspend fails.\n• Unchecked: Triune trains all prioritized AAs directly via native window training.')
         end
     else
         if ImGui.SmallButton('Load MQ2AAspend##btnLoadAASpend') then
@@ -9124,14 +9124,14 @@ function UI.drawStatusTab()
         -- Column 1: Engine State
         ImGui.TableNextColumn()
         if ctrl.running then
-            accent(GOOD, 'â€¢ ENGINE: RUNNING')
+            accent(GOOD, '• ENGINE: RUNNING')
         else
-            accent(WARN, 'â€¢ ENGINE: PAUSED')
+            accent(WARN, '• ENGINE: PAUSED')
         end
         if inCombat then
-            accent({ 1.0, 0.35, 0.35, 1.0 }, 'â€¢ COMBAT: IN COMBAT')
+            accent({ 1.0, 0.35, 0.35, 1.0 }, '• COMBAT: IN COMBAT')
         else
-            accent(GOOD, 'â€¢ COMBAT: STANDBY / IDLE')
+            accent(GOOD, '• COMBAT: STANDBY / IDLE')
         end
 
         -- Column 2: Active Mode
@@ -9140,7 +9140,7 @@ function UI.drawStatusTab()
         if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
             modeStr = string.format('%s (%s)', ctrl.mode, ctrl.submode)
         end
-        accent(GOLD, 'â€¢ Mode: ' .. modeStr)
+        accent(GOLD, '• Mode: ' .. modeStr)
         local descKey = ctrl.mode
         if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
             descKey = string.format('%s:%s', ctrl.mode, ctrl.submode)
@@ -9153,26 +9153,26 @@ function UI.drawStatusTab()
         if styleStr == 'Ranged' and runtime.serverAttackMode then
             styleStr = string.format('Ranged (Server: %s)', runtime.serverAttackMode)
         end
-        accent(ARC, 'â€¢ Style: ' .. styleStr)
+        accent(ARC, '• Style: ' .. styleStr)
         if ctrl.burn then
-            accent({ 1.0, 0.30, 0.30, 1.0 }, 'â€¢ BURN: ACTIVE')
+            accent({ 1.0, 0.30, 0.30, 1.0 }, '• BURN: ACTIVE')
         else
-            ImGui.TextDisabled('â€¢ Burn: Inactive')
+            ImGui.TextDisabled('• Burn: Inactive')
         end
 
         -- Column 4: Subsystems (MedBreak, Cast)
         ImGui.TableNextColumn()
         if runtime.medBreakActive then
-            accent(ARC, 'â€¢ MedBreak: RESTING')
+            accent(ARC, '• MedBreak: RESTING')
         else
-            ImGui.TextDisabled('â€¢ MedBreak: Inactive')
+            ImGui.TextDisabled('• MedBreak: Inactive')
         end
         local castingName = nil
         pcall(function() castingName = mq.TLO.Me.Casting.Name() end)
         if castingName and castingName ~= '' and castingName ~= 'NULL' then
-            accent(GOOD, 'â€¢ Cast: ' .. castingName)
+            accent(GOOD, '• Cast: ' .. castingName)
         else
-            ImGui.TextDisabled('â€¢ Cast: Idle')
+            ImGui.TextDisabled('• Cast: Idle')
         end
 
         ImGui.EndTable()
@@ -9535,18 +9535,18 @@ function UI.drawStatusTab()
             -- Column 1: Plugins & NavMesh
             ImGui.TableNextColumn()
             if navOk then
-                accent(GOOD, 'â€¢ MQ2Nav: Loaded')
+                accent(GOOD, '• MQ2Nav: Loaded')
             else
-                accent(WARN, 'â€¢ MQ2Nav: NOT LOADED')
+                accent(WARN, '• MQ2Nav: NOT LOADED')
                 if ImGui.Button('Load MQ2Nav##statBtnLoadNav') then
                     mq.cmd('/plugin mq2nav')
                 end
             end
 
             if meshOk then
-                accent(GOOD, string.format('â€¢ Zone Mesh: Loaded (%s)', curZoneShort))
+                accent(GOOD, string.format('• Zone Mesh: Loaded (%s)', curZoneShort))
             else
-                accent(WARN, string.format('â€¢ Zone Mesh: MISSING (%s)', curZoneShort))
+                accent(WARN, string.format('• Zone Mesh: MISSING (%s)', curZoneShort))
                 if ImGui.Button('Reload Mesh##statBtnRelMesh') then
                     mq.cmd('/nav reload')
                 end
@@ -9556,12 +9556,12 @@ function UI.drawStatusTab()
                 local stickActive = false
                 pcall(function() stickActive = (mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON') or false end)
                 if stickActive then
-                    accent(ARC, 'â€¢ MoveUtils (Stick): ACTIVE')
+                    accent(ARC, '• MoveUtils (Stick): ACTIVE')
                 else
-                    ImGui.TextDisabled('â€¢ MoveUtils (Stick): Loaded (Idle)')
+                    ImGui.TextDisabled('• MoveUtils (Stick): Loaded (Idle)')
                 end
             else
-                accent(WARN, 'â€¢ MoveUtils: NOT LOADED')
+                accent(WARN, '• MoveUtils: NOT LOADED')
                 if ImGui.Button('Load MQ2MoveUtils##statBtnLoadMoveUtils') then
                     mq.cmd('/plugin mq2moveutils')
                 end
@@ -9575,30 +9575,30 @@ function UI.drawStatusTab()
             pcall(function() isMoving = mq.TLO.Me.Moving() or false end)
 
             if pursuit.meshRecoverId and pursuit.meshRecoverId ~= 0 then
-                accent(WARN, 'â€¢ Nav Status: OFF-MESH RECOVERY (Stickâ†’Remap)')
+                accent(WARN, '• Nav Status: OFF-MESH RECOVERY (Stickâ†’Remap)')
             elseif navActive then
-                accent(GOOD, 'â€¢ Nav Status: NAVIGATING')
+                accent(GOOD, '• Nav Status: NAVIGATING')
             elseif isMoving then
-                accent(ARC, 'â€¢ Nav Status: MOVING (Manual/Stick)')
+                accent(ARC, '• Nav Status: MOVING (Manual/Stick)')
             else
-                ImGui.TextDisabled('â€¢ Nav Status: Idle / Stopped')
+                ImGui.TextDisabled('• Nav Status: Idle / Stopped')
             end
 
             -- Destination Details
             if pursuit.lastNavTargetId and pursuit.lastNavTargetId ~= 0 then
                 local tSpawnName = nil
                 pcall(function() tSpawnName = mq.TLO.Spawn(pursuit.lastNavTargetId).CleanName() end)
-                ImGui.Text(string.format('â€¢ Destination: Mob %s (ID %s)', tSpawnName or '', tostring(pursuit.lastNavTargetId)))
+                ImGui.Text(string.format('• Destination: Mob %s (ID %s)', tSpawnName or '', tostring(pursuit.lastNavTargetId)))
             elseif ctrl.mode == 'Puller' and runtime.pullState == 'RETURNING' then
-                accent(ARC, 'â€¢ Destination: Camp Location')
+                accent(ARC, '• Destination: Camp Location')
             elseif ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
                 local curWp = ctrl.waypoints[ctrl.current_waypoint_idx or 1]
-                ImGui.Text(string.format('â€¢ Destination: WP #%d (%s)', ctrl.current_waypoint_idx or 1, curWp and curWp.name or 'WP'))
+                ImGui.Text(string.format('• Destination: WP #%d (%s)', ctrl.current_waypoint_idx or 1, curWp and curWp.name or 'WP'))
             elseif pursuit.wanderLoc then
-                ImGui.Text(string.format('â€¢ Destination: Wander (Y:%.0f, X:%.0f, Z:%.0f)',
+                ImGui.Text(string.format('• Destination: Wander (Y:%.0f, X:%.0f, Z:%.0f)',
                     pursuit.wanderLoc.y or 0, pursuit.wanderLoc.x or 0, pursuit.wanderLoc.z or 0))
             else
-                ImGui.TextDisabled('â€¢ Destination: None (Idle)')
+                ImGui.TextDisabled('• Destination: None (Idle)')
             end
 
             -- Path Length & Distance
@@ -9608,16 +9608,16 @@ function UI.drawStatusTab()
                     pathLen = mq.TLO.Navigation.PathLength() or 0
                     pathDist = mq.TLO.Navigation.Distance() or 0
                 end)
-                ImGui.TextDisabled(string.format('â€¢ Path Length: %.1f ft (Dist: %.1f ft)', pathLen, pathDist))
+                ImGui.TextDisabled(string.format('• Path Length: %.1f ft (Dist: %.1f ft)', pathLen, pathDist))
             end
 
             -- Column 3: Anti-Stuck & Hazard Diagnostics
             ImGui.TableNextColumn()
             if pursuit.detourActive then
                 local remSec = math.max(0, (pursuit.detourExpiresAt or 0) - os.clock())
-                accent(WARN, string.format('â€¢ Detour: ACTIVE (%.1fs rem)', remSec))
+                accent(WARN, string.format('• Detour: ACTIVE (%.1fs rem)', remSec))
             else
-                ImGui.TextDisabled('â€¢ Detour Avoidance: Clear')
+                ImGui.TextDisabled('• Detour Avoidance: Clear')
             end
 
             local stallCount = pursuit.navStalls or 0
@@ -9625,15 +9625,15 @@ function UI.drawStatusTab()
             if pursuit.unreachableIds then
                 for _ in pairs(pursuit.unreachableIds) do unreachableCount = unreachableCount + 1 end
             end
-            ImGui.TextDisabled(string.format('â€¢ Nav Stalls: %d | Unreachable Mobs: %d', stallCount, unreachableCount))
+            ImGui.TextDisabled(string.format('• Nav Stalls: %d | Unreachable Mobs: %d', stallCount, unreachableCount))
 
             local stuckAttempts = stuckState.attempts or 0
             local stuckCounter = stuckState.counter or 0
-            ImGui.TextDisabled(string.format('â€¢ Stuck Attempts: %d | Frame Counter: %d', stuckAttempts, stuckCounter))
+            ImGui.TextDisabled(string.format('• Stuck Attempts: %d | Frame Counter: %d', stuckAttempts, stuckCounter))
 
             local zoneHazards = (ctrl.zone_hazards and ctrl.zone_hazards[curZoneShort]) or {}
             local hazCount = type(zoneHazards) == 'table' and #zoneHazards or 0
-            ImGui.TextDisabled(string.format('â€¢ Hazard Hotspots: %d recorded in %s', hazCount, curZoneShort))
+            ImGui.TextDisabled(string.format('• Hazard Hotspots: %d recorded in %s', hazCount, curZoneShort))
 
             ImGui.EndTable()
         end
@@ -9664,9 +9664,9 @@ function UI.drawStatusTab()
                     ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, campDist, ctrl.hunter_radius or 1500)
             end
             accent(GOLD, 'Puller Operations:')
-            ImGui.Text(string.format('â€¢ Pull State: %s | Pull Target: %s (ID %s) | Style: %s',
+            ImGui.Text(string.format('• Pull State: %s | Pull Target: %s (ID %s) | Style: %s',
                 runtime.pullState or 'IDLE', pullTargName or 'None', tostring(runtime.pullTargetId or 0), ctrl.pull_style or 'Melee'))
-            ImGui.TextDisabled(string.format('â€¢ Anchor: %s | Min Level: %d | Max Level: %d',
+            ImGui.TextDisabled(string.format('• Anchor: %s | Min Level: %d | Max Level: %d',
                 anchorInfo, ctrl.pull_min_level or 1, ctrl.pull_max_level or 100))
         elseif ctrl.mode == 'Assist' then
             local maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
@@ -9677,7 +9677,7 @@ function UI.drawStatusTab()
                 maTargStr = string.format('%s%s (ID: %d, %d%% HP, %.1fft)', maInfo.targetName, clsStr, maInfo.targetId, maInfo.targetHp, maInfo.targetDist)
             end
             accent(GOLD, 'Assist Operations:')
-            ImGui.Text(string.format('â€¢ Main Assist: %s | MA Target: %s | Assist At: %d%% HP',
+            ImGui.Text(string.format('• Main Assist: %s | MA Target: %s | Assist At: %d%% HP',
                 maDisplay, maTargStr, ctrl.assist_at or 98))
             if maInfo and maInfo.hasTarget then
                 ImGui.SameLine()
@@ -9686,7 +9686,7 @@ function UI.drawStatusTab()
                 end
                 if ImGui.IsItemHovered() then UI.setTooltip(string.format('Target %s (ID %d)', maInfo.targetName, maInfo.targetId)) end
             end
-            ImGui.TextDisabled(string.format('â€¢ Chase MA: %s (Chase Dist: %d ft) | Max XTar Chase: %d ft | Self-Defense: %s | Behind: %s',
+            ImGui.TextDisabled(string.format('• Chase MA: %s (Chase Dist: %d ft) | Max XTar Chase: %d ft | Self-Defense: %s | Behind: %s',
                 ctrl.chase and 'Enabled' or 'Disabled', ctrl.chase_dist or 15, ctrl.xtar_nav_dist or 150,
                 (ctrl.assist_self_defense ~= false) and 'Enabled' or 'Disabled',
                 (ctrl.assist_behind ~= false) and 'Enabled' or 'Disabled'))
@@ -9697,15 +9697,15 @@ function UI.drawStatusTab()
                 campInfo = string.format('Camp at (%.1f, %.1f, %.1f), Radius: %d',
                     ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, ctrl.camp_radius or 100)
             end
-            ImGui.Text(string.format('â€¢ Auto-Target Hostiles on XTarget: %s | Chase Dist: %d ft',
+            ImGui.Text(string.format('• Auto-Target Hostiles on XTarget: %s | Chase Dist: %d ft',
                 ctrl.manual_auto_xtarget ~= false and 'Enabled' or 'Disabled', ctrl.xtar_nav_dist or 150))
-            ImGui.TextDisabled('â€¢ ' .. campInfo)
+            ImGui.TextDisabled('• ' .. campInfo)
         end
 
         if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
             local dirStr = (ctrl.waypoint_direction == 1) and 'Forward' or 'Reverse'
             local loopStr = ctrl.waypoint_loop and 'Looping' or 'One-Way'
-            accent(ARC, string.format('â€¢ Waypoint Patrol: WP #%d of %d | Direction: %s | Mode: %s',
+            accent(ARC, string.format('• Waypoint Patrol: WP #%d of %d | Direction: %s | Mode: %s',
                 ctrl.current_waypoint_idx or 1, #ctrl.waypoints, dirStr, loopStr))
         end
 
