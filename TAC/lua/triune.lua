@@ -8336,7 +8336,7 @@ function UI.drawAutoAATab()
     end
 
     ImGui.SameLine()
-    if ImGui.Button('â†» Refresh##autoAaRefreshBtn') then
+    if ImGui.Button('↻ Refresh##autoAaRefreshBtn') then
         runtime.specialTabReadDone = false
         runtime.pendingReadSpecialTab = true
         if runtime.scanPlayerAAs then runtime.scanPlayerAAs(true) end
@@ -8406,7 +8406,7 @@ function UI.drawAutoAATab()
 
     ImGui.SameLine()
     local isAsc = (ctrl.auto_aa_sort_asc ~= false)
-    local dirBtnText = isAsc and 'â–² Asc' or 'â–¼ Desc'
+    local dirBtnText = isAsc and '▲ Asc' or '▼ Desc'
     if ImGui.Button(dirBtnText .. '##autoAaSortDir') then
         ctrl.auto_aa_sort_asc = not isAsc
         runtime.aaFilterDirty = true
@@ -9293,7 +9293,7 @@ function UI.drawStatusTab()
                 else
                     accent(WARN, 'Line of Sight: NO')
                 end
-                ImGui.TextDisabled(string.format('Heading: %.0fÂ°', tHeading or 0))
+                ImGui.TextDisabled(string.format('Heading: %.0f°', tHeading or 0))
 
                 ImGui.TableNextColumn()
                 if tTotName and tTotName ~= 'None' and tTotName ~= '' then
@@ -9575,7 +9575,7 @@ function UI.drawStatusTab()
             pcall(function() isMoving = mq.TLO.Me.Moving() or false end)
 
             if pursuit.meshRecoverId and pursuit.meshRecoverId ~= 0 then
-                accent(WARN, '• Nav Status: OFF-MESH RECOVERY (Stickâ†’Remap)')
+                accent(WARN, '• Nav Status: OFF-MESH RECOVERY (Stick→Remap)')
             elseif navActive then
                 accent(GOOD, '• Nav Status: NAVIGATING')
             elseif isMoving then
@@ -11401,7 +11401,7 @@ function UI.drawPetControlTab()
             ImGui.Text(string.format('Spawn ID: %d', pinfo.id))
             ImGui.Text(string.format('Distance: %.1fm', pinfo.dist))
             ImGui.Text(string.format('Loc (Y, X, Z): %.1f, %.1f, %.1f', pinfo.y, pinfo.x, pinfo.z))
-            ImGui.Text(string.format('Heading: %.0fÂ°', pinfo.heading))
+            ImGui.Text(string.format('Heading: %.0f°', pinfo.heading))
             ImGui.Text(string.format('Move Speed: %.1f', pinfo.speed))
 
             ImGui.NextColumn()
@@ -24122,7 +24122,7 @@ local function combatTick()
     -- or target is confirmed engaged on XTarget.
     -- Turn off autoattack/autofire whenever out of range or when no NPCs remain on XTarget list.
     -- For player-directed modes (Manual, Assist), also require the NPC to be confirmed hostile before
-    -- initiating auto-attack â€” prevents hitting friendly NPCs (merchants, etc.).
+        -- initiating auto-attack — prevents hitting friendly NPCs (merchants, etc.).
     local xtarActive = anyXtarAlive()
     local style = ctrl and ctrl.combat_style or 'Melee'
     local tid = mq.TLO.Target.ID() or 0
@@ -25670,7 +25670,7 @@ function UI.drawCritOverlay()
                     dl:AddText(nil, fontSize, ImVec2Type(px, py), colU32, f.text)
                 end)
 
-                -- Sparkle particles for crits >1000 â€” tiny bright dots around the text
+                -- Sparkle particles for crits >1000 — tiny bright dots around the text
                 if f.dmg > 1000 and t < 0.6 then
                     pcall(function()
                         for s = 1, 3 do
