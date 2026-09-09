@@ -24122,7 +24122,7 @@ local function combatTick()
     -- or target is confirmed engaged on XTarget.
     -- Turn off autoattack/autofire whenever out of range or when no NPCs remain on XTarget list.
     -- For player-directed modes (Manual, Assist), also require the NPC to be confirmed hostile before
-        -- initiating auto-attack — prevents hitting friendly NPCs (merchants, etc.).
+    -- initiating auto-attack — prevents hitting friendly NPCs (merchants, etc.).
     local xtarActive = anyXtarAlive()
     local style = ctrl and ctrl.combat_style or 'Melee'
     local tid = mq.TLO.Target.ID() or 0
