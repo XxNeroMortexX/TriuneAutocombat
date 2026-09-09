@@ -1,4 +1,4 @@
----@diagnostic disable: undefined-global, undefined-field
+﻿---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- Triune AutoCombat -- Gem & AA loadout builder (PHASE 1: UI + data + persistence)
 -- ----------------------------------------------------------------------------
@@ -4373,7 +4373,7 @@ function runtime.listPresets()
     if loadout.presets then
         for k, v in pairs(loadout.presets) do
             count = count + 1
-            print(string.format('  • "\ay%s\ax" (saved: %s)', k, tostring(v.savedAt or 'unknown')))
+            print(string.format('  â€¢ "\ay%s\ax" (saved: %s)', k, tostring(v.savedAt or 'unknown')))
         end
     end
     if count == 0 then
@@ -6125,6 +6125,875 @@ function UI.drawClassPicker()
         accent(MUTED, 'Detected from your in-game Inventory Window.')
     end
 end
+-- ============================================================================
+-- Update
+-- ============================================================================
+
+local webUpdateAutoLoadAttempted = false
+
+-- Startup update-check / notification state.
+local webUpdateStartupCheckStarted = false
+local webUpdateStartupCheckAt = os.clock() + 3.0
+local webUpdateStartupCheckPending = false
+local webUpdateNotifiedSHA = nil
+local webUpdateShowModal = false
+local webUpdateSelectTab = false
+
+-- Update & Restart orchestration state.
+-- MQ2WebUpdate performs staging asynchronously; Triune only polls status.
+local webUpdateRestartPending = false
+local webUpdateRestartStartedAt = 0
+local webUpdateRestartError = nil
+local function isWebUpdatePluginLoaded()
+    local ok, loaded = pcall(function()
+        return mq.TLO.Plugin('MQ2WebUpdate').IsLoaded()
+    end)
+
+    return ok and loaded == true
+end
+
+local function tryLoadWebUpdatePlugin()
+    if webUpdateAutoLoadAttempted then
+        return
+    end
+
+    webUpdateAutoLoadAttempted = true
+
+    -- Use only MacroQuest's own Plugin TLO during startup. Triune must
+    -- not touch the MQ2WebUpdate-owned WebUpdate TLO until this reset
+    -- is complete, otherwise MQ2Lua will register the plugin as a
+    -- dependency and unloading it will terminate Triune.
+    if isWebUpdatePluginLoaded() then
+        mq.cmd('/plugin MQ2WebUpdate unload')
+
+        -- Give MacroQuest a short period to finish the unload before
+        -- attempting to load a fresh instance.
+        local waited = 0
+        while isWebUpdatePluginLoaded() and waited < 2000 do
+            mq.delay(50)
+            waited = waited + 50
+        end
+    end
+
+    -- Load a fresh plugin instance. If the DLL is missing, Triune
+    -- continues normally and the Update tab shows its missing-plugin
+    -- instructions.
+    if not isWebUpdatePluginLoaded() then
+        mq.cmd('/plugin MQ2WebUpdate')
+    end
+end
+
+tryLoadWebUpdatePlugin()
+local function processWebUpdateStartupCheck()
+    -- If a startup comparison has already been launched, wait for
+    -- MQ2WebUpdate to finish it.
+    if webUpdateStartupCheckStarted then
+        if not webUpdateStartupCheckPending then
+            return
+        end
+
+        if not isWebUpdatePluginLoaded() then
+            webUpdateStartupCheckPending = false
+            return
+        end
+
+        local okStatus, status = pcall(function()
+            return mq.TLO.WebUpdate.Status()
+        end)
+
+        if not okStatus or status == nil then
+            return
+        end
+
+        status = tostring(status)
+
+        -- These states mean the updater is still doing work.
+        if status == 'Comparing'
+            or status == 'Scanning'
+            or status == 'Checking'
+        then
+            return
+        end
+
+        webUpdateStartupCheckPending = false
+
+        local okAvailable, available = pcall(function()
+            return mq.TLO.WebUpdate.UpdateAvailable()
+        end)
+
+        if not okAvailable or available ~= true then
+            return
+        end
+
+        local okSHA, sha = pcall(function()
+            return mq.TLO.WebUpdate.RemoteSHA()
+        end)
+
+        sha = okSHA and tostring(sha or '') or ''
+
+        -- Notify only once for this remote commit during this
+        -- Triune session.
+        local notificationKey =
+            sha ~= '' and sha or '<unknown>'
+
+        if webUpdateNotifiedSHA == notificationKey then
+            return
+        end
+
+        webUpdateNotifiedSHA = notificationKey
+        webUpdateShowModal = true
+        return
+    end
+
+    -- Let Triune and the freshly reloaded MQ2WebUpdate plugin finish
+    -- startup before contacting GitHub.
+    if os.clock() < webUpdateStartupCheckAt then
+        return
+    end
+
+    webUpdateStartupCheckStarted = true
+
+    if not isWebUpdatePluginLoaded() then
+        return
+    end
+
+    webUpdateStartupCheckPending = true
+    mq.cmd('/webupdate compare')
+end
+
+function UI.drawWebUpdateModal()
+    if not webUpdateShowModal then
+        return
+    end
+
+    -- This is a modal rather than a normal ImGui window. It therefore
+    -- stays above Triune and prevents interaction with the window
+    -- underneath until the user chooses an action.
+    ImGui.OpenPopup(
+        'TriuneAutocombat Update Available##WebUpdateModal'
+    )
+
+    -- Center the modal on the main viewport when available.
+    local centerX = 415
+    local centerY = 320
+
+    pcall(function()
+        local viewport = ImGui.GetMainViewport()
+
+        if viewport then
+            local pos = viewport.Pos
+            local size = viewport.Size
+
+            if pos and size then
+                centerX = pos.x + (size.x * 0.5)
+                centerY = pos.y + (size.y * 0.5)
+            end
+        end
+    end)
+
+    ImGui.SetNextWindowPos(
+        centerX,
+        centerY,
+        ImGuiCond.Appearing,
+        0.5,
+        0.5
+    )
+
+    ImGui.SetNextWindowSize(
+        470,
+        0,
+        ImGuiCond.Appearing
+    )
+
+    local modalFlags = bit.bor(
+        (ImGuiWindowFlags
+            and ImGuiWindowFlags.AlwaysAutoResize) or 0,
+        (ImGuiWindowFlags
+            and ImGuiWindowFlags.NoCollapse) or 0
+    )
+
+    if ImGui.BeginPopupModal(
+        'TriuneAutocombat Update Available##WebUpdateModal',
+        nil,
+        modalFlags
+    ) then
+        ImGui.TextColored(
+            1.0, 0.75, 0.20, 1.0,
+            'TriuneAutocombat Update Available'
+        )
+
+        ImGui.Separator()
+        ImGui.Spacing()
+
+        ImGui.TextWrapped(
+            'A new version of TriuneAutocombat is available on GitHub.'
+        )
+
+        ImGui.Spacing()
+
+        local function modalWU(fn, fallback)
+            local ok, value = pcall(fn)
+
+            if not ok or value == nil then
+                return fallback
+            end
+
+            return value
+        end
+
+        local updateCount = tonumber(modalWU(function()
+            return mq.TLO.WebUpdate.UpdateCount()
+        end, 0)) or 0
+
+        local missingCount = tonumber(modalWU(function()
+            return mq.TLO.WebUpdate.MissingCount()
+        end, 0)) or 0
+
+        local protectedCount = tonumber(modalWU(function()
+            return mq.TLO.WebUpdate.ProtectedCount()
+        end, 0)) or 0
+
+        local errorCount = tonumber(modalWU(function()
+            return mq.TLO.WebUpdate.ErrorCount()
+        end, 0)) or 0
+
+        local sha = tostring(modalWU(function()
+            return mq.TLO.WebUpdate.RemoteSHA()
+        end, ''))
+
+        if ImGui.BeginTable(
+            '##WebUpdateModalSummary',
+            2
+        ) then
+            ImGui.TableNextRow()
+            ImGui.TableNextColumn()
+            ImGui.TextDisabled('Files needing update')
+            ImGui.TableNextColumn()
+            ImGui.Text(tostring(updateCount))
+
+            ImGui.TableNextRow()
+            ImGui.TableNextColumn()
+            ImGui.TextDisabled('Missing files')
+            ImGui.TableNextColumn()
+            ImGui.Text(tostring(missingCount))
+
+            ImGui.TableNextRow()
+            ImGui.TableNextColumn()
+            ImGui.TextDisabled('Protected files')
+            ImGui.TableNextColumn()
+            ImGui.Text(tostring(protectedCount))
+
+            if errorCount > 0 then
+                ImGui.TableNextRow()
+                ImGui.TableNextColumn()
+                ImGui.TextDisabled('Errors')
+                ImGui.TableNextColumn()
+
+                ImGui.TextColored(
+                    1.0, 0.35, 0.35, 1.0,
+                    tostring(errorCount)
+                )
+            end
+
+            ImGui.EndTable()
+        end
+
+        if sha ~= '' then
+            ImGui.Spacing()
+            ImGui.TextDisabled('Remote commit')
+            ImGui.Text(sha)
+
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip(sha)
+            end
+        end
+
+        ImGui.Spacing()
+        ImGui.Separator()
+        ImGui.Spacing()
+
+        if ImGui.Button(
+            'View Update',
+            150,
+            28
+        ) then
+            webUpdateShowModal = false
+            webUpdateSelectTab = true
+
+            -- The Update tab only exists in the full Triune window.
+            -- If the user is in Compact Mode, View Update should
+            -- behave like the existing Full Window button.
+            ctrl.compact = false
+
+            ImGui.CloseCurrentPopup()
+        end
+
+        ImGui.SameLine()
+
+        if ImGui.Button(
+            'Not Now',
+            110,
+            28
+        ) then
+            webUpdateShowModal = false
+            ImGui.CloseCurrentPopup()
+        end
+
+        ImGui.EndPopup()
+    end
+end
+
+local function startWebUpdateRestart()
+    if webUpdateRestartPending then
+        return
+    end
+
+    if not isWebUpdatePluginLoaded() then
+        webUpdateRestartError = 'MQ2WebUpdate is not loaded.'
+        return
+    end
+
+    webUpdateRestartError = nil
+    webUpdateRestartPending = true
+    webUpdateRestartStartedAt = os.clock()
+
+    mq.cmd('/webupdate stage')
+end
+
+local function processWebUpdateRestart()
+    if not webUpdateRestartPending then
+        return
+    end
+
+    local ok, status = pcall(function()
+        return tostring(mq.TLO.WebUpdate.Status())
+    end)
+
+    if not ok then
+        webUpdateRestartPending = false
+        webUpdateRestartError =
+            'Could not read MQ2WebUpdate status.'
+        return
+    end
+
+    -- Network/staging work is running on MQ2WebUpdate's background worker.
+    -- Return immediately so the normal Triune/EQ frame continues.
+    if status == 'Staging' or
+       status == 'Comparing' or
+       status == 'Scanning' or
+       status == 'Checking' then
+
+        if (os.clock() - webUpdateRestartStartedAt) > 120.0 then
+            webUpdateRestartPending = false
+            webUpdateRestartError =
+                'Update staging timed out.'
+        end
+
+        return
+    end
+
+    if status == 'Staged' then
+        webUpdateRestartPending = false
+        webUpdateRestartError = nil
+
+        -- Separate Lua process takes ownership from this point.
+        mq.cmd('/lua run triune_updater')
+        return
+    end
+
+    if status == 'Up To Date' then
+        webUpdateRestartPending = false
+        webUpdateRestartError = nil
+        return
+    end
+
+    if status == 'Stage Error' or
+       status == 'Error' then
+
+        webUpdateRestartPending = false
+
+        local lastError = ''
+
+        pcall(function()
+            lastError =
+                tostring(mq.TLO.WebUpdate.LastError() or '')
+        end)
+
+        if lastError ~= '' then
+            webUpdateRestartError =
+                'Staging failed: ' .. lastError
+        else
+            webUpdateRestartError =
+                'Staging failed.'
+        end
+
+        return
+    end
+
+    -- Give /webupdate stage a short period to transition into Staging.
+    if (os.clock() - webUpdateRestartStartedAt) > 5.0 then
+        webUpdateRestartPending = false
+        webUpdateRestartError =
+            'Unexpected updater status: ' .. tostring(status)
+    end
+end
+
+function UI.drawUpdateTab()
+    local updateTabFlags = 0
+
+    if webUpdateSelectTab and ImGuiTabItemFlags then
+        updateTabFlags = ImGuiTabItemFlags.SetSelected
+    end
+
+    if not ImGui.BeginTabItem(
+        'Update',
+        nil,
+        updateTabFlags
+    ) then
+        return
+    end
+
+    -- SetSelected only needs to be requested for one successful
+    -- frame.
+    webUpdateSelectTab = false
+
+    local function wu(fn, fallback)
+        local ok, value = pcall(fn)
+        if not ok or value == nil then
+            return fallback
+        end
+        return value
+    end
+
+    -- First check through MacroQuest itself. This does not create a
+    -- dependency on MQ2WebUpdate when the plugin is missing.
+    local pluginReady = isWebUpdatePluginLoaded()
+
+    ImGui.Text('TriuneAutocombat Update')
+    ImGui.Separator()
+
+    if not pluginReady then
+        ImGui.TextColored(
+            1.0, 0.75, 0.20, 1.0,
+            'MQ2WebUpdate Plugin Missing'
+        )
+
+        ImGui.Spacing()
+
+        ImGui.TextWrapped(
+            "Triune's automatic updater requires MQ2WebUpdate.dll."
+        )
+
+        ImGui.TextWrapped(
+            'Triune will continue to work normally without the updater.'
+        )
+
+        ImGui.Spacing()
+        ImGui.Separator()
+        ImGui.Spacing()
+
+        ImGui.Text('1. Download MQ2WebUpdate.dll')
+
+        ImGui.Text('GitHub Releases:')
+
+        ImGui.SetNextItemWidth(-1)
+
+        ImGui.InputText(
+            '##MQ2WebUpdateGitHubURL',
+            'https://github.com/XxNeroMortexX/TriuneAutocombat/releases/latest',
+            ImGuiInputTextFlags.ReadOnly
+        )
+
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip('Click the address, then press Ctrl+A and Ctrl+C to copy it.')
+        end
+
+        ImGui.Spacing()
+
+        ImGui.Text('2. Copy MQ2WebUpdate.dll into your MacroQuest plugins folder:')
+
+        ImGui.TextColored(
+            0.40, 0.75, 1.0, 1.0,
+            'MacroQuest\\plugins\\MQ2WebUpdate.dll'
+        )
+
+        ImGui.TextDisabled(
+            'Example: ...\\macroquest\\build\\bin\\release\\plugins\\MQ2WebUpdate.dll'
+        )
+
+        ImGui.Spacing()
+
+        ImGui.Text('3. Return here and load the plugin:')
+
+        if ImGui.Button('Load MQ2WebUpdate') then
+            mq.cmd('/plugin MQ2WebUpdate')
+        end
+
+        ImGui.SameLine()
+        ImGui.TextDisabled('Triune will also try to load it automatically when starting.')
+
+        ImGui.Spacing()
+        ImGui.Separator()
+        ImGui.Spacing()
+
+        ImGui.TextWrapped(
+            'If the plugin is not installed yet, use the GitHub address above to download it.'
+        )
+
+        ImGui.EndTabItem()
+        return
+    end
+
+    local status = tostring(wu(function()
+        return mq.TLO.WebUpdate.Status()
+    end, 'Unknown'))
+
+    local repo = tostring(wu(function()
+        return mq.TLO.WebUpdate.Repository()
+    end, 'Unknown'))
+
+    local branch = tostring(wu(function()
+        return mq.TLO.WebUpdate.Branch()
+    end, 'Unknown'))
+
+    local sha = tostring(wu(function()
+        return mq.TLO.WebUpdate.RemoteSHA()
+    end, ''))
+
+    local lastError = tostring(wu(function()
+        return mq.TLO.WebUpdate.LastError()
+    end, ''))
+
+    local fileCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.FileCount()
+    end, 0)) or 0
+
+    local sameCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.SameCount()
+    end, 0)) or 0
+
+    local updateCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.UpdateCount()
+    end, 0)) or 0
+
+    local missingCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.MissingCount()
+    end, 0)) or 0
+
+    local protectedCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.ProtectedCount()
+    end, 0)) or 0
+
+    local errorCount = tonumber(wu(function()
+        return mq.TLO.WebUpdate.ErrorCount()
+    end, 0)) or 0
+
+    local updateAvailable = wu(function()
+        return mq.TLO.WebUpdate.UpdateAvailable()
+    end, false) == true
+
+    -- Repository information
+    if ImGui.BeginTable('##TriuneUpdateInfo', 2) then
+        ImGui.TableNextRow()
+        ImGui.TableNextColumn()
+        ImGui.TextDisabled('Repository')
+        ImGui.TableNextColumn()
+        ImGui.Text(repo)
+
+        ImGui.TableNextRow()
+        ImGui.TableNextColumn()
+        ImGui.TextDisabled('Branch')
+        ImGui.TableNextColumn()
+        ImGui.Text(branch)
+
+        ImGui.TableNextRow()
+        ImGui.TableNextColumn()
+        ImGui.TextDisabled('Status')
+        ImGui.TableNextColumn()
+
+        if errorCount > 0 then
+            ImGui.TextColored(1.0, 0.35, 0.35, 1.0, status)
+        elseif updateAvailable then
+            ImGui.TextColored(1.0, 0.75, 0.20, 1.0, status)
+        elseif status == 'Up To Date' then
+            ImGui.TextColored(0.35, 1.0, 0.45, 1.0, status)
+        else
+            ImGui.Text(status)
+        end
+
+        ImGui.TableNextRow()
+        ImGui.TableNextColumn()
+        ImGui.TextDisabled('Remote Commit')
+        ImGui.TableNextColumn()
+
+        if sha ~= '' then
+            ImGui.Text(sha)
+
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip(sha)
+            end
+        else
+            ImGui.TextDisabled('Not checked yet')
+        end
+
+        ImGui.EndTable()
+    end
+
+    ImGui.Spacing()
+
+    -- Buttons
+    if ImGui.Button('Check for Updates') then
+        mq.cmd('/webupdate compare')
+    end
+
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Compare installed Triune Lua files against GitHub.')
+    end
+
+    ImGui.SameLine()
+
+    local updateRestartDisabled =
+        webUpdateRestartPending or
+        status == 'Staging' or
+        status == 'Comparing' or
+        status == 'Scanning' or
+        status == 'Checking'
+
+    ImGui.BeginDisabled(updateRestartDisabled)
+
+    if ImGui.Button(
+        webUpdateRestartPending and
+            'Preparing Update...' or
+            'Update & Restart'
+    ) then
+        startWebUpdateRestart()
+    end
+
+    ImGui.EndDisabled()
+
+    if ImGui.IsItemHovered() then
+        if webUpdateRestartPending then
+            ImGui.SetTooltip(
+                'Downloading and staging the update in the background.'
+            )
+        elseif updateAvailable then
+            ImGui.SetTooltip(
+                'Safely stage the update, stop Triune, apply it, and restart the same running Triune modules.'
+            )
+        else
+            ImGui.SetTooltip(
+                'Check GitHub, stage any changed files, and restart Triune if an update is available.'
+            )
+        end
+    end
+
+    if webUpdateRestartPending then
+        ImGui.SameLine()
+
+        ImGui.TextColored(
+            1.0, 0.75, 0.20, 1.0,
+            'Staging...'
+        )
+    end
+
+    if webUpdateRestartError then
+        ImGui.Spacing()
+
+        ImGui.TextColored(
+            1.0, 0.35, 0.35, 1.0,
+            webUpdateRestartError
+        )
+    end
+
+    ImGui.Spacing()
+    ImGui.Separator()
+
+    -- Summary
+    ImGui.Text('Update Summary')
+
+    if ImGui.BeginTable('##TriuneUpdateSummary', 5) then
+        ImGui.TableSetupColumn('Up To Date')
+        ImGui.TableSetupColumn('Update')
+        ImGui.TableSetupColumn('Missing')
+        ImGui.TableSetupColumn('Protected')
+        ImGui.TableSetupColumn('Errors')
+        ImGui.TableHeadersRow()
+
+        ImGui.TableNextRow()
+
+        ImGui.TableNextColumn()
+        ImGui.Text(tostring(sameCount))
+
+        ImGui.TableNextColumn()
+        if updateCount > 0 then
+            ImGui.TextColored(1.0, 0.75, 0.20, 1.0, tostring(updateCount))
+        else
+            ImGui.Text(tostring(updateCount))
+        end
+
+        ImGui.TableNextColumn()
+        if missingCount > 0 then
+            ImGui.TextColored(1.0, 0.75, 0.20, 1.0, tostring(missingCount))
+        else
+            ImGui.Text(tostring(missingCount))
+        end
+
+        ImGui.TableNextColumn()
+        if protectedCount > 0 then
+            ImGui.TextColored(0.40, 0.75, 1.0, 1.0, tostring(protectedCount))
+        else
+            ImGui.Text(tostring(protectedCount))
+        end
+
+        ImGui.TableNextColumn()
+        if errorCount > 0 then
+            ImGui.TextColored(1.0, 0.35, 0.35, 1.0, tostring(errorCount))
+        else
+            ImGui.Text(tostring(errorCount))
+        end
+
+        ImGui.EndTable()
+    end
+
+    if protectedCount > 0 then
+        ImGui.Spacing()
+        ImGui.Separator()
+
+        ImGui.TextColored(
+            0.40, 0.75, 1.0, 1.0,
+            'Developer linked files detected'
+        )
+
+        ImGui.TextWrapped(
+            'Automatic replacement is disabled for protected symbolic links.'
+        )
+    end
+
+    ImGui.Spacing()
+    ImGui.Separator()
+
+    -- Files
+    ImGui.Text('Files')
+
+    if fileCount <= 0 then
+        ImGui.TextDisabled(
+            'No comparison results yet. Click Check for Updates.'
+        )
+    else
+        if ImGui.BeginTable('##TriuneUpdateFiles', 3) then
+            ImGui.TableSetupColumn('File')
+            ImGui.TableSetupColumn('Status')
+            ImGui.TableSetupColumn('Protection')
+            ImGui.TableHeadersRow()
+
+            for i = 1, fileCount do
+                local name = tostring(wu(function()
+                    return mq.TLO.WebUpdate.File(i).Name()
+                end, '?'))
+
+                local fileStatus = tostring(wu(function()
+                    return mq.TLO.WebUpdate.File(i).Status()
+                end, 'UNKNOWN'))
+
+                local protection = tostring(wu(function()
+                    return mq.TLO.WebUpdate.File(i).Protection()
+                end, 'UNKNOWN'))
+
+                local repoPath = tostring(wu(function()
+                    return mq.TLO.WebUpdate.File(i).RepoPath()
+                end, ''))
+
+                ImGui.TableNextRow()
+
+                ImGui.TableNextColumn()
+                ImGui.Text(name)
+
+                if repoPath ~= '' and ImGui.IsItemHovered() then
+                    ImGui.SetTooltip(repoPath)
+                end
+
+                ImGui.TableNextColumn()
+
+                if fileStatus == 'SAME' then
+                    ImGui.TextColored(
+                        0.35, 1.0, 0.45, 1.0,
+                        'UP TO DATE'
+                    )
+                elseif fileStatus == 'UPDATE' then
+                    ImGui.TextColored(
+                        1.0, 0.75, 0.20, 1.0,
+                        'UPDATE'
+                    )
+                elseif fileStatus == 'MISSING' then
+                    ImGui.TextColored(
+                        1.0, 0.75, 0.20, 1.0,
+                        'MISSING'
+                    )
+                elseif fileStatus == 'ERROR' then
+                    ImGui.TextColored(
+                        1.0, 0.35, 0.35, 1.0,
+                        'ERROR'
+                    )
+                else
+                    ImGui.Text(fileStatus)
+                end
+
+                ImGui.TableNextColumn()
+
+                if protection == 'LINK PROTECTED' then
+                    ImGui.TextColored(
+                        0.40, 0.75, 1.0, 1.0,
+                        protection
+                    )
+                else
+                    ImGui.Text(protection)
+                end
+            end
+
+            ImGui.EndTable()
+        end
+    end
+
+    ImGui.Spacing()
+    ImGui.Separator()
+    ImGui.Text('Update Details')
+
+    if errorCount > 0 then
+        ImGui.TextColored(
+            1.0, 0.35, 0.35, 1.0,
+            'One or more updater errors were reported.'
+        )
+    elseif status == 'Up To Date' then
+        ImGui.TextColored(
+            0.35, 1.0, 0.45, 1.0,
+            'All checked Lua files are up to date.'
+        )
+    elseif updateAvailable then
+        ImGui.TextColored(
+            1.0, 0.75, 0.20, 1.0,
+            string.format(
+                '%d file(s) need updating; %d missing.',
+                updateCount,
+                missingCount
+            )
+        )
+    else
+        ImGui.TextDisabled(
+            'Click Check for Updates to compare against GitHub.'
+        )
+    end
+
+    if lastError ~= '' then
+        ImGui.Spacing()
+        ImGui.TextColored(
+            1.0, 0.35, 0.35, 1.0,
+            'Last Error: ' .. lastError
+        )
+    end
+
+    ImGui.EndTabItem()
+end
+
 
 function UI.drawHelpTab()
     if not ImGui.BeginTabItem('Help') then return end
@@ -7425,7 +8294,7 @@ function UI.drawAutoAATab()
             runtime.saveLoadout(true)
         end
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('%s', 'Delegate AA purchasing to MQ2AAspend plugin.\n• Checked: MQ2AAspend attempts purchases first; Triune automatically falls back to native window training if MQ2AAspend fails.\n• Unchecked: Triune trains all prioritized AAs directly via native window training.')
+            ImGui.SetTooltip('%s', 'Delegate AA purchasing to MQ2AAspend plugin.\nâ€¢ Checked: MQ2AAspend attempts purchases first; Triune automatically falls back to native window training if MQ2AAspend fails.\nâ€¢ Unchecked: Triune trains all prioritized AAs directly via native window training.')
         end
     else
         if ImGui.SmallButton('Load MQ2AAspend##btnLoadAASpend') then
@@ -7467,7 +8336,7 @@ function UI.drawAutoAATab()
     end
 
     ImGui.SameLine()
-    if ImGui.Button('↻ Refresh##autoAaRefreshBtn') then
+    if ImGui.Button('â†» Refresh##autoAaRefreshBtn') then
         runtime.specialTabReadDone = false
         runtime.pendingReadSpecialTab = true
         if runtime.scanPlayerAAs then runtime.scanPlayerAAs(true) end
@@ -7537,7 +8406,7 @@ function UI.drawAutoAATab()
 
     ImGui.SameLine()
     local isAsc = (ctrl.auto_aa_sort_asc ~= false)
-    local dirBtnText = isAsc and '▲ Asc' or '▼ Desc'
+    local dirBtnText = isAsc and 'â–² Asc' or 'â–¼ Desc'
     if ImGui.Button(dirBtnText .. '##autoAaSortDir') then
         ctrl.auto_aa_sort_asc = not isAsc
         runtime.aaFilterDirty = true
@@ -8255,14 +9124,14 @@ function UI.drawStatusTab()
         -- Column 1: Engine State
         ImGui.TableNextColumn()
         if ctrl.running then
-            accent(GOOD, '• ENGINE: RUNNING')
+            accent(GOOD, 'â€¢ ENGINE: RUNNING')
         else
-            accent(WARN, '• ENGINE: PAUSED')
+            accent(WARN, 'â€¢ ENGINE: PAUSED')
         end
         if inCombat then
-            accent({ 1.0, 0.35, 0.35, 1.0 }, '• COMBAT: IN COMBAT')
+            accent({ 1.0, 0.35, 0.35, 1.0 }, 'â€¢ COMBAT: IN COMBAT')
         else
-            accent(GOOD, '• COMBAT: STANDBY / IDLE')
+            accent(GOOD, 'â€¢ COMBAT: STANDBY / IDLE')
         end
 
         -- Column 2: Active Mode
@@ -8271,7 +9140,7 @@ function UI.drawStatusTab()
         if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
             modeStr = string.format('%s (%s)', ctrl.mode, ctrl.submode)
         end
-        accent(GOLD, '• Mode: ' .. modeStr)
+        accent(GOLD, 'â€¢ Mode: ' .. modeStr)
         local descKey = ctrl.mode
         if MODES.SUBMODES[ctrl.mode] and ctrl.submode then
             descKey = string.format('%s:%s', ctrl.mode, ctrl.submode)
@@ -8284,26 +9153,26 @@ function UI.drawStatusTab()
         if styleStr == 'Ranged' and runtime.serverAttackMode then
             styleStr = string.format('Ranged (Server: %s)', runtime.serverAttackMode)
         end
-        accent(ARC, '• Style: ' .. styleStr)
+        accent(ARC, 'â€¢ Style: ' .. styleStr)
         if ctrl.burn then
-            accent({ 1.0, 0.30, 0.30, 1.0 }, '• BURN: ACTIVE')
+            accent({ 1.0, 0.30, 0.30, 1.0 }, 'â€¢ BURN: ACTIVE')
         else
-            ImGui.TextDisabled('• Burn: Inactive')
+            ImGui.TextDisabled('â€¢ Burn: Inactive')
         end
 
         -- Column 4: Subsystems (MedBreak, Cast)
         ImGui.TableNextColumn()
         if runtime.medBreakActive then
-            accent(ARC, '• MedBreak: RESTING')
+            accent(ARC, 'â€¢ MedBreak: RESTING')
         else
-            ImGui.TextDisabled('• MedBreak: Inactive')
+            ImGui.TextDisabled('â€¢ MedBreak: Inactive')
         end
         local castingName = nil
         pcall(function() castingName = mq.TLO.Me.Casting.Name() end)
         if castingName and castingName ~= '' and castingName ~= 'NULL' then
-            accent(GOOD, '• Cast: ' .. castingName)
+            accent(GOOD, 'â€¢ Cast: ' .. castingName)
         else
-            ImGui.TextDisabled('• Cast: Idle')
+            ImGui.TextDisabled('â€¢ Cast: Idle')
         end
 
         ImGui.EndTable()
@@ -8424,7 +9293,7 @@ function UI.drawStatusTab()
                 else
                     accent(WARN, 'Line of Sight: NO')
                 end
-                ImGui.TextDisabled(string.format('Heading: %.0f°', tHeading or 0))
+                ImGui.TextDisabled(string.format('Heading: %.0fÂ°', tHeading or 0))
 
                 ImGui.TableNextColumn()
                 if tTotName and tTotName ~= 'None' and tTotName ~= '' then
@@ -8666,18 +9535,18 @@ function UI.drawStatusTab()
             -- Column 1: Plugins & NavMesh
             ImGui.TableNextColumn()
             if navOk then
-                accent(GOOD, '• MQ2Nav: Loaded')
+                accent(GOOD, 'â€¢ MQ2Nav: Loaded')
             else
-                accent(WARN, '• MQ2Nav: NOT LOADED')
+                accent(WARN, 'â€¢ MQ2Nav: NOT LOADED')
                 if ImGui.Button('Load MQ2Nav##statBtnLoadNav') then
                     mq.cmd('/plugin mq2nav')
                 end
             end
 
             if meshOk then
-                accent(GOOD, string.format('• Zone Mesh: Loaded (%s)', curZoneShort))
+                accent(GOOD, string.format('â€¢ Zone Mesh: Loaded (%s)', curZoneShort))
             else
-                accent(WARN, string.format('• Zone Mesh: MISSING (%s)', curZoneShort))
+                accent(WARN, string.format('â€¢ Zone Mesh: MISSING (%s)', curZoneShort))
                 if ImGui.Button('Reload Mesh##statBtnRelMesh') then
                     mq.cmd('/nav reload')
                 end
@@ -8687,12 +9556,12 @@ function UI.drawStatusTab()
                 local stickActive = false
                 pcall(function() stickActive = (mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON') or false end)
                 if stickActive then
-                    accent(ARC, '• MoveUtils (Stick): ACTIVE')
+                    accent(ARC, 'â€¢ MoveUtils (Stick): ACTIVE')
                 else
-                    ImGui.TextDisabled('• MoveUtils (Stick): Loaded (Idle)')
+                    ImGui.TextDisabled('â€¢ MoveUtils (Stick): Loaded (Idle)')
                 end
             else
-                accent(WARN, '• MoveUtils: NOT LOADED')
+                accent(WARN, 'â€¢ MoveUtils: NOT LOADED')
                 if ImGui.Button('Load MQ2MoveUtils##statBtnLoadMoveUtils') then
                     mq.cmd('/plugin mq2moveutils')
                 end
@@ -8706,30 +9575,30 @@ function UI.drawStatusTab()
             pcall(function() isMoving = mq.TLO.Me.Moving() or false end)
 
             if pursuit.meshRecoverId and pursuit.meshRecoverId ~= 0 then
-                accent(WARN, '• Nav Status: OFF-MESH RECOVERY (Stick→Remap)')
+                accent(WARN, 'â€¢ Nav Status: OFF-MESH RECOVERY (Stickâ†’Remap)')
             elseif navActive then
-                accent(GOOD, '• Nav Status: NAVIGATING')
+                accent(GOOD, 'â€¢ Nav Status: NAVIGATING')
             elseif isMoving then
-                accent(ARC, '• Nav Status: MOVING (Manual/Stick)')
+                accent(ARC, 'â€¢ Nav Status: MOVING (Manual/Stick)')
             else
-                ImGui.TextDisabled('• Nav Status: Idle / Stopped')
+                ImGui.TextDisabled('â€¢ Nav Status: Idle / Stopped')
             end
 
             -- Destination Details
             if pursuit.lastNavTargetId and pursuit.lastNavTargetId ~= 0 then
                 local tSpawnName = nil
                 pcall(function() tSpawnName = mq.TLO.Spawn(pursuit.lastNavTargetId).CleanName() end)
-                ImGui.Text(string.format('• Destination: Mob %s (ID %s)', tSpawnName or '', tostring(pursuit.lastNavTargetId)))
+                ImGui.Text(string.format('â€¢ Destination: Mob %s (ID %s)', tSpawnName or '', tostring(pursuit.lastNavTargetId)))
             elseif ctrl.mode == 'Puller' and runtime.pullState == 'RETURNING' then
-                accent(ARC, '• Destination: Camp Location')
+                accent(ARC, 'â€¢ Destination: Camp Location')
             elseif ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
                 local curWp = ctrl.waypoints[ctrl.current_waypoint_idx or 1]
-                ImGui.Text(string.format('• Destination: WP #%d (%s)', ctrl.current_waypoint_idx or 1, curWp and curWp.name or 'WP'))
+                ImGui.Text(string.format('â€¢ Destination: WP #%d (%s)', ctrl.current_waypoint_idx or 1, curWp and curWp.name or 'WP'))
             elseif pursuit.wanderLoc then
-                ImGui.Text(string.format('• Destination: Wander (Y:%.0f, X:%.0f, Z:%.0f)',
+                ImGui.Text(string.format('â€¢ Destination: Wander (Y:%.0f, X:%.0f, Z:%.0f)',
                     pursuit.wanderLoc.y or 0, pursuit.wanderLoc.x or 0, pursuit.wanderLoc.z or 0))
             else
-                ImGui.TextDisabled('• Destination: None (Idle)')
+                ImGui.TextDisabled('â€¢ Destination: None (Idle)')
             end
 
             -- Path Length & Distance
@@ -8739,16 +9608,16 @@ function UI.drawStatusTab()
                     pathLen = mq.TLO.Navigation.PathLength() or 0
                     pathDist = mq.TLO.Navigation.Distance() or 0
                 end)
-                ImGui.TextDisabled(string.format('• Path Length: %.1f ft (Dist: %.1f ft)', pathLen, pathDist))
+                ImGui.TextDisabled(string.format('â€¢ Path Length: %.1f ft (Dist: %.1f ft)', pathLen, pathDist))
             end
 
             -- Column 3: Anti-Stuck & Hazard Diagnostics
             ImGui.TableNextColumn()
             if pursuit.detourActive then
                 local remSec = math.max(0, (pursuit.detourExpiresAt or 0) - os.clock())
-                accent(WARN, string.format('• Detour: ACTIVE (%.1fs rem)', remSec))
+                accent(WARN, string.format('â€¢ Detour: ACTIVE (%.1fs rem)', remSec))
             else
-                ImGui.TextDisabled('• Detour Avoidance: Clear')
+                ImGui.TextDisabled('â€¢ Detour Avoidance: Clear')
             end
 
             local stallCount = pursuit.navStalls or 0
@@ -8756,15 +9625,15 @@ function UI.drawStatusTab()
             if pursuit.unreachableIds then
                 for _ in pairs(pursuit.unreachableIds) do unreachableCount = unreachableCount + 1 end
             end
-            ImGui.TextDisabled(string.format('• Nav Stalls: %d | Unreachable Mobs: %d', stallCount, unreachableCount))
+            ImGui.TextDisabled(string.format('â€¢ Nav Stalls: %d | Unreachable Mobs: %d', stallCount, unreachableCount))
 
             local stuckAttempts = stuckState.attempts or 0
             local stuckCounter = stuckState.counter or 0
-            ImGui.TextDisabled(string.format('• Stuck Attempts: %d | Frame Counter: %d', stuckAttempts, stuckCounter))
+            ImGui.TextDisabled(string.format('â€¢ Stuck Attempts: %d | Frame Counter: %d', stuckAttempts, stuckCounter))
 
             local zoneHazards = (ctrl.zone_hazards and ctrl.zone_hazards[curZoneShort]) or {}
             local hazCount = type(zoneHazards) == 'table' and #zoneHazards or 0
-            ImGui.TextDisabled(string.format('• Hazard Hotspots: %d recorded in %s', hazCount, curZoneShort))
+            ImGui.TextDisabled(string.format('â€¢ Hazard Hotspots: %d recorded in %s', hazCount, curZoneShort))
 
             ImGui.EndTable()
         end
@@ -8795,9 +9664,9 @@ function UI.drawStatusTab()
                     ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, campDist, ctrl.hunter_radius or 1500)
             end
             accent(GOLD, 'Puller Operations:')
-            ImGui.Text(string.format('• Pull State: %s | Pull Target: %s (ID %s) | Style: %s',
+            ImGui.Text(string.format('â€¢ Pull State: %s | Pull Target: %s (ID %s) | Style: %s',
                 runtime.pullState or 'IDLE', pullTargName or 'None', tostring(runtime.pullTargetId or 0), ctrl.pull_style or 'Melee'))
-            ImGui.TextDisabled(string.format('• Anchor: %s | Min Level: %d | Max Level: %d',
+            ImGui.TextDisabled(string.format('â€¢ Anchor: %s | Min Level: %d | Max Level: %d',
                 anchorInfo, ctrl.pull_min_level or 1, ctrl.pull_max_level or 100))
         elseif ctrl.mode == 'Assist' then
             local maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
@@ -8808,7 +9677,7 @@ function UI.drawStatusTab()
                 maTargStr = string.format('%s%s (ID: %d, %d%% HP, %.1fft)', maInfo.targetName, clsStr, maInfo.targetId, maInfo.targetHp, maInfo.targetDist)
             end
             accent(GOLD, 'Assist Operations:')
-            ImGui.Text(string.format('• Main Assist: %s | MA Target: %s | Assist At: %d%% HP',
+            ImGui.Text(string.format('â€¢ Main Assist: %s | MA Target: %s | Assist At: %d%% HP',
                 maDisplay, maTargStr, ctrl.assist_at or 98))
             if maInfo and maInfo.hasTarget then
                 ImGui.SameLine()
@@ -8817,7 +9686,7 @@ function UI.drawStatusTab()
                 end
                 if ImGui.IsItemHovered() then UI.setTooltip(string.format('Target %s (ID %d)', maInfo.targetName, maInfo.targetId)) end
             end
-            ImGui.TextDisabled(string.format('• Chase MA: %s (Chase Dist: %d ft) | Max XTar Chase: %d ft | Self-Defense: %s | Behind: %s',
+            ImGui.TextDisabled(string.format('â€¢ Chase MA: %s (Chase Dist: %d ft) | Max XTar Chase: %d ft | Self-Defense: %s | Behind: %s',
                 ctrl.chase and 'Enabled' or 'Disabled', ctrl.chase_dist or 15, ctrl.xtar_nav_dist or 150,
                 (ctrl.assist_self_defense ~= false) and 'Enabled' or 'Disabled',
                 (ctrl.assist_behind ~= false) and 'Enabled' or 'Disabled'))
@@ -8828,15 +9697,15 @@ function UI.drawStatusTab()
                 campInfo = string.format('Camp at (%.1f, %.1f, %.1f), Radius: %d',
                     ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, ctrl.camp_radius or 100)
             end
-            ImGui.Text(string.format('• Auto-Target Hostiles on XTarget: %s | Chase Dist: %d ft',
+            ImGui.Text(string.format('â€¢ Auto-Target Hostiles on XTarget: %s | Chase Dist: %d ft',
                 ctrl.manual_auto_xtarget ~= false and 'Enabled' or 'Disabled', ctrl.xtar_nav_dist or 150))
-            ImGui.TextDisabled('• ' .. campInfo)
+            ImGui.TextDisabled('â€¢ ' .. campInfo)
         end
 
         if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
             local dirStr = (ctrl.waypoint_direction == 1) and 'Forward' or 'Reverse'
             local loopStr = ctrl.waypoint_loop and 'Looping' or 'One-Way'
-            accent(ARC, string.format('• Waypoint Patrol: WP #%d of %d | Direction: %s | Mode: %s',
+            accent(ARC, string.format('â€¢ Waypoint Patrol: WP #%d of %d | Direction: %s | Mode: %s',
                 ctrl.current_waypoint_idx or 1, #ctrl.waypoints, dirStr, loopStr))
         end
 
@@ -10532,7 +11401,7 @@ function UI.drawPetControlTab()
             ImGui.Text(string.format('Spawn ID: %d', pinfo.id))
             ImGui.Text(string.format('Distance: %.1fm', pinfo.dist))
             ImGui.Text(string.format('Loc (Y, X, Z): %.1f, %.1f, %.1f', pinfo.y, pinfo.x, pinfo.z))
-            ImGui.Text(string.format('Heading: %.0f°', pinfo.heading))
+            ImGui.Text(string.format('Heading: %.0fÂ°', pinfo.heading))
             ImGui.Text(string.format('Move Speed: %.1f', pinfo.speed))
 
             ImGui.NextColumn()
@@ -11793,6 +12662,7 @@ function UI.drawFullGui()
         UI.drawAutoAATab()
         UI.drawCooldownsTab()
         UI.drawSettingsTab()
+        UI.drawUpdateTab()
         UI.drawHelpTab()
         ImGui.EndTabBar()
     end
@@ -11802,12 +12672,22 @@ function UI.drawFullGui()
 end
 
 function UI.draw()
-    if not open then return end
+    -- Run updater state machines independently of which tab is selected.
+    processWebUpdateStartupCheck()
+    processWebUpdateRestart()
+
+    if not open then
+        return
+    end
+
     if ctrl.compact then
         UI.drawMiniGui()
     else
         UI.drawFullGui()
     end
+
+    -- Render after the main Triune window so the modal stays above it.
+    UI.drawWebUpdateModal()
 end
 
 -- ============================================================================
@@ -23242,7 +24122,7 @@ local function combatTick()
     -- or target is confirmed engaged on XTarget.
     -- Turn off autoattack/autofire whenever out of range or when no NPCs remain on XTarget list.
     -- For player-directed modes (Manual, Assist), also require the NPC to be confirmed hostile before
-    -- initiating auto-attack — prevents hitting friendly NPCs (merchants, etc.).
+    -- initiating auto-attack â€” prevents hitting friendly NPCs (merchants, etc.).
     local xtarActive = anyXtarAlive()
     local style = ctrl and ctrl.combat_style or 'Melee'
     local tid = mq.TLO.Target.ID() or 0
@@ -24790,7 +25670,7 @@ function UI.drawCritOverlay()
                     dl:AddText(nil, fontSize, ImVec2Type(px, py), colU32, f.text)
                 end)
 
-                -- Sparkle particles for crits >1000 — tiny bright dots around the text
+                -- Sparkle particles for crits >1000 â€” tiny bright dots around the text
                 if f.dmg > 1000 and t < 0.6 then
                     pcall(function()
                         for s = 1, 3 do
@@ -25220,3 +26100,14 @@ end
 runMainLoop()
 if runtime.clearMapRadiusVisuals then runtime.clearMapRadiusVisuals() end
 runtime.saveLoadout(true)
+
+
+
+
+
+
+
+
+
+
+
