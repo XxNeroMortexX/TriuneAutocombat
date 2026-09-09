@@ -6325,6 +6325,13 @@ local webUpdateNotifiedSHA = nil
 local webUpdateShowModal = false
 local webUpdateSelectTab = false
 
+-- Gennro upstream check is read-only. It never downloads,
+-- stages, applies, or merges files from the upstream repository.
+local webUpdateUpstreamCheckStarted = false
+local webUpdateUpstreamCheckPending = false
+local webUpdateUpstreamNotifiedSHA = nil
+local webUpdateShowUpstreamModal = false
+
 -- Update & Restart orchestration state.
 -- MQ2WebUpdate performs staging asynchronously; Triune only polls status.
 local webUpdateRestartPending = false
@@ -6447,6 +6454,155 @@ local function processWebUpdateStartupCheck()
     mq.cmd('/webupdate compare')
 end
 
+local function getTriuneVersionInfo()
+    local okVersion, versionInfo = pcall(require, 'triune_version')
+
+    if okVersion and type(versionInfo) == 'table' then
+        return versionInfo
+    end
+
+    return nil
+end
+
+local function processWebUpdateUpstreamCheck()
+    if webUpdateUpstreamCheckStarted then
+        if not webUpdateUpstreamCheckPending then
+            return
+        end
+
+        if not isWebUpdatePluginLoaded() then
+            webUpdateUpstreamCheckPending = false
+            return
+        end
+
+        local okStatus, status = pcall(function()
+            return mq.TLO.WebUpdate.UpstreamStatus()
+        end)
+
+        if not okStatus or status == nil then
+            return
+        end
+
+        status = tostring(status)
+
+        if status == 'Checking' then
+            return
+        end
+
+        webUpdateUpstreamCheckPending = false
+
+        if status ~= 'Ready' then
+            return
+        end
+
+        local okSHA, remoteSHA = pcall(function()
+            return mq.TLO.WebUpdate.UpstreamSHA()
+        end)
+
+        remoteSHA = okSHA and tostring(remoteSHA or '') or ''
+
+        if remoteSHA == '' then
+            return
+        end
+
+        local versionInfo = getTriuneVersionInfo()
+        local baselineSHA =
+            versionInfo
+            and tostring(versionInfo.upstream_sha or '')
+            or ''
+
+        if baselineSHA == '' then
+            return
+        end
+
+        -- Same SHA means this Morte build already contains the
+        -- current Gennro upstream commit.
+        if remoteSHA == baselineSHA then
+            return
+        end
+
+        -- Notify only once per upstream SHA during this session.
+        if webUpdateUpstreamNotifiedSHA == remoteSHA then
+            return
+        end
+
+        webUpdateUpstreamNotifiedSHA = remoteSHA
+        webUpdateShowUpstreamModal = true
+        return
+    end
+
+    -- Use the same short startup delay as the normal Morte check.
+    if os.clock() < webUpdateStartupCheckAt then
+        return
+    end
+
+    webUpdateUpstreamCheckStarted = true
+
+    if not isWebUpdatePluginLoaded() then
+        return
+    end
+
+    webUpdateUpstreamCheckPending = true
+
+    -- READ ONLY:
+    -- this command requests only gennro/main's current commit SHA.
+    mq.cmd('/webupdate upstreamsilent')
+end
+
+function UI.drawWebUpdateUpstreamModal()
+    if not webUpdateShowUpstreamModal then
+        return
+    end
+
+    -- If a normal Morte update notification is currently open,
+    -- let that finish first.
+    if webUpdateShowModal then
+        return
+    end
+
+    ImGui.OpenPopup(
+        'Gennro Upstream Changes Available##WebUpdateUpstreamModal'
+    )
+
+    local visible, open = ImGui.BeginPopupModal(
+        'Gennro Upstream Changes Available##WebUpdateUpstreamModal',
+        true,
+        ImGuiWindowFlags.AlwaysAutoResize
+    )
+
+    if visible then
+        ImGui.Text('Gennro has published new TriuneAutocombat changes.')
+        ImGui.Spacing()
+
+        ImGui.TextWrapped(
+            'Nothing has been downloaded, staged, merged, or installed from Gennro.'
+        )
+
+        ImGui.TextWrapped(
+            'This notification only tells you that the Morte fork may need to be synced with upstream.'
+        )
+
+        ImGui.Spacing()
+
+        if ImGui.Button('View Update') then
+            webUpdateShowUpstreamModal = false
+            webUpdateSelectTab = true
+            ctrl.compact = false
+            ImGui.CloseCurrentPopup()
+        end
+
+        ImGui.SameLine()
+
+        if ImGui.Button('Not Now') then
+            webUpdateShowUpstreamModal = false
+            ImGui.CloseCurrentPopup()
+        end
+
+        ImGui.EndPopup()
+    elseif open == false then
+        webUpdateShowUpstreamModal = false
+    end
+end
 function UI.drawWebUpdateModal()
     if not webUpdateShowModal then
         return
@@ -6767,6 +6923,60 @@ function UI.drawUpdateTab()
     ImGui.Text('Triune Version: ' .. tostring((versionInfo and versionInfo.base_version) or VERSION or 'Unknown'))
     ImGui.Text('Morte Version: ' .. tostring((versionInfo and versionInfo.fork_version) or 'Unknown'))
     ImGui.Spacing()
+    if pluginReady and versionInfo then
+        local upstreamStatus = wu(function()
+            return mq.TLO.WebUpdate.UpstreamStatus()
+        end, 'Idle')
+
+        local upstreamSHA = wu(function()
+            return mq.TLO.WebUpdate.UpstreamSHA()
+        end, '')
+
+        upstreamStatus = tostring(upstreamStatus or 'Idle')
+        upstreamSHA = tostring(upstreamSHA or '')
+
+        local baselineSHA =
+            tostring(versionInfo.upstream_sha or '')
+
+        if upstreamStatus == 'Checking' then
+            ImGui.TextColored(
+                1.0, 0.75, 0.20, 1.0,
+                'Gennro Upstream: Checking...'
+            )
+        elseif upstreamStatus == 'Ready'
+            and upstreamSHA ~= ''
+            and baselineSHA ~= ''
+        then
+            if upstreamSHA == baselineSHA then
+                ImGui.TextColored(
+                    0.35, 1.0, 0.35, 1.0,
+                    'Gennro Upstream: Up to Date'
+                )
+            else
+                ImGui.TextColored(
+                    1.0, 0.55, 0.20, 1.0,
+                    'Gennro Upstream: New Changes Available'
+                )
+            end
+        elseif upstreamStatus == 'Error' then
+            ImGui.TextColored(
+                1.0, 0.35, 0.35, 1.0,
+                'Gennro Upstream: Check Failed'
+            )
+        else
+            ImGui.TextDisabled(
+                'Gennro Upstream: Not Checked'
+            )
+        end
+
+        if upstreamSHA ~= '' then
+            ImGui.TextWrapped(
+                'Gennro SHA: ' .. upstreamSHA
+            )
+        end
+
+        ImGui.Spacing()
+    end
 
     if not pluginReady then
         ImGui.TextColored(
@@ -13505,6 +13715,7 @@ end
 function UI.draw()
     -- Run updater state machines independently of which tab is selected.
     processWebUpdateStartupCheck()
+    processWebUpdateUpstreamCheck()
     processWebUpdateRestart()
 
     if not open then
@@ -13519,6 +13730,7 @@ function UI.draw()
 
     -- Render after the main Triune window so the modal stays above it.
     UI.drawWebUpdateModal()
+    UI.drawWebUpdateUpstreamModal()
 end
 
 -- ============================================================================

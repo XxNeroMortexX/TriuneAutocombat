@@ -1,4 +1,4 @@
-﻿#include <mq/Plugin.h>
+#include <mq/Plugin.h>
 #include <cpr/cpr.h>
 
 #include <string>
@@ -63,6 +63,25 @@ std::mutex g_compareMutex;
 std::atomic_bool g_compareRunning{ false };
 bool g_compareResultReady = false;
 CompareWorkerResult g_compareCompletedResult;
+struct UpstreamWorkerResult
+{
+    bool success = false;
+    std::string status = "Idle";
+    std::string remoteSha;
+    std::string lastError;
+};
+
+std::thread g_upstreamThread;
+std::mutex g_upstreamMutex;
+std::atomic_bool g_upstreamRunning{ false };
+bool g_upstreamResultReady = false;
+bool g_upstreamAnnounce = false;
+UpstreamWorkerResult g_upstreamCompletedResult;
+
+std::string g_upstreamStatus = "Idle";
+std::string g_upstreamSha;
+std::string g_upstreamLastError;
+
 
     std::string g_status = "Idle";
     std::string g_remoteSha;
@@ -79,6 +98,9 @@ size_t g_errorCount = 0;
     constexpr const char* kOwner = "XxNeroMortexX";
     constexpr const char* kRepo = "TriuneAutocombat";
     constexpr const char* kBranch = "main";
+    constexpr const char* kUpstreamOwner = "gennro";
+    constexpr const char* kUpstreamRepo = "TriuneAutocombat";
+    constexpr const char* kUpstreamBranch = "main";
     constexpr const char* kLuaPrefix = "TAC/lua/";
 
     cpr::Response GitHubGet(const std::string& url)
@@ -213,6 +235,217 @@ size_t g_errorCount = 0;
         return true;
     }
 
+    UpstreamWorkerResult RunUpstreamWorker()
+    {
+        UpstreamWorkerResult result;
+        result.status = "Checking";
+
+        try
+        {
+            const std::string url =
+                std::string("https://api.github.com/repos/") +
+                kUpstreamOwner + "/" +
+                kUpstreamRepo +
+                "/commits/" +
+                kUpstreamBranch;
+
+            auto response = GitHubGet(url);
+
+            if (response.error)
+            {
+                result.status = "Error";
+                result.lastError =
+                    response.error.message;
+
+                return result;
+            }
+
+            if (response.status_code != 200)
+            {
+                result.status = "Error";
+                result.lastError =
+                    "GitHub returned HTTP " +
+                    std::to_string(
+                        response.status_code
+                    );
+
+                return result;
+            }
+
+            result.remoteSha =
+                ExtractJsonString(
+                    response.text,
+                    "sha"
+                );
+
+            if (result.remoteSha.empty())
+            {
+                result.status = "Error";
+                result.lastError =
+                    "Could not parse upstream commit SHA.";
+
+                return result;
+            }
+
+            result.success = true;
+            result.status = "Ready";
+        }
+        catch (const std::exception& ex)
+        {
+            result.success = false;
+            result.status = "Error";
+            result.lastError =
+                std::string(
+                    "Upstream check exception: "
+                ) + ex.what();
+        }
+        catch (...)
+        {
+            result.success = false;
+            result.status = "Error";
+            result.lastError =
+                "Unknown upstream check exception.";
+        }
+
+        return result;
+    }
+
+    void UpstreamWorkerMain()
+    {
+        UpstreamWorkerResult result =
+            RunUpstreamWorker();
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_upstreamMutex
+            );
+
+            g_upstreamCompletedResult =
+                std::move(result);
+
+            g_upstreamResultReady = true;
+        }
+
+        g_upstreamRunning.store(false);
+    }
+
+    bool StartAsyncUpstreamCheck(
+        bool announce = false)
+    {
+        if (g_upstreamRunning.load())
+            return false;
+
+        if (g_upstreamThread.joinable())
+            g_upstreamThread.join();
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_upstreamMutex
+            );
+
+            g_upstreamResultReady = false;
+            g_upstreamCompletedResult =
+                UpstreamWorkerResult{};
+        }
+
+        g_upstreamStatus = "Checking";
+        g_upstreamLastError.clear();
+        g_upstreamAnnounce = announce;
+
+        g_upstreamRunning.store(true);
+
+        try
+        {
+            g_upstreamThread =
+                std::thread(
+                    UpstreamWorkerMain
+                );
+        }
+        catch (const std::exception& ex)
+        {
+            g_upstreamRunning.store(false);
+
+            g_upstreamStatus = "Error";
+            g_upstreamLastError =
+                std::string(
+                    "Could not start upstream worker: "
+                ) + ex.what();
+
+            return false;
+        }
+        catch (...)
+        {
+            g_upstreamRunning.store(false);
+
+            g_upstreamStatus = "Error";
+            g_upstreamLastError =
+                "Could not start upstream worker.";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    void PublishAsyncUpstreamResult()
+    {
+        UpstreamWorkerResult result;
+
+        {
+            std::lock_guard<std::mutex> lock(
+                g_upstreamMutex
+            );
+
+            if (!g_upstreamResultReady)
+                return;
+
+            result =
+                std::move(
+                    g_upstreamCompletedResult
+                );
+
+            g_upstreamCompletedResult =
+                UpstreamWorkerResult{};
+
+            g_upstreamResultReady = false;
+        }
+
+        g_upstreamSha =
+            std::move(result.remoteSha);
+
+        g_upstreamLastError =
+            std::move(result.lastError);
+
+        g_upstreamStatus =
+            result.status.empty()
+                ? "Error"
+                : std::move(result.status);
+
+        if (g_upstreamAnnounce)
+        {
+            if (result.success)
+            {
+                WriteChatf(
+                    "\ag[MQ2WebUpdate]\ax Gennro upstream %s SHA:",
+                    kUpstreamBranch
+                );
+
+                WriteChatf(
+                    "\at[MQ2WebUpdate]\ax %s",
+                    g_upstreamSha.c_str()
+                );
+            }
+            else
+            {
+                WriteChatf(
+                    "\ar[MQ2WebUpdate]\ax Upstream check failed: %s",
+                    g_upstreamLastError.c_str()
+                );
+            }
+        }
+
+        g_upstreamAnnounce = false;
+    }
     bool ScanRemoteLuaFiles(bool announceFiles = true)
     {
         g_status = "Scanning";
@@ -2391,6 +2624,9 @@ public:
         RemoteSHA,
         Repository,
         Branch,
+        UpstreamSHA,
+        UpstreamStatus,
+        UpstreamLastError,
         LastError,
         FileCount,
         SameCount,
@@ -2409,6 +2645,9 @@ public:
         TypeMember(RemoteSHA);
         TypeMember(Repository);
         TypeMember(Branch);
+        TypeMember(UpstreamSHA);
+        TypeMember(UpstreamStatus);
+        TypeMember(UpstreamLastError);
         TypeMember(LastError);
 
         TypeMember(FileCount);
@@ -2462,6 +2701,24 @@ public:
             return SetString(
                 Dest,
                 kBranch
+            );
+
+        case UpstreamSHA:
+            return SetString(
+                Dest,
+                g_upstreamSha
+            );
+
+        case UpstreamStatus:
+            return SetString(
+                Dest,
+                g_upstreamStatus
+            );
+
+        case UpstreamLastError:
+            return SetString(
+                Dest,
+                g_upstreamLastError
             );
 
         case LastError:
@@ -4100,6 +4357,18 @@ void WebUpdateCmd(
         return;
     }
 
+    if (command == "upstream")
+    {
+        StartAsyncUpstreamCheck(true);
+        return;
+    }
+
+    if (command == "upstreamsilent")
+    {
+        StartAsyncUpstreamCheck(false);
+        return;
+    }
+
     if (command == "scan")
     {
         WriteChatf(
@@ -4172,6 +4441,7 @@ void WebUpdateCmd(
 
 PLUGIN_API void OnPulse()
 {
+    PublishAsyncUpstreamResult();
     PublishAsyncCompareResult();
 }
 PLUGIN_API void InitializePlugin()
@@ -4202,6 +4472,11 @@ PLUGIN_API void InitializePlugin()
 
 PLUGIN_API void ShutdownPlugin()
 {
+    if (g_upstreamThread.joinable())
+    {
+        g_upstreamThread.join();
+    }
+
     // Never allow the plugin DLL to unload while its background
     // compare worker is still executing code from this module.
     if (g_compareThread.joinable())
