@@ -6758,6 +6758,16 @@ function UI.drawUpdateTab()
     ImGui.Text('TriuneAutocombat Update')
     ImGui.Separator()
 
+    local versionInfo = nil
+    local okVersion, loadedVersion = pcall(require, 'triune_version')
+    if okVersion and type(loadedVersion) == 'table' then
+        versionInfo = loadedVersion
+    end
+
+    ImGui.Text('Triune Version: ' .. tostring((versionInfo and versionInfo.base_version) or VERSION or 'Unknown'))
+    ImGui.Text('Morte Version: ' .. tostring((versionInfo and versionInfo.fork_version) or 'Unknown'))
+    ImGui.Spacing()
+
     if not pluginReady then
         ImGui.TextColored(
             1.0, 0.75, 0.20, 1.0,
