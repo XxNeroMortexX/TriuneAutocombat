@@ -9187,6 +9187,20 @@ local function setManualHunterPetHold(on, force)
 end
 
 -- UI: Action controls (Start / Pause, Burn)
+local function initializePullerCampOnStart()
+    if ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Camp' or ctrl.camp_loc then
+        return
+    end
+
+    local myX, myY, myZ = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
+    if myX and myY and myZ then
+        ctrl.camp_loc = { x = myX, y = myY, z = myZ }
+        print(string.format(
+            '\ag[Triune]\ax Puller (Camp): Set camp location at START (Y:%.1f, X:%.1f, Z:%.1f)',
+            myY, myX, myZ))
+    end
+end
+
 function UI.drawActionControls()
     if ctrl.running then
         local Col = ImGuiCol or _G.ImGuiCol or (mq.imgui and mq.imgui.Col)
@@ -9216,6 +9230,7 @@ function UI.drawActionControls()
         if Col and pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.80, 0.22, 0.22, 1.0) then pCount = pCount + 1 end
         if Col and pcall(ImGui.PushStyleColor, Col.ButtonActive, 0.50, 0.10, 0.10, 1.0) then pCount = pCount + 1 end
         if ImGui.Button('START', 130, 24) then
+            initializePullerCampOnStart()
             if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
                 runtime.setNearestWaypoint()
             end
@@ -13507,6 +13522,7 @@ function UI.drawMiniGui()
                 pCount = pCount + 1
             end
             if ImGui.Button('START##miniStartBtn', 80, 22) then
+                initializePullerCampOnStart()
                 if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
                     runtime.setNearestWaypoint()
                 end
@@ -25201,25 +25217,6 @@ function runtime.pullerTick()
     end
 
     local hasWps = (ctrl.waypoints and #ctrl.waypoints > 0)
-
-    if not ctrl.camp_loc then
-        -- Auto-initialize camp location if not yet set so puller has a return anchor
-        local myX, myY, myZ = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-        if hasWps then
-            local wp1 = ctrl.waypoints[1]
-            ctrl.camp_loc = { x = wp1.x or myX or 0, y = wp1.y or myY or 0, z = wp1.z or myZ or 0 }
-            print(string.format(
-                '\ag[Triune]\ax Puller (Camp): Initialized camp location to Waypoint 1 (Y:%.1f, X:%.1f, Z:%.1f)',
-                ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z))
-        elseif myX and myY and myZ then
-            ctrl.camp_loc = { x = myX, y = myY, z = myZ }
-            print(string.format(
-                '\ag[Triune]\ax Puller (Camp): Initialized camp location to current position (Y:%.1f, X:%.1f, Z:%.1f)',
-                myY, myX, myZ))
-        else
-            return
-        end
-    end
 
     if runtime.pullState == 'IDLE' then
         if runtime.pendingAATrain then
