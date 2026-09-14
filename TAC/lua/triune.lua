@@ -34,6 +34,8 @@ local scriptDir         = debug.getinfo(1, "S").source:match("@?(.*[/\\])") or "
 package.path            = scriptDir .. "?.lua;" .. package.path
 -- Created by: NeroMorte - isolated custom updater integration
 local updateManager     = require('triune_update_manager')
+-- Created by: NeroMorte - custom Control Manager integration
+local controlManager    = require('triune_control_manager')
 local VERSION           = '2.11'
 local open              = true
 local cfg               = mq.configDir
@@ -158,6 +160,9 @@ local MODES = {
     },
 }
 
+-- Created by: NeroMorte - custom Control Manager integration
+controlManager.extendModes(MODES)
+
 local ctrl                   -- forward declaration for lexical scoping in helpers
 
 local function isDucking()
@@ -194,12 +199,14 @@ local function sanitizeModeConfig(c)
         c.submode = 'Camp'
     end
 
-    if c.mode ~= 'Manual' and c.mode ~= 'Puller' and c.mode ~= 'Assist' then
+    -- Created by: NeroMorte - allow custom Control Manager primary modes
+    if not controlManager.isValidPrimaryMode(c.mode) then
         c.mode = 'Manual'
     end
 
     if c.mode == 'Puller' then
-        if c.submode ~= 'Hunt' and c.submode ~= 'Camp' then c.submode = 'Hunt' end
+        -- Created by: NeroMorte - custom Control Manager integration
+        if not controlManager.isValidPullerSubmode(c.submode) then c.submode = 'Hunt' end
     elseif c.mode == 'Assist' then
         if c.submode ~= 'Chase' and c.submode ~= 'Camp' and c.submode ~= 'Backline' then c.submode = 'Chase' end
     else
@@ -8102,17 +8109,8 @@ end
 -- UI: Action controls (Start / Pause, Burn)
 -- Created by: NeroMorte - initialize Puller/Camp anchor only when START is pressed
 local function initializePullerCampOnStart()
-    if ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Camp' or ctrl.camp_loc then
-        return
-    end
-
-    local myX, myY, myZ = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-    if myX and myY and myZ then
-        ctrl.camp_loc = { x = myX, y = myY, z = myZ }
-        print(string.format(
-            '\ag[Triune]\ax Puller (Camp): Set camp location at START (Y:%.1f, X:%.1f, Z:%.1f)',
-            myY, myX, myZ))
-    end
+    -- Created by: NeroMorte - delegate START-owned camp initialization to the custom Control Manager
+    controlManager.initializeStartCamp(ctrl, runtime)
 end
 
 function UI.drawActionControls()
@@ -8980,7 +8978,22 @@ function UI.drawStatusTab()
     -- 5. Mode Operations & Extended Target (XTarget) Threat Monitor
     if UI.drawCollapsingStatusHeader('xtar', 'Mode Operations & Extended Target (XTarget) Threat', 'statusXtar') then
         -- Mode Operations Sub-Panel
-        if ctrl.mode == 'Puller' then
+        -- Created by: NeroMorte - present Pet Puller camp and state with the normal mode operations status
+        if ctrl.mode == 'Pet Puller' then
+            local petStatus = controlManager.getPetPullerStatus(ctrl)
+            accent(GOLD, 'Pet Puller Operations:')
+            ImGui.Text(string.format('• Pull State: %s | Active Target ID: %d',
+                petStatus.phase or 'IDLE', petStatus.targetId or 0))
+            if ctrl.camp_loc then
+                ImGui.TextDisabled(string.format(
+                    '• Camp: (%.1f, %.1f, %.1f) | Player Dist: %.1f | Pull: %d | Guard Assist: %d | Return: %d',
+                    ctrl.camp_loc.x or 0, ctrl.camp_loc.y or 0, ctrl.camp_loc.z or 0,
+                    petStatus.playerCampDistance or 0, ctrl.camp_radius or 100,
+                    petStatus.effectiveAssistRadius or 35, ctrl.camp_return_radius or 15))
+            else
+                accent(WARN, '• Camp: Not set - Pet Puller remains idle until START or Set Here.')
+            end
+        elseif ctrl.mode == 'Puller' then
             local pullTargName = nil
             if runtime.pullTargetId and runtime.pullTargetId ~= 0 then
                 pcall(function() pullTargName = mq.TLO.Spawn(runtime.pullTargetId).CleanName() end)
@@ -9478,6 +9491,16 @@ function UI.drawControlTab()
     end
     accent(MUTED, MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
 
+    -- Created by: NeroMorte - external Pet Puller Control-tab settings
+    controlManager.drawPetPullerSettings({
+        ImGui = ImGui,
+        ctrl = ctrl,
+        runtime = runtime,
+        accent = accent,
+        GOLD = GOLD,
+        MUTED = MUTED,
+    })
+
     -- Manual Mode Contextual Controls
     if ctrl.mode == 'Manual' then
         accent(GOLD, 'Camp Location (optional)')
@@ -9713,8 +9736,9 @@ function UI.drawControlTab()
                 if runtime.updateMapRadiusVisuals then runtime.updateMapRadiusVisuals() end
                 runtime.saveLoadout(true)
             end
-        elseif ctrl.submode == 'Camp' then
-            accent(GOLD, 'Puller Camp Location')
+        -- Created by: NeroMorte - Guard reuses Puller Camp settings and layout
+        elseif ctrl.submode == 'Camp' or ctrl.submode == 'Guard' then
+            accent(GOLD, ctrl.submode == 'Guard' and 'Puller Guard Location' or 'Puller Camp Location')
             if ctrl.camp_loc then
                 ImGui.Text(string.format('Camp set at: %.1f, %.1f, %.1f',
                     ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z))
@@ -9774,6 +9798,18 @@ function UI.drawControlTab()
                 ImGui.SetTooltip(
                     'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
             end
+        end
+
+        -- Created by: NeroMorte - custom Guard controls supplied by external Control Manager
+        if ctrl.submode == 'Guard' then
+            controlManager.drawGuardSettings({
+                ImGui = ImGui,
+                ctrl = ctrl,
+                runtime = runtime,
+                accent = accent,
+                GOLD = GOLD,
+                MUTED = MUTED,
+            })
         end
 
         -- Puller Waypoint Patrol Section
@@ -12484,6 +12520,9 @@ function UI.drawMiniGui()
 
         ImGui.Separator()
 
+        -- Created by: NeroMorte - show Pet Puller camp and state in compact mode
+        controlManager.drawPetPullerCompactStatus({ ImGui = ImGui, ctrl = ctrl })
+
         -- Live Target / Main Assist Status
         if ctrl.mode == 'Assist' or (ctrl.ma_id and ctrl.ma_id > 0) or (ctrl.ma_name and ctrl.ma_name ~= '') then
             local maInfo = runtime.getMaTargetInfo and runtime.getMaTargetInfo()
@@ -12648,9 +12687,6 @@ function UI.drawFullGui()
 end
 
 function UI.draw()
-    -- Created by: NeroMorte - run custom updater state machines independently of selected tab
-    updateManager.process()
-
     if not open then
         return
     end
@@ -19490,7 +19526,18 @@ function runtime.castGem(i, g, id)
     local orig = mq.TLO.Target.ID() or 0
     local wasAttacking = mq.TLO.Me.Combat()
     local hostileTarget = (orig > 0 and isHostileTarget and isHostileTarget(orig))
-    local needsTarget = (orig ~= id) and not (selfCast and hostileTarget)
+    -- Created by: NeroMorte - beneficial Self-target spells are auto-targeted by EverQuest
+    local autoSelfTarget = false
+    pcall(function()
+        local targetType = sp.TargetType()
+        autoSelfTarget = sp.Beneficial()
+            and targetType
+            and tostring(targetType):lower() == 'self'
+    end)
+
+    local needsTarget = (orig ~= id)
+        and not (selfCast and hostileTarget)
+        and not autoSelfTarget
     if needsTarget and not runtime.setTarget(id) then return false end
 
     local pauseAttack = isFD and wasAttacking
@@ -19506,7 +19553,8 @@ function runtime.castGem(i, g, id)
     castTracker.activeSpell    = g.spell
     castTracker.activeTargetId = id
     castTracker.activeKind     = g.kind
-    if selfCast and hostileTarget then
+    -- Created by: NeroMorte - auto-targeted Self spells do not require selecting the resolved recipient
+    if autoSelfTarget or (selfCast and hostileTarget) then
         castTracker.targetRequired = false
     else
         castTracker.targetRequired = isDet or isTargetRequiredSpell(g.spell)
@@ -19588,7 +19636,8 @@ function runtime.castGem(i, g, id)
             mq.cmd('/stopsong')
         end
     end
-    if orig ~= id and orig > 0 and not (selfCast and hostileTarget) then
+    -- Created by: NeroMorte - no restore is needed when an auto-targeted Self spell never changed target
+    if orig ~= id and orig > 0 and not (selfCast and hostileTarget) and not autoSelfTarget then
         if g.cls ~= 'Brd' then
             -- Spell has a cast time: keep target on ally until cast finishes, then restore combat target!
             runtime.restoreTargetId = orig
@@ -22322,7 +22371,10 @@ runtime.maxMeleeDistance = maxMeleeDistance
 
 local function desiredRange(id)
     local NAV_CONST = pursuit.NAV_CONST
-    if ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee' then
+    -- Created by: NeroMorte - Guard owner defense uses combat range, never Puller tag-style stand-back range
+    if ctrl.mode == 'Puller' and ctrl.submode ~= 'Guard'
+        and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee'
+    then
         return ctrl.pull_engage_dist or 100
     end
     local style = ctrl and ctrl.combat_style or 'Melee'
@@ -22767,6 +22819,8 @@ end
 
 function runtime.positionBehindTarget(targetId, targetDist)
     if not targetId or targetId <= 0 then return false end
+    -- Created by: NeroMorte - enforce manager-owned Pet Puller and Guard policy on behind positioning
+    if not controlManager.canOwnerEngageTarget(ctrl, targetId) then return false end
     local dist = targetDist or runtime.desiredRange(targetId)
     local stickDist = math.max(4, math.floor(dist))
 
@@ -22873,10 +22927,19 @@ end
 
 function runtime.moveToward(id, dist, followOnly)
     local NAV_CONST = pursuit.NAV_CONST
+
+    -- Created by: NeroMorte - enforce manager-owned Pet Puller and Guard target-movement policy
+    if not controlManager.canOwnerEngageTarget(ctrl, id) then
+        stopMoving()
+        return false
+    end
     if not id or id <= 0 then return false end
     local d = distToId(id)
     local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
-    if isXTargetId(id) and d > maxNav then
+    -- Created by: NeroMorte - direct Guard master threats override the ordinary XTarget chase cap
+    if isXTargetId(id) and d > maxNav
+        and not controlManager.isGuardDirectMasterThreatTarget(ctrl, id)
+    then
         stopMoving()
         return false
     end
@@ -23082,6 +23145,8 @@ local function repositionCloser()
     if not (tgt() and tgt.Type() == 'NPC' and not tgt.Dead()) then return end
     local tid = tgt.ID()
     if not ctrl.running then return end
+    -- Created by: NeroMorte - enforce manager-owned Pet Puller and Guard policy on too-far repositioning
+    if not controlManager.canOwnerEngageTarget(ctrl, tid) then return end
     if isMoveActive() then return end
     if (os.clock() - pursuit.lastTooFarRepositionAt) < 1.0 then return end
     pursuit.lastTooFarRepositionAt = os.clock()
@@ -23131,6 +23196,8 @@ local function handleCantHitFromHere()
     if not (tgt() and (tgt.Type() == 'NPC' or tgt.Type() == 'Pet') and not tgt.Dead() and tgt.Type() ~= 'Corpse') then return end
     local tid = tgt.ID()
     if not ctrl.running then return end
+    -- Created by: NeroMorte - enforce manager-owned Pet Puller and Guard policy on cannot-hit repositioning
+    if not controlManager.canOwnerEngageTarget(ctrl, tid) then return end
     local now = os.clock()
     if (now - (pursuit.lastCantHitAt or 0)) < 1.0 then return end
 
@@ -23707,6 +23774,9 @@ function runtime.checkCombatStall()
         return
     end
 
+    -- Created by: NeroMorte - prevent combat-stall attack activation outside manager-authorized owner defense
+    if not controlManager.canOwnerEngageTarget(ctrl, t.ID()) then return end
+
     -- In Manual mode, only watchdog auto-attack if the target is an active hostile XTarget or actively fighting us
     if ctrl.mode == 'Manual' and not (isXTargetId(t.ID()) or (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
         return
@@ -23726,7 +23796,9 @@ function runtime.checkCombatStall()
     end
 
     local d = distToId(t.ID())
-    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
+    -- Created by: NeroMorte - Guard is independent of normal Puller tag-style stand-back behavior
+    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.submode ~= 'Guard'
+        and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
     if ctrl.combat_style == 'Melee' and not isPullStandBack then
         if d <= maxMeleeDistance(t.ID()) and not mq.TLO.Me.Combat() then mq.cmd('/attack on') end
     elseif ctrl.combat_style == 'Ranged' then
@@ -23755,6 +23827,9 @@ runtime.handleCannotSeeTarget = function()
 
     local isNpc = (tgt.Type() == 'NPC' or tgt.Type() == 'Pet') and not tgt.Dead() and tgt.Type() ~= 'Corpse'
     if not isNpc or not isHostileTarget(tid) then return end
+
+    -- Created by: NeroMorte - enforce manager-owned Pet Puller and Guard policy on cannot-see repositioning
+    if not controlManager.canOwnerEngageTarget(ctrl, tid) then return end
 
     -- User override (Settings tab): skip the step-back maneuver entirely,
     -- for any combat style. Off by default -- see below for why melee still
@@ -23883,14 +23958,16 @@ end
 -- "targetable radius N" filter, which silently returned zero candidates and left
 -- Hunter standing still. NearestSpawn(i, ...) returning a falsy spawn () is what
 -- actually marks "no more candidates."
-function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
+function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, forceCampMode, anchorRadiusOverride, guardTrace)
     local isPulling    = (ctrl.mode == 'Puller')
-    local isCampMode   = isPulling and (ctrl.submode == 'Camp')
+    -- Created by: NeroMorte - allow external Pet Puller to reuse Camp target selection without changing Primary Role
+    local isCampMode   = forceCampMode == true or (isPulling and (ctrl.submode == 'Camp'))
     local minLv        = minLevel or (isCampMode and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1))
     local maxLv        = maxLevel or (isCampMode and (ctrl.pull_max_level or 100) or (ctrl.hunter_max_level or 100))
 
     local anchorLoc    = isCampMode and ctrl.camp_loc or ctrl.hunter_combat_loc
-    local anchorRadius = isCampMode and (searchRadius or ctrl.camp_radius or 100) or
+    -- Created by: NeroMorte - allow Guard to widen its player-centered scan without widening its saved-camp admission radius
+    local anchorRadius = isCampMode and (anchorRadiusOverride or searchRadius or ctrl.camp_radius or 100) or
         (anchorLoc and (ctrl.hunter_combat_radius or 0) or 0)
 
     -- Explicit Y/X handling to account for EQ's (Y, X) standard
@@ -23912,11 +23989,44 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
     local function scanSpawns(maxZ)
         local radius = searchRadius or 100
         local p = string.format('npc radius %d zradius %d targetable', radius, maxZ)
+        -- Created by: NeroMorte - capture Guard-only raw spawn/finder execution without changing normal finder decisions
+        if guardTrace then
+            guardTrace.queries = guardTrace.queries or {}
+            guardTrace.queries[#guardTrace.queries + 1] = p
+        end
         for i = 1, 100 do
             local s = mq.TLO.NearestSpawn(i, p)
             if not s() then break end
 
             local sid = s.ID() or 0
+            local traceRow = nil
+            if guardTrace and #(guardTrace.candidates or {}) < 5 then
+                guardTrace.candidates = guardTrace.candidates or {}
+                local traceOk, traceValue = pcall(function()
+                    local sy, sx, sz = s.Y() or 0, s.X() or 0, s.Z() or 0
+                    local ay = anchorLoc and (anchorLoc.y or anchorLoc[1] or 0) or 0
+                    local ax = anchorLoc and (anchorLoc.x or anchorLoc[2] or 0) or 0
+                    local campDx, campDy = sx - ax, sy - ay
+                    return {
+                        index = i,
+                        query = p,
+                        id = sid,
+                        name = s.CleanName() or '',
+                        spawnType = s.Type() or '',
+                        playerDistance = s.Distance3D() or s.Distance() or 999,
+                        campDistance = math.sqrt(campDx * campDx + campDy * campDy),
+                        z = sz,
+                        targetable = true,
+                        result = 'PENDING',
+                    }
+                end)
+                traceRow = traceOk and traceValue or {
+                    index = i, id = sid, name = '', spawnType = '', playerDistance = -1,
+                    campDistance = -1, z = 0, targetable = true,
+                    result = 'TRACE ERROR: ' .. tostring(traceValue),
+                }
+                guardTrace.candidates[#guardTrace.candidates + 1] = traceRow
+            end
             if sid > 0 then
                 local sname = s.CleanName()
                 local dead = false
@@ -23928,47 +24038,72 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
                     state = s.State() or ''
                 end)
                 local isDead = dead or stype == 'Corpse' or state == 'DEAD'
-                if not isDead and runtime.isPullAllowed(sname) and runtime.isConAllowed(s) and not isSpawnPetOrPlayer(sid) and not isUnreachable(sid) then
+                local rejectAt = nil
+                if isDead then
+                    rejectAt = 'alivePass'
+                elseif not runtime.isPullAllowed(sname) then
+                    rejectAt = 'includeIgnorePass'
+                elseif not runtime.isConAllowed(s) then
+                    rejectAt = 'conFactionPass'
+                elseif isSpawnPetOrPlayer(sid) then
+                    rejectAt = 'playerPetPass'
+                elseif isUnreachable(sid) then
+                    rejectAt = 'unreachablePass'
+                end
+
+                if not rejectAt then
                     local sy = s.Y() or 0
                     local sx = s.X() or 0
-                    if not outsideAnchor(sy, sx) then
+                    if outsideAnchor(sy, sx) then
+                        rejectAt = 'campRadiusPass'
+                    else
                         local slvl = s.Level() or 0
-                        if slvl >= minLv and slvl <= maxLv then
-                            if isHostileTarget(sid) then
-                                if runtime.verifyTargetCon(sid) then
-                                    local sz = s.Z() or 0
-                                    local inHaz = runtime.isCoordInActiveHazard(sx, sy, sz)
-                                    local isMeleeStyle = (ctrl and ctrl.combat_style or 'Melee') == 'Melee'
-                                    local pathOk = not (inHaz and isMeleeStyle)
-                                    if pathOk and navLoaded() and not playerOffMesh then
-                                            local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
-                                            if meshOk and meshLoaded then
-                                                local dist = s.Distance3D() or 999
-                                                local closeReach = desiredRange(sid) or 14
-                                                if dist > closeReach or not hasLoS(sid) then
-                                                    local hasPath = false
-                                                    local ok = pcall(function() hasPath = mq.TLO.Navigation.PathExists('id ' .. sid)() end)
-                                                    if ok and not hasPath then
-                                                        pathOk = false
-                                                    elseif ok and hasPath then
-                                                        local pathLen = 0
-                                                        pcall(function() pathLen = mq.TLO.Navigation.PathLength('id ' .. sid)() or 0 end)
-                                                        local maxRatio = ctrl.nav_max_path_ratio or 2.5
-                                                        if pathLen > 0 and dist > 20 and (pathLen / dist) > maxRatio then
-                                                            pathOk = false
-                                                        end
-                                                    end
-                                                end
+                        if slvl < minLv or slvl > maxLv then
+                            rejectAt = 'levelPass'
+                        elseif not isHostileTarget(sid) then
+                            rejectAt = 'hostilePass'
+                        elseif not runtime.verifyTargetCon(sid) then
+                            rejectAt = 'verifyConPass'
+                        else
+                            local sz = s.Z() or 0
+                            local inHaz = runtime.isCoordInActiveHazard(sx, sy, sz)
+                            local isMeleeStyle = (ctrl and ctrl.combat_style or 'Melee') == 'Melee'
+                            local pathOk = not (inHaz and isMeleeStyle)
+                            if not pathOk then rejectAt = 'hazardPass' end
+                            if pathOk and navLoaded() and not playerOffMesh then
+                                local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
+                                if meshOk and meshLoaded then
+                                    local dist = s.Distance3D() or 999
+                                    local closeReach = desiredRange(sid) or 14
+                                    if dist > closeReach or not hasLoS(sid) then
+                                        local hasPath = false
+                                        local ok = pcall(function() hasPath = mq.TLO.Navigation.PathExists('id ' .. sid)() end)
+                                        if ok and not hasPath then
+                                            pathOk = false
+                                            rejectAt = 'navPass'
+                                        elseif ok and hasPath then
+                                            local pathLen = 0
+                                            pcall(function() pathLen = mq.TLO.Navigation.PathLength('id ' .. sid)() or 0 end)
+                                            local maxRatio = ctrl.nav_max_path_ratio or 2.5
+                                            if pathLen > 0 and dist > 20 and (pathLen / dist) > maxRatio then
+                                                pathOk = false
+                                                rejectAt = 'pathRatioPass'
                                             end
                                         end
-                                        if pathOk then
-                                        return sid
                                     end
                                 end
+                            end
+                            if pathOk then
+                                if traceRow then traceRow.result = 'ACCEPT' end
+                                if guardTrace then guardTrace.findRoamTargetResult = sid end
+                                return sid
                             end
                         end
                     end
                 end
+                if traceRow then traceRow.result = 'REJECT at ' .. tostring(rejectAt or 'unknown') end
+            elseif traceRow then
+                traceRow.result = 'REJECT at idPass'
             end
         end
         return nil
@@ -23988,6 +24123,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
         if targetId then return targetId end
     end
 
+    if guardTrace then guardTrace.findRoamTargetResult = nil end
     return nil
 end
 
@@ -24469,6 +24605,8 @@ function runtime.playerIsEngagingTarget(tid)
 end
 
 function runtime.checkAggroSwitch()
+    -- Created by: NeroMorte - Guard owns direct-threat and XTarget priority switching in its state machine
+    if controlManager.isGuardMode(ctrl) then return false end
     if isCastingOrStarting() or getActiveTargetRequiredCastingId() then return false end
     if (os.clock() - (runtime.lastAggroSwitchAt or 0)) < 2.0 then return false end
     local cur = mq.TLO.Target
@@ -25151,6 +25289,7 @@ local function combatTick()
     -- Prioritize reactive healing (spells, AAs, clickies, actions, discs)
     -- over movement, targeting, auto-attack, and offensive casting.
     -- ========================================================================
+    -- Created by: NeroMorte - preserve normal healing priority during Pet Puller operation
     if runtime.processHealPriority and runtime.processHealPriority() then
         return
     end
@@ -25178,7 +25317,8 @@ local function combatTick()
             haveNPC = false
             clearTarget()
         elseif not isXTargetId(t.ID()) then
-            local isPulling = (ctrl.submode == 'Camp')
+            -- Created by: NeroMorte - Guard uses the same Puller Camp NPC level filters
+            local isPulling = (ctrl.submode == 'Camp' or ctrl.submode == 'Guard')
             local minL = isPulling and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1)
             local maxL = isPulling and (ctrl.pull_max_level or 100) or (ctrl.hunter_max_level or 100)
             local lvl = t.Level() or 0
@@ -25229,8 +25369,31 @@ local function combatTick()
         elseif ctrl.camp_loc then
             moveTowardLoc(ctrl.camp_loc.x, ctrl.camp_loc.y, ctrl.camp_loc.z, 15)
         end
+    elseif ctrl.mode == 'Pet Puller' then
+        -- Created by: NeroMorte - consume the custom Pet Puller state-machine combat transition
+        local petPullerResult = controlManager.petPullerTick(ctrl, runtime)
+        haveNPC = petPullerResult.haveNPC
+        engage = petPullerResult.engage
     elseif ctrl.mode == 'Puller' then
-        if ctrl.submode == 'Camp' then
+        -- Created by: NeroMorte - external Guard behavior integration
+        if ctrl.submode == 'Guard' then
+            -- Created by: NeroMorte - Guard execution trace
+            if ctrl.debug_mode then
+                local guardTraceNow = os.clock()
+                runtime.guardTraceCallerSeenAt = guardTraceNow
+                if not runtime.lastGuardCallerTraceAt
+                    or (guardTraceNow - runtime.lastGuardCallerTraceAt) >= 2.5
+                then
+                    runtime.lastGuardCallerTraceAt = guardTraceNow
+                    print(string.format(
+                        '[GuardTrace] caller=combatTick dispatch=controlManager.guardTick mode=%s submode=%s running=%s',
+                        tostring(ctrl.mode), tostring(ctrl.submode), tostring(ctrl.running)))
+                end
+            end
+            local guardResult = controlManager.guardTick(ctrl, runtime)
+            haveNPC = guardResult.haveNPC
+            engage = guardResult.engage
+        elseif ctrl.submode == 'Camp' then
             if runtime.pendingAATrain then
                 stopMoving()
                 return
@@ -25666,7 +25829,12 @@ local function combatTick()
     -- If we have an active target but cannot get in striking range or establish LoS after 15s,
     -- mark it unreachable and switch to a different mob.
     local inCombatNow = mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() or (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')
-    if haveNPC and (ctrl.mode ~= 'Manual' or isXTargetId(mq.TLO.Target.ID() or 0) or inCombatNow) then
+    -- Created by: NeroMorte - pet-only Guard targets are not owner approach attempts and must not trip pursuit timeout recovery
+    local guardApproachAllowed = not controlManager.isGuardMode(ctrl)
+        or controlManager.canGuardOwnerEngageTarget(ctrl, mq.TLO.Target.ID() or 0)
+    if haveNPC and guardApproachAllowed
+        and (ctrl.mode ~= 'Manual' or isXTargetId(mq.TLO.Target.ID() or 0) or inCombatNow)
+    then
         local tid = mq.TLO.Target.ID() or 0
         if tid > 0 then
             if pursuit.approachTargetId ~= tid then
@@ -25737,7 +25905,12 @@ local function combatTick()
     local xtarActive = anyXtarAlive()
     local style = ctrl and ctrl.combat_style or 'Melee'
     local tid = mq.TLO.Target.ID() or 0
-    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
+    -- Created by: NeroMorte - Guard is independent of normal Puller tag-style stand-back behavior
+    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.submode ~= 'Guard'
+        and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
+    -- Created by: NeroMorte - preserve manager-owned Pet Puller or Guard pet-dispatch attack triggers
+    local preserveManagerDispatchAttack = controlManager.shouldPreservePetPullerDispatchAttack(ctrl)
+        or controlManager.shouldPreserveGuardDispatchAttack(ctrl)
     local autoAttackOk = false
     if haveNPC then
         if isHostileTarget(tid) then
@@ -25800,13 +25973,15 @@ local function combatTick()
                     end
                 elseif not isMoveActive() and curDist > maxReach and tid > 0 then
                     -- Mob moved, was pushed, or is out of striking reach: re-close distance
-                    if ctrl.mode ~= 'Manual' then
+                    -- Created by: NeroMorte - allow melee chase only under manager-owned Pet Puller or Guard policy
+                    if ctrl.mode ~= 'Manual' and controlManager.canOwnerEngageTarget(ctrl, tid) then
                         moveToward(tid, desiredRange(tid))
                     end
                 end
             else
                 -- Not engaging any NPC or dragging mob to camp: turn off auto-attack if not in manual combat
-                if mq.TLO.Me.Combat() and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
+                -- Created by: NeroMorte - do not cancel a manager-owned Pet Puller or Guard dispatch trigger
+                if mq.TLO.Me.Combat() and not preserveManagerDispatchAttack and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
                     mq.cmd('/attack off')
                 end
                 if stickLoaded() then
@@ -25848,12 +26023,14 @@ local function combatTick()
                 end
             elseif not isMoveActive() and curDist > maxReach and tid > 0 then
                 -- Mob moved, was pushed, or is out of ranged reach: re-close distance
-                if ctrl.mode ~= 'Manual' then
+                -- Created by: NeroMorte - allow ranged chase only under manager-owned Pet Puller or Guard policy
+                if ctrl.mode ~= 'Manual' and controlManager.canOwnerEngageTarget(ctrl, tid) then
                     moveToward(tid, desiredRange(tid))
                 end
             end
         else
-            if mq.TLO.Me.Combat() and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
+            -- Created by: NeroMorte - do not cancel a ranged manager-owned Pet Puller or Guard dispatch trigger
+            if mq.TLO.Me.Combat() and not preserveManagerDispatchAttack and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
                 mq.cmd('/attack off')
             end
             if mq.TLO.Me.AutoFire() then
@@ -25933,7 +26110,10 @@ local function combatTick()
     local isHuntPetApproach = (ctrl.mode == 'Puller' and ctrl.submode == 'Hunt'
         and (ctrl.pull_style or 'Melee') == 'Pet' and haveNPC and not engage)
 
-    if petHoldEnabled and (not (haveNPC and engage) or isPullingToCamp) and not isHuntPetApproach then
+    -- Created by: NeroMorte - keep generic hold toggles from interfering with Pet Puller or Guard state machines
+    if petHoldEnabled and (not (haveNPC and engage) or isPullingToCamp) and not isHuntPetApproach
+        and ctrl.mode ~= 'Pet Puller' and not controlManager.isGuardMode(ctrl)
+    then
         if not petState.petHoldActive then
             mq.cmd('/say #petcmd hold all')
             petState.petHoldActive = true
@@ -25950,7 +26130,8 @@ local function combatTick()
             local tgtHp = pctHP(tid) or 100
             -- Self-directed modes: character is leading combat directly, skip external MA aggro gate.
             -- Assist modes: require player/tank has started hitting AND HP threshold met.
-            local selfDirected = (ctrl.mode == 'Manual' or ctrl.mode == 'Puller')
+            -- Created by: NeroMorte - treat an admitted Pet Puller target as self-directed normal combat
+            local selfDirected = (ctrl.mode == 'Manual' or ctrl.mode == 'Puller' or ctrl.mode == 'Pet Puller')
             local engageOk = selfDirected or (playerHasAggro(tid) and playerIsEngagingTarget(tid))
             if tgtHp <= assistThreshold then
                 if engageOk then
@@ -25992,7 +26173,8 @@ local function combatTick()
     local ENGINE_TARGETS_MODE = {
         ['Puller'] = true,
     }
-    local combatReady = (not haveNPC or engage)
+    -- Created by: NeroMorte - make generic combat readiness state-aware for Pet Puller
+    local combatReady = controlManager.isGenericCombatReady(ctrl, haveNPC, engage)
     if haveNPC and engage and not ENGINE_TARGETS_MODE[ctrl.mode] then
         tid = mq.TLO.Target.ID() or 0
         if not isHostileTarget(tid) then
@@ -26350,6 +26532,8 @@ function runtime.setRunning(enable)
             print('\ay[Triune]\ax already running.')
             return
         end
+        -- Created by: NeroMorte - use the same START-owned camp initializer for slash-command starts
+        controlManager.initializeStartCamp(ctrl, runtime)
         if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
             runtime.setNearestWaypoint()
         end
@@ -27543,7 +27727,8 @@ runtime.updateMapRadiusVisuals = function()
         end
 
         -- 3. If in Camp submode and camp location exists, draw Camp anchor
-        if submode == 'Camp' and ctrl.camp_loc then
+        -- Created by: NeroMorte - Guard shares the saved Puller camp map anchor
+        if (submode == 'Camp' or submode == 'Guard') and ctrl.camp_loc then
             mq.cmdf('/maploc %f %f %f radius %d rcolor 0 255 0 color 0 255 0 label Camp',
                 ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z, ctrl.camp_radius or 100)
         end
@@ -27568,8 +27753,15 @@ runtime.updateMapRadiusVisuals = function()
             mq.cmd('/mapfilter pullradius show')
             mq.cmdf('/mapfilter pullradius %d', ctrl.camp_radius or 100)
         end
+    -- Created by: NeroMorte - display the Pet Puller saved camp with the existing camp map style
+    elseif mode == 'Pet Puller' then
+        if ctrl.camp_loc then
+            mq.cmdf('/maploc %f %f %f radius %d rcolor 0 255 0 color 0 255 0 label Pet_Puller_Camp',
+                ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z, ctrl.camp_radius or 100)
+        end
     elseif mode == 'Puller' then
-        if submode == 'Camp' then
+        -- Created by: NeroMorte - Guard shares the saved Puller camp map visualization
+        if submode == 'Camp' or submode == 'Guard' then
             if ctrl.camp_loc then
                 mq.cmdf('/maploc %f %f %f radius %d rcolor 0 255 0 color 0 255 0 label Camp',
                     ctrl.camp_loc.y, ctrl.camp_loc.x, ctrl.camp_loc.z, ctrl.camp_radius or 100)
@@ -27803,6 +27995,12 @@ local function runMainLoop()
         if (ctrl.auto_group or ctrl.auto_trade or ctrl.auto_dzadd) and runtime.checkAutoAccept then
             runtime.checkAutoAccept()
         end
+
+        -- Created by: NeroMorte - run updater state machines from the yieldable main Lua loop
+        updateManager.process()
+
+        -- Created by: NeroMorte - detect Pet Puller entry even while Triune is paused
+        controlManager.syncMode(ctrl, runtime)
         runtime.updateMapRadiusVisuals()
         -- drain one queued spell-mem per pass, out of combat, while stationary, and while not casting
         local memmed = false

@@ -1,5 +1,11 @@
 # Triune AutoCombat Change Log
 
+## 2026-09-11
+
+- **Completed the NeroMorte Pet Puller camp state machine (`triune_control_manager.lua`, `triune.lua`).** START now initializes only a blank camp through the custom manager, Clear Camp cancels movement and preserves the cleared state, pets tag and recall active threats, target engagement is admitted only inside Guard Assist Radius measured from saved camp, and normal combat/healing resumes after that transition. The manager now confirms the admitted target before issuing owner `/attack on` once per engage target and issues the paired `/attack off` only when releasing manager-owned engagement state. Added Pet Puller camp visibility to map, full status, and compact status displays while preserving default behavior for all other modes.
+
+---
+
 ## 2026-09-09
 
 - Fix all 25 luacheck warnings in `triune.lua`: replace unused variables with `_` discards, remove dead initializers, eliminate unused loop variables, and add `-- luacheck: ignore 311` annotations for intentional overwrite patterns (`conR/G/B`, `cols`, `iconDrawn`, `pushedColors`).
