@@ -19,6 +19,7 @@ local commandEncode
 local state = {
     initialized = false, configLoaded = false, versionLoaded = false,
     configError = nil, versionError = nil, pendingApply = false,
+    refreshAfterApply = false, applyRefreshStarted = 0,
     pendingProfile = nil,
     selectedManagedProfile = nil, selectedManagedMapping = nil,
     profileDraft = nil, mappingDraft = nil,
@@ -308,11 +309,13 @@ local function drawActions(e)
     beginDisabled(disabled)
     if ImGui.Button('Check for Updates', core.px(145), core.px(26)) then
         state.pendingApply = false
+        state.refreshAfterApply = false
         runCommand('/webupdate compare', 'Started read-only update comparison.')
     end
     ImGui.SameLine()
     if ImGui.Button('Stage Updates', core.px(125), core.px(26)) then
         state.pendingApply = false
+        state.refreshAfterApply = false
         runCommand('/webupdate stage', 'Started verified update staging.')
     end
     endDisabled(disabled)
@@ -335,7 +338,9 @@ local function drawActions(e)
         ImGui.TextWrapped('Apply the verified staged transaction now? MQ2WebUpdate will back up, verify, commit, and roll back on failure. Link-protected files will not be overwritten.')
         if ImGui.Button('Yes, Apply Now', core.px(135), core.px(26)) then
             state.pendingApply = false
-            runCommand('/webupdate apply', 'Requested staged transaction apply.')
+            state.refreshAfterApply = runCommand('/webupdate apply',
+                'Requested staged transaction apply.')
+            state.applyRefreshStarted = os.time()
         end
         ImGui.SameLine()
         if ImGui.Button('Cancel Apply', core.px(110), core.px(26)) then
@@ -1604,6 +1609,31 @@ local function drawWindow()
     ImGui.End(); core.popTheme()
 end
 
+local function refreshAfterSuccessfulApply()
+    if not state.refreshAfterApply then return end
+    if os.time() - state.applyRefreshStarted > 60 then
+        state.refreshAfterApply = false
+        addLog('Apply refresh timed out. Run Check for Updates to refresh the file plan.')
+        return
+    end
+    local ok, status, busy = pcall(function()
+        local web = mq and mq.TLO and mq.TLO.WebUpdate
+        if not web then return nil, true end
+        return web.Status(), web.Busy()
+    end)
+    if not ok or busy or not status then return end
+    local normalized = string.upper(tostring(status))
+    if normalized == 'APPLIED' then
+        -- Clear first so a synchronous comparison cannot request another one.
+        state.refreshAfterApply = false
+        runCommand('/webupdate compare', 'Apply completed; refreshing the file plan.')
+    elseif normalized == 'ERROR' or normalized == 'FAILED' or
+        normalized == 'ROLLBACK' or normalized == 'ROLLED BACK' then
+        state.refreshAfterApply = false
+        addLog('Apply did not complete; the file plan was not refreshed.')
+    end
+end
+
 function plugin.onInit(coreApi)
     core, ctrl, ImGui, mq = coreApi, coreApi.ctrl, coreApi.ImGui, coreApi.mq
     if ctrl.show_update_manager == nil then ctrl.show_update_manager = false end
@@ -1621,12 +1651,15 @@ function plugin.onInit(coreApi)
     state.startupLastPoll = 0
     state.startupPopupItems = {}
     state.showStartupPopup = false
+    state.refreshAfterApply = false
+    state.applyRefreshStarted = 0
     loadMetadata(); state.initialized = true
     addLog('Production Update Manager initialized.')
 end
 
 function plugin.onDestroy() state.initialized = false end
 function plugin.onDrawUI()
+    refreshAfterSuccessfulApply()
     processTriuneStartupChecks()
     drawTriuneStartupPopup()
     drawWindow()
