@@ -5,7 +5,7 @@
 local plugin = {
     id = 'update_manager', name = 'Update Manager', author = 'NeroMorte',
     description = 'Production update planning, staging, apply, policy, and diagnostics frontend.',
-    version = '4.0.0',
+    version = '4.1.0',
     window = {
         label = 'Updates', tooltip = 'Open the MQ2WebUpdate Update Manager.',
         flag = 'show_update_manager', desc = 'Check, stage, apply, and diagnose updates',
@@ -21,6 +21,9 @@ local state = {
     configError = nil, versionError = nil, pendingApply = false,
     refreshAfterApply = false, applyRefreshStarted = 0,
     restartTriuneAfterApply = false,
+    pendingDllApply = false, launchDllCoordinator = false, dllMappingId = nil,
+    dllPluginName = nil, dllWasLoaded = nil, dllRecoveryStarted = 0,
+    waitDllReload = false, dllSawUnload = false, dllStartedAt = 0,
     pendingProfile = nil,
     selectedManagedProfile = nil, selectedManagedMapping = nil,
     profileDraft = nil, mappingDraft = nil,
@@ -73,6 +76,15 @@ local function runCommand(command, description)
     end
     addLog(description or command)
     return true
+end
+
+local function dllRecoveryMarkerPath()
+    local ok, path = pcall(function()
+        local plugins = tostring(mq.TLO.MacroQuest.Path('plugins') or ''):gsub('[\\/]+$', '')
+        local root = plugins:match('^(.*)[\\/][^\\/]+$')
+        return root and root .. '\\webupdate_stage\\dll-handoff.active'
+    end)
+    return ok and path or nil
 end
 
 local function readEngine()
@@ -327,14 +339,80 @@ local function drawActions(e)
         runCommand('/webupdate status', 'Printed backend status to chat.')
     end
 
-    local applyDisabled = not e.available or e.busy or not e.stageReady
+    local dllStaged = false
+    local function stagedPluginName(file)
+        local destination = tostring(file.destinationPath or '')
+        local name = destination:match('[\\/]plugins[\\/]([%w_-]+)%.dll$')
+        if not name then return nil end
+        for _, profile in ipairs(e.managedProfiles or {}) do
+            if profile.role == 'main' then
+                for _, mapping in ipairs(profile.mappings or {}) do
+                    if mapping.id == file.mappingId and
+                        mapping.destinationRoot == 'plugins' then
+                        return name
+                    end
+                end
+            end
+        end
+        return nil
+    end
+    for _, file in ipairs(e.files or {}) do
+        local status = string.upper(tostring(file.status or ''))
+        if stagedPluginName(file) and
+            (status == 'UPDATE' or status == 'MISSING') then
+            dllStaged = true
+        end
+    end
+    local applyDisabled = not e.available or e.busy or not e.stageReady or dllStaged
     beginDisabled(applyDisabled)
     if ImGui.Button('Apply Staged Files', core.px(145), core.px(26)) then
         state.pendingApply = true
         addLog('Apply confirmation requested.')
     end
     endDisabled(applyDisabled)
-    if applyDisabled then ImGui.SameLine(); ImGui.TextDisabled('A verified staged transaction is required.') end
+    if applyDisabled and not dllStaged then
+        ImGui.SameLine(); ImGui.TextDisabled('A verified staged transaction is required.')
+    end
+    if dllStaged then
+        ImGui.SameLine()
+        ImGui.TextDisabled('DLL requires the independent handoff.')
+        beginDisabled(not e.stageReady or e.busy)
+        for _, file in ipairs(e.files or {}) do
+            local status = string.upper(tostring(file.status or ''))
+            local name = stagedPluginName(file)
+            if name and tostring(file.mappingId or ''):match('^[%w_-]+$') and
+                (status == 'UPDATE' or status == 'MISSING') and
+                not tostring(file.protection or ''):upper():find('PROTECTED', 1, true) then
+                if ImGui.Button('Update ' .. name .. '##dll_' .. file.mappingId,
+                    core.px(175), core.px(26)) then
+                    state.pendingDllApply = true
+                    state.dllMappingId = file.mappingId
+                    state.dllPluginName = name
+                end
+            end
+        end
+        endDisabled(not e.stageReady or e.busy)
+    end
+
+    if state.pendingDllApply then
+        ImGui.Spacing(); ImGui.Separator(); colorText(C.yellow, 'Confirm DLL Update')
+        ImGui.TextWrapped('Update ' .. tostring(state.dllPluginName) .. ' from its verified staged file, with backup and rollback. Other staged files will need a fresh Stage afterward.')
+        if ImGui.Button('Yes, Update DLL', core.px(145), core.px(26)) then
+            state.pendingDllApply = false
+            local sent = runCommand('/webupdate dll prepare ' .. state.dllMappingId,
+                'Requested verified DLL handoff preparation.')
+            local verified = sent and readEngine()
+            state.launchDllCoordinator = verified and verified.lastError == '' or false
+            if not state.launchDllCoordinator then
+                addLog('DLL handoff preparation failed; plugin remains installed.')
+            end
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Cancel DLL Update', core.px(145), core.px(26)) then
+            state.pendingDllApply = false
+        end
+        ImGui.Separator()
+    end
 
     if state.pendingApply then
         ImGui.Spacing(); ImGui.Separator(); colorText(C.yellow, 'Confirm Apply')
@@ -1202,6 +1280,42 @@ local function drawProfileEditorTab()
         end
         if selectedProfile then
             ImGui.Spacing(); ImGui.Separator(); ImGui.Text('Deployment Mappings')
+            if selectedProfile.role == 'main' and type(updateConfig) == 'table' and
+                type(updateConfig.payloads) == 'table' then
+                ImGui.Text('Plugin DLLs from update_config.lua')
+                for _, payload in ipairs(updateConfig.payloads) do
+                    if payload.type == 'mq_plugin' and payload.source == selectedProfile.id and
+                        payload.destinationRoot == 'plugins' and
+                        type(payload.id) == 'string' and
+                        payload.id:match('^[%w_-]+$') and
+                        type(payload.remote) == 'string' and
+                        type(payload.destination) == 'string' and
+                        payload.destination:match('^[%w_-]+%.dll$') and
+                        payload.remote:match('^[%w_./-]+%.dll$') and
+                        payload.remote:match('([^/]+)$') == payload.destination then
+                        local mappingId = 'plugin-' .. payload.id
+                        local existing = false
+                        for _, mapping in ipairs(selectedProfile.mappings) do
+                            if mapping.id == mappingId then existing = true; break end
+                        end
+                        if existing then
+                            ImGui.TextDisabled(payload.destination .. ' is configured')
+                        elseif ImGui.Button('Add ' .. payload.destination .. '##payload_' .. payload.id,
+                            core.px(230), core.px(24)) then
+                            if runCommand('/webupdate mappings create ' .. draft.id .. ' ' .. mappingId,
+                                'Created plugin mapping for ' .. payload.destination .. '.') then
+                                setMappingField(draft.id, mappingId, 'name', payload.pluginName or payload.id)
+                                setMappingField(draft.id, mappingId, 'remote', payload.remote)
+                                setMappingField(draft.id, mappingId, 'root', 'plugins')
+                                setMappingField(draft.id, mappingId, 'destination', '')
+                                setMappingField(draft.id, mappingId, 'recursive', 'off')
+                                setMappingField(draft.id, mappingId, 'required', payload.required and 'on' or 'off')
+                                addLog('Run Check for Updates to inspect the new plugin mapping.')
+                            end
+                        end
+                    end
+                end
+            end
             for _, mapping in ipairs(selectedProfile.mappings) do
                 if ImGui.Button(mapping.name .. '##mapping_' .. mapping.id, core.px(200), core.px(23)) then
                     state.selectedManagedMapping = mapping.id
@@ -1216,6 +1330,18 @@ local function drawProfileEditorTab()
                     destinationRoot = 'lua', destinationPath = '', includePatterns = '**',
                     excludePatterns = '', maximumFileBytes = '67108864', enabled = true,
                     recursive = true, required = true, restartRequired = false, isNew = true,
+                }
+            end
+            ImGui.SameLine()
+            if ImGui.Button('Add Plugin DLL', core.px(130), core.px(24)) then
+                state.mappingDraft = {
+                    id = 'plugin-new', name = 'New MQ Plugin DLL',
+                    remotePath = 'plugins/MQ2Example.dll',
+                    destinationRoot = 'plugins', destinationPath = '',
+                    includePatterns = '**', excludePatterns = '',
+                    maximumFileBytes = '67108864', enabled = true,
+                    recursive = false, required = true, restartRequired = false,
+                    isNew = true,
                 }
             end
 
@@ -1328,7 +1454,10 @@ local function drawProfileEditorTab()
     if mapping.isNew then
         if ImGui.Button('Create Mapping', core.px(125), core.px(25)) then
             if runCommand('/webupdate mappings create ' .. draft.id .. ' ' .. mapping.id,
-                'Created deployment mapping.') then mapping.isNew = false end
+                'Created deployment mapping.') then
+                mapping.isNew = false
+                addLog('Save Mapping Fields to publish the remote and destination settings.')
+            end
         end
     else
         if ImGui.Button('Save Mapping Fields', core.px(150), core.px(25)) then
@@ -1612,6 +1741,20 @@ local function drawWindow()
     if not open then ctrl.show_update_manager = false; core.saveLoadout(true) end
     if draw then
         core.postBeginWindow('update_manager')
+        local recoveryPath = dllRecoveryMarkerPath()
+        local recoveryFile = recoveryPath and io.open(recoveryPath, 'rb') or nil
+        if recoveryFile then
+            recoveryFile:close()
+            colorText(C.yellow, 'An interrupted plugin DLL update needs recovery.')
+            beginDisabled(os.time() - state.dllRecoveryStarted < 120)
+            if ImGui.Button('Recover Interrupted DLL Update', core.px(235), core.px(26)) then
+                state.dllRecoveryStarted = os.time()
+                runCommand('/lua run webupdate_dll_handoff',
+                    'Started verified recovery of interrupted plugin DLL update.')
+            end
+            endDisabled(os.time() - state.dllRecoveryStarted < 120)
+            ImGui.Separator()
+        end
         if ImGui.BeginTabBar('##NeroMorteUpdateManagerTabs') then
             if ImGui.BeginTabItem('Updates') then drawUpdatesTab(); ImGui.EndTabItem() end
             if ImGui.BeginTabItem('Sources') then drawSourcesTab(); ImGui.EndTabItem() end
@@ -1676,6 +1819,10 @@ function plugin.onInit(coreApi)
     state.startupPopupItems = {}
     state.showStartupPopup = false
     state.refreshAfterApply = false
+    state.pendingDllApply = false
+    state.launchDllCoordinator = false
+    state.waitDllReload = false
+    state.dllSawUnload = false
     state.restartTriuneAfterApply = false
     state.applyRefreshStarted = 0
     loadMetadata(); state.initialized = true
@@ -1684,6 +1831,38 @@ end
 
 function plugin.onDestroy() state.initialized = false end
 function plugin.onDrawUI()
+    if state.launchDllCoordinator then
+        state.launchDllCoordinator = false
+        local ok, wasLoaded = pcall(function()
+            return mq.TLO.Plugin(state.dllPluginName).IsLoaded()
+        end)
+        state.dllWasLoaded = ok and wasLoaded == true
+        state.waitDllReload = runCommand('/lua run webupdate_dll_handoff',
+            'Started independent DLL update coordinator.')
+        state.dllSawUnload = false
+        state.dllStartedAt = os.time()
+    end
+    if state.waitDllReload then
+        local ok, loaded = pcall(function()
+            return mq.TLO.Plugin(state.dllPluginName).IsLoaded()
+        end)
+        if ok and loaded == false then state.dllSawUnload = true end
+        local markerPresent = true
+        local markerPath = dllRecoveryMarkerPath()
+        if markerPath then
+            local f = io.open(markerPath, 'rb')
+            if f then f:close() else markerPresent = false end
+        end
+        if (state.dllSawUnload and ok and loaded == true) or
+            (os.time() - state.dllStartedAt >= 2 and not markerPresent and
+                (state.dllWasLoaded == false or (ok and loaded == true))) then
+            state.waitDllReload = false
+            runCommand('/webupdate compare', 'DLL handoff ended; checking installed file state.')
+        elseif os.time() - state.dllStartedAt > 90 then
+            state.waitDllReload = false
+            addLog('DLL handoff status unknown. Inspect MQ chat and handoff backup before retrying.')
+        end
+    end
     refreshAfterSuccessfulApply()
     processTriuneStartupChecks()
     drawTriuneStartupPopup()

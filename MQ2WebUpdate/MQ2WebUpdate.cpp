@@ -188,11 +188,11 @@ size_t g_errorCount = 0;
 
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
-constexpr const char* kWebUpdateVersion = "4.0.0";
+constexpr const char* kWebUpdateVersion = "4.1.1";
 constexpr const char* kWebUpdateApiVersion = "4.0";
-// Created by: NeroMorte - MQ2WebUpdate trusted profile configuration.
-// Only compiled-in identities may be selected; the active identity is
-// persisted atomically and drives compare, stage, apply, and recovery checks.
+// Legacy defaults retained for migration of older settings files. The active
+// main repository and every deployment mapping are loaded from the saved
+// managed profile store for compare, stage, apply, and recovery.
 constexpr const char* kDefaultProfileId = "morte";
 constexpr const char* kDefaultSourceType = "github";
 constexpr const char* kGlobalGitHubCredentialId = "global";
@@ -274,10 +274,24 @@ int g_progress = 0;
 bool g_stageReady = false;
 bool g_restartRequired = false;
 
-    constexpr const char* kUpstreamOwner = "gennro";
-    constexpr const char* kUpstreamRepo = "TriuneAutocombat";
-    constexpr const char* kUpstreamBranch = "main";
-    constexpr const char* kLuaPrefix = "TAC/lua/";
+    std::string g_upstreamDisplayName;
+    std::string g_upstreamReference;
+    // Lua paths in the compatibility scanner follow the saved Main mapping.
+    std::string LuaRemotePrefix(const profilemodel::Profile& profile)
+    {
+        for (const auto& mapping : profile.mappings)
+        {
+            if (mapping.enabled &&
+                mapping.destinationRoot == profilemodel::DestinationRoot::Lua)
+            {
+                std::string root =
+                    mq2webupdate::planner::NormalizeRepositoryPath(mapping.remotePath);
+                if (!root.empty() && root.back() != '/') root += '/';
+                return root;
+            }
+        }
+        return {};
+    }
 
     std::string GitHubHttpError(const cpr::Response& response);
 
@@ -411,7 +425,7 @@ bool g_restartRequired = false;
         return true;
     }
 
-    UpstreamWorkerResult RunUpstreamWorker()
+    UpstreamWorkerResult RunUpstreamWorker(profilemodel::Profile profile)
     {
         UpstreamWorkerResult result;
         result.status = "Checking";
@@ -420,10 +434,10 @@ bool g_restartRequired = false;
         {
             const std::string url =
                 std::string("https://api.github.com/repos/") +
-                kUpstreamOwner + "/" +
-                kUpstreamRepo +
+                profile.owner + "/" +
+                profile.repository +
                 "/commits/" +
-                kUpstreamBranch;
+                profile.reference;
 
             auto response = GitHubGet(url);
 
@@ -482,10 +496,10 @@ bool g_restartRequired = false;
         return result;
     }
 
-    void UpstreamWorkerMain()
+    void UpstreamWorkerMain(profilemodel::Profile profile)
     {
         UpstreamWorkerResult result =
-            RunUpstreamWorker();
+            RunUpstreamWorker(std::move(profile));
 
         {
             std::lock_guard<std::mutex> lock(
@@ -504,6 +518,18 @@ bool g_restartRequired = false;
     bool StartAsyncUpstreamCheck(
         bool announce = false)
     {
+        const auto selected = std::find_if(g_managedProfiles.begin(),
+            g_managedProfiles.end(), [](const profilemodel::Profile& profile)
+            {
+                return profile.enabled &&
+                    profile.role == profilemodel::ProfileRole::MonitorOnly;
+            });
+        if (selected == g_managedProfiles.end())
+        {
+            g_upstreamStatus = "Error";
+            g_upstreamLastError = "No enabled Monitor Only repository is configured.";
+            return false;
+        }
         if (g_upstreamRunning.load())
             return false;
 
@@ -523,6 +549,8 @@ bool g_restartRequired = false;
         g_upstreamStatus = "Checking";
         g_upstreamLastError.clear();
         g_upstreamAnnounce = announce;
+        g_upstreamDisplayName = selected->name;
+        g_upstreamReference = selected->reference;
 
         g_upstreamRunning.store(true);
 
@@ -530,7 +558,7 @@ bool g_restartRequired = false;
         {
             g_upstreamThread =
                 std::thread(
-                    UpstreamWorkerMain
+                    UpstreamWorkerMain, *selected
                 );
         }
         catch (const std::exception& ex)
@@ -601,8 +629,8 @@ bool g_restartRequired = false;
             if (result.success)
             {
                 WriteChatf(
-                    "\ag[MQ2WebUpdate]\ax Gennro upstream %s SHA:",
-                    kUpstreamBranch
+                    "\ag[MQ2WebUpdate]\ax %s monitor %s SHA:",
+                    g_upstreamDisplayName.c_str(), g_upstreamReference.c_str()
                 );
 
                 WriteChatf(
@@ -626,6 +654,11 @@ bool g_restartRequired = false;
         g_status = "Scanning";
         g_lastError.clear();
         g_remoteFiles.clear();
+        std::string luaPrefix;
+        for (const auto& profile : g_managedProfiles)
+            if (profile.enabled &&
+                profile.role == profilemodel::ProfileRole::MainDownload)
+                luaPrefix = LuaRemotePrefix(profile);
 
         if (!CheckRemoteSha(false))
             return false;
@@ -684,11 +717,11 @@ bool g_restartRequired = false;
                     secondQuote - firstQuote - 1
                 );
 
-            if (path.rfind(kLuaPrefix, 0) == 0)
+            if (!luaPrefix.empty() && path.rfind(luaPrefix, 0) == 0)
             {
                 std::string relative =
                     path.substr(
-                        std::string(kLuaPrefix).size()
+                        luaPrefix.size()
                     );
 
                 if (!relative.empty() &&
@@ -2749,6 +2782,17 @@ bool g_restartRequired = false;
         return output;
     }
 
+    bool IsTextDeployment(const std::string& relativePath)
+    {
+        std::string ext = fs::path(relativePath).extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return ext == ".lua" || ext == ".mac" || ext == ".ini" ||
+            ext == ".cfg" || ext == ".txt" || ext == ".json" ||
+            ext == ".yaml" || ext == ".yml" || ext == ".xml" ||
+            ext == ".toml" || ext == ".md" || ext == ".ps1";
+    }
+
     std::string RepositoryCacheKey(const profilemodel::Profile& profile)
     {
         return profilemodel::SourceProviderName(profile.provider) +
@@ -2924,10 +2968,17 @@ bool g_restartRequired = false;
         fs::path runtimeRoot =
             luaDirectory.parent_path();
 
-        fs::path stageRoot =
-            runtimeRoot /
-            "webupdate_stage" /
-            "TriuneAutocombat";
+        std::string mainProfileId;
+        for (const auto& profile : g_managedProfiles)
+            if (profile.enabled &&
+                profile.role == profilemodel::ProfileRole::MainDownload)
+                mainProfileId = profile.id;
+        if (mainProfileId.empty())
+        {
+            g_lastError = "No Main Download profile is configured.";
+            return false;
+        }
+        fs::path stageRoot = runtimeRoot / "webupdate_stage" / mainProfileId;
 
         /*
             A stage is one exact GitHub transaction.
@@ -6620,6 +6671,185 @@ void RecoverInterruptedApplyTransactionAtStartup()
         return rollbackSucceeded;
     }
 
+    // Produce a verified, isolated DLL handoff. This routine never unloads or
+    // replaces the running module. An independent MQ2Lua script does that
+    // after this command has returned and the plugin command is off the stack.
+    bool PrepareDllHandoff(const std::string& mappingId, std::string& error)
+    {
+        error.clear();
+        if (g_compareRunning.load() || !g_stageReady ||
+            HasActiveTransactionRecord())
+        {
+            error = "A verified, idle staged transaction is required.";
+            return false;
+        }
+        profilemodel::Profile profile;
+        if (!SnapshotMainDownloadProfile(profile, error)) return false;
+        if (!profilemodel::IsAsciiIdentifier(mappingId))
+        {
+            error = "A valid plugin mapping ID is required.";
+            return false;
+        }
+        const fs::path luaDir = GetRuntimeLuaDirectory();
+        if (luaDir.empty()) { error = "Runtime Lua directory unavailable."; return false; }
+        const fs::path root = luaDir.parent_path();
+        const fs::path plugins = root / "plugins";
+        const fs::path stageRoot = root / "webupdate_stage" / profile.id;
+        const fs::path planPath = stageRoot / "stage-plan.ini";
+        const fs::path handoffRoot = root / "webupdate_stage";
+        const fs::path ticket = handoffRoot / "dll-handoff.ini";
+        const fs::path payload = handoffRoot / "dll-handoff-payload.dll";
+        if (fs::exists(handoffRoot / "dll-handoff.active"))
+        {
+            error = "An earlier DLL handoff needs recovery before another can begin.";
+            return false;
+        }
+        if (IsReparsePoint(stageRoot) || IsReparsePoint(handoffRoot) || IsReparsePoint(ticket) ||
+            IsReparsePoint(payload))
+        {
+            error = "An existing DLL handoff path is a protected link.";
+            return false;
+        }
+        std::error_code cleanupError;
+        fs::remove(ticket, cleanupError);
+        if (cleanupError) { error = "Could not clear the old DLL handoff ticket."; return false; }
+        fs::remove(payload, cleanupError);
+        if (cleanupError) { error = "Could not clear the old DLL handoff payload."; return false; }
+        std::string raw;
+        mq2webupdate::stageplan::Manifest plan;
+        if (IsReparsePoint(stageRoot) || IsReparsePoint(planPath) ||
+            !ReadFileBinary(planPath, raw) ||
+            !mq2webupdate::stageplan::Parse(raw, plan, error) ||
+            !mq2webupdate::stageplan::MatchesProfile(plan, profile))
+        {
+            if (error.empty()) error = "Staged plan is absent or differs from the current repository profile.";
+            return false;
+        }
+        const mq2webupdate::planner::PlanItem* dll = nullptr;
+        for (const auto& item : plan.items)
+        {
+            if (item.mappingId == mappingId)
+            {
+                if (dll || item.destinationRoot != profilemodel::DestinationRoot::Plugins)
+                {
+                    error = "Plugin mapping must stage exactly one DLL.";
+                    return false;
+                }
+                dll = &item;
+            }
+        }
+        if (!dll) { error = "No staged DLL exists for this mapping."; return false; }
+        const auto selected = std::find_if(profile.mappings.begin(), profile.mappings.end(),
+            [&](const profilemodel::Mapping& mapping) { return mapping.id == mappingId; });
+        if (selected == profile.mappings.end() || !selected->enabled ||
+            selected->destinationRoot != profilemodel::DestinationRoot::Plugins)
+        {
+            error = "The staged DLL mapping is no longer enabled for plugins.";
+            return false;
+        }
+        const std::string remoteRoot =
+            mq2webupdate::planner::NormalizeRepositoryPath(selected->remotePath);
+        const std::string remotePath =
+            mq2webupdate::planner::NormalizeRepositoryPath(dll->repositoryPath);
+        std::string relative;
+        if (remotePath == remoteRoot)
+        {
+            relative = remotePath.substr(remotePath.find_last_of('/') == std::string::npos
+                ? 0 : remotePath.find_last_of('/') + 1);
+        }
+        else if (remotePath.rfind(remoteRoot + "/", 0) == 0)
+            relative = remotePath.substr(remoteRoot.size() + 1);
+        const fs::path configuredDestination =
+            fs::path(selected->destinationPath) / fs::path(relative);
+        if (relative.empty() ||
+            dll->stageRelativePath != mappingId + "/" + relative ||
+            configuredDestination.generic_string() != dll->destinationRelativePath)
+        {
+            error = "Staged DLL no longer matches its saved deployment mapping.";
+            return false;
+        }
+        const std::string destinationName = dll->destinationRelativePath;
+        const fs::path destinationFile(destinationName);
+        const std::string pluginName = destinationFile.stem().string();
+        if (destinationFile.filename().string() != destinationName ||
+            destinationFile.extension().string() != ".dll" ||
+            !profilemodel::IsAsciiIdentifier(pluginName) ||
+            destinationName != pluginName + ".dll")
+        {
+            error = "Plugin mapping must target a single safe DLL filename.";
+            return false;
+        }
+        const fs::path live = plugins / destinationName;
+        const fs::path staged = stageRoot / plan.commitSha / dll->stageRelativePath;
+        if (HasReparsePointInPath(stageRoot, staged) ||
+            IsReparsePoint(handoffRoot) ||
+            HasReparsePointInPath(plugins, live) ||
+            IsReparsePoint(staged) || IsReparsePoint(live) ||
+            IsReparsePoint(ticket) || IsReparsePoint(payload))
+        {
+            error = "A plugin or staging path is a protected link.";
+            return false;
+        }
+        std::error_code existsError;
+        const bool oldPresent = fs::exists(live, existsError);
+        const bool oldRegular = oldPresent && fs::is_regular_file(live, existsError);
+        if (existsError || (oldPresent && !oldRegular))
+        {
+            error = "Installed plugin path is unavailable or is not a regular file.";
+            return false;
+        }
+        std::string bytes, old;
+        if (!ReadFileBinary(staged, bytes) ||
+            (oldPresent && !ReadFileBinary(live, old)) ||
+            bytes.size() != dll->expectedSize ||
+            ComputeGitBlobSha(bytes) != dll->gitObjectSha ||
+            (oldPresent && bytes == old))
+        {
+            error = "Staged DLL is missing, changed, or identical to the installed DLL.";
+            return false;
+        }
+        auto pe32 = [](const std::string& b)
+        {
+            if (b.size() < 512 || b[0] != 'M' || b[1] != 'Z') return false;
+            const auto u8 = [&](std::size_t i) { return static_cast<unsigned char>(b[i]); };
+            const std::size_t off = std::size_t(u8(60)) |
+                (std::size_t(u8(61)) << 8) | (std::size_t(u8(62)) << 16) |
+                (std::size_t(u8(63)) << 24);
+            return off <= b.size() - 26 && b.compare(off, 4, "PE\0\0", 4) == 0 &&
+                u8(off + 4) == 0x4c && u8(off + 5) == 0x01 &&
+                (u8(off + 23) & 0x20) != 0 &&
+                u8(off + 24) == 0x0b && u8(off + 25) == 0x01;
+        };
+        if ((oldPresent && !pe32(old)) || !pe32(bytes))
+        {
+            error = "DLL is not a compatible PE32 x86 binary.";
+            return false;
+        }
+        if (!WriteFileBinaryAtomic(payload, bytes))
+        {
+            error = "Could not create the verified DLL handoff payload.";
+            return false;
+        }
+        std::ostringstream out;
+        out << "Format=MQ2WebUpdateDllHandoff\n"
+            << "Version=1\n"
+            << "ProfileID=" << profile.id << "\n"
+            << "MappingID=" << mappingId << "\n"
+            << "PluginName=" << pluginName << "\n"
+            << "DestinationName=" << destinationName << "\n"
+            << "CommitSHA=" << plan.commitSha << "\n"
+            << "OldPresent=" << (oldPresent ? "1" : "0") << "\n"
+            << "ExpectedSize=" << bytes.size() << "\n"
+            << "ExpectedSHA256=" << ComputeSHA256Hex(bytes) << "\n"
+            << "OriginalSHA256=" << (oldPresent ? ComputeSHA256Hex(old) : std::string(64, '0')) << "\n";
+        if (!WriteFileBinaryAtomic(ticket, out.str()))
+        {
+            error = "Could not publish the DLL handoff ticket.";
+            return false;
+        }
+        return true;
+    }
+
     bool ApplyStagedLuaFiles()
     {
         g_status = "Applying";
@@ -6923,6 +7153,18 @@ void RecoverInterruptedApplyTransactionAtStartup()
                     );
                 }
             );
+
+            // The plugin cannot replace its own loaded DLL. Keep the entire
+            // staged transaction intact for the independent handoff.
+            if (stagedItem.destinationRoot ==
+                    profilemodel::DestinationRoot::Plugins &&
+                relativeName.size() >= 4 &&
+                relativeName.compare(relativeName.size() - 4, 4, ".dll") == 0)
+            {
+                ++preflightProtectedCount;
+                WriteChatf("\ar[MQ2WebUpdate]\ax A plugin DLL requires an independent unload handoff; ordinary Apply stopped.");
+                break;
+            }
 
             // The running updater/controller cannot be replaced
             // safely inside its own transaction.
@@ -8668,13 +8910,13 @@ public:
             );
 
         if (profileIndex == 0 ||
-            profileIndex > kProfileCount)
+            profileIndex > g_managedProfiles.size())
         {
             return false;
         }
 
-        const ProfileDefinition& profile =
-            kProfiles[profileIndex - 1];
+        const profilemodel::Profile& profile =
+            g_managedProfiles[profileIndex - 1];
 
         switch ((Members)pMember->ID)
         {
@@ -8693,7 +8935,7 @@ public:
         case SourceType:
             return SetString(
                 Dest,
-                profile.sourceType
+                profilemodel::SourceProviderName(profile.provider)
             );
 
         case Repository:
@@ -8707,7 +8949,7 @@ public:
         case Branch:
             return SetString(
                 Dest,
-                profile.branch
+                profile.reference
             );
         }
 
@@ -8724,7 +8966,7 @@ public:
             );
 
         if (profileIndex == 0 ||
-            profileIndex > kProfileCount)
+            profileIndex > g_managedProfiles.size())
         {
             strcpy_s(
                 Destination,
@@ -8738,7 +8980,7 @@ public:
         strcpy_s(
             Destination,
             MAX_STRING,
-            kProfiles[profileIndex - 1].id
+            g_managedProfiles[profileIndex - 1].id.c_str()
         );
 
         return true;
@@ -9319,7 +9561,7 @@ public:
                 static_cast<size_t>(
                     requested
                 ) >
-                    kProfileCount)
+                    g_managedProfiles.size())
             {
                 return false;
             }
@@ -9338,7 +9580,7 @@ public:
         case ProfileCount:
             Dest.DWord =
                 static_cast<DWORD>(
-                    kProfileCount
+                    g_managedProfiles.size()
                 );
 
             Dest.Type =
@@ -9666,15 +9908,11 @@ void ShowStatus()
             g_status.c_str()
         );
 
-        const auto& profile = GetActiveProfileDefinition();
-
-        WriteChatf(
-            "\ay[MQ2WebUpdate]\ax Active profile: %s (%s/%s @ %s)",
-            profile.id,
-            profile.owner,
-            profile.repository,
-            profile.branch
-        );
+        const auto* profile = GetManagedMainProfile();
+        if (profile)
+            WriteChatf("\ay[MQ2WebUpdate]\ax Main Download: %s (%s/%s @ %s)",
+                profile->id.c_str(), profile->owner.c_str(),
+                profile->repository.c_str(), profile->reference.c_str());
 
         WriteChatf(
             "\ay[MQ2WebUpdate]\ax Automation: Main load %s, Monitor load %s, upstream %s, interval %d minute(s)",
@@ -9763,6 +10001,10 @@ void ShowStatus()
 
         WriteChatf(
             "\at/webupdate profiles export|import\ax - Transfer repository profiles without credentials"
+        );
+
+        WriteChatf(
+            "\at/webupdate dll prepare <mapping-id>\ax - Verify and prepare a staged plugin DLL for the independent Lua handoff"
         );
 
         WriteChatf(
@@ -10116,6 +10358,7 @@ void ShowStatus()
             g_repositoryTreeCache[cacheKey] = { output.remoteSha, treeJson };
         }
 
+        const std::string luaPrefix = LuaRemotePrefix(profile);
         const std::string pathNeedle = "\"path\"";
         size_t pos = 0;
 
@@ -10163,11 +10406,11 @@ void ShowStatus()
                     secondQuote - firstQuote - 1
                 );
 
-            if (path.rfind(kLuaPrefix, 0) == 0)
+            if (!luaPrefix.empty() && path.rfind(luaPrefix, 0) == 0)
             {
                 std::string relative =
                     path.substr(
-                        std::string(kLuaPrefix).size()
+                        luaPrefix.size()
                     );
 
                 if (!relative.empty() &&
@@ -10374,7 +10617,8 @@ void ShowStatus()
             }
 
             const std::string normalizedLocal =
-                NormalizeTextLineEndings(localData);
+                IsTextDeployment(remote.destinationRelativePath)
+                    ? NormalizeTextLineEndings(localData) : localData;
             const std::string localGitSha =
                 ComputeGitBlobSha(normalizedLocal);
 
@@ -10509,6 +10753,7 @@ void ShowStatus()
             return output;
         }
 
+        const std::string luaPrefix = LuaRemotePrefix(profile);
         const std::string pathNeedle = "\"path\"";
         size_t pos = 0;
 
@@ -10556,11 +10801,11 @@ void ShowStatus()
                     secondQuote - firstQuote - 1
                 );
 
-            if (path.rfind(kLuaPrefix, 0) == 0)
+            if (!luaPrefix.empty() && path.rfind(luaPrefix, 0) == 0)
             {
                 std::string relative =
                     path.substr(
-                        std::string(kLuaPrefix).size()
+                        luaPrefix.size()
                     );
 
                 if (!relative.empty() &&
@@ -10832,8 +11077,12 @@ void ShowStatus()
                     continue;
                 }
 
-                if (NormalizeTextLineEndings(localData) ==
-                    NormalizeTextLineEndings(response.text))
+                const bool sameBytes =
+                    IsTextDeployment(remote.destinationRelativePath)
+                        ? NormalizeTextLineEndings(localData) ==
+                            NormalizeTextLineEndings(response.text)
+                        : localData == response.text;
+                if (sameBytes)
                 {
                     ++output.sameCount;
                     result.status = "SAME";
@@ -11973,20 +12222,16 @@ void WebUpdateCmd(
 
     if (command == "profile")
     {
-        WriteChatf("\ay[MQ2WebUpdate]\ax Trusted update profiles:");
-
-        for (const auto& profile : kProfiles)
+        WriteChatf("\ay[MQ2WebUpdate]\ax Saved update profiles:");
+        for (const auto& profile : g_managedProfiles)
         {
-            const bool active = g_activeProfile == profile.id;
-
+            const bool active = profile.role == profilemodel::ProfileRole::MainDownload;
             WriteChatf(
                 active
                     ? "\ag[MQ2WebUpdate]\ax * %s - %s/%s @ %s"
                     : "\at[MQ2WebUpdate]\ax   %s - %s/%s @ %s",
-                profile.id,
-                profile.owner,
-                profile.repository,
-                profile.branch
+                profile.id.c_str(), profile.owner.c_str(),
+                profile.repository.c_str(), profile.reference.c_str()
             );
         }
 
@@ -11997,28 +12242,27 @@ void WebUpdateCmd(
 
     if (command.rfind(profilePrefix, 0) == 0)
     {
-        const std::string requested =
-            command.substr(std::char_traits<char>::length(profilePrefix));
+        std::string requested = szLine ? szLine : "";
+        requested.erase(0, requested.find_first_not_of(" \t\r\n"));
+        requested = requested.substr(std::char_traits<char>::length(profilePrefix));
+        requested.erase(requested.find_last_not_of(" \t\r\n") + 1);
 
-        if (!SelectActiveProfile(requested))
+        std::string error;
+        if (!SetManagedProfileField(requested, "role", "main", error))
         {
             WriteChatf(
                 "\ar[MQ2WebUpdate]\ax Profile change rejected: %s",
-                g_lastError.c_str()
+                error.c_str()
             );
 
             return;
         }
 
-        const auto& profile = GetActiveProfileDefinition();
-
-        WriteChatf(
-            "\ag[MQ2WebUpdate]\ax Active profile saved: %s (%s/%s @ %s)",
-            profile.id,
-            profile.owner,
-            profile.repository,
-            profile.branch
-        );
+        const auto* profile = GetManagedMainProfile();
+        if (profile)
+            WriteChatf("\ag[MQ2WebUpdate]\ax Main Download saved: %s (%s/%s @ %s)",
+                profile->id.c_str(), profile->owner.c_str(),
+                profile->repository.c_str(), profile->reference.c_str());
 
         return;
     }
@@ -12106,19 +12350,19 @@ void WebUpdateCmd(
             "\ag[MQ2WebUpdate]\ax Checking GitHub for latest commit..."
         );
 
-        CheckRemoteSha(true);
+        StartAsyncCompare();
         return;
     }
 
     if (command == "upstream")
     {
-        StartAsyncUpstreamCheck(true);
+        StartManagedMonitorCheck();
         return;
     }
 
     if (command == "upstreamsilent")
     {
-        StartAsyncUpstreamCheck(false);
+        StartManagedMonitorCheck();
         return;
     }
 
@@ -12137,7 +12381,7 @@ void WebUpdateCmd(
             "\ag[MQ2WebUpdate]\ax Scanning GitHub repository..."
         );
 
-        ScanRemoteLuaFiles(true);
+        StartAsyncCompare();
         return;
     }
 
@@ -12154,6 +12398,26 @@ void WebUpdateCmd(
     if (command == "apply")
     {
         ApplyStagedLuaFiles();
+        return;
+    }
+
+    if (command.rfind("dll prepare ", 0) == 0)
+    {
+        std::string error;
+        std::string mappingId = szLine ? szLine : "";
+        mappingId.erase(0, mappingId.find_first_not_of(" \t\r\n"));
+        mappingId = mappingId.substr(12);
+        mappingId.erase(mappingId.find_last_not_of(" \t\r\n") + 1);
+        if (PrepareDllHandoff(mappingId, error))
+        {
+            g_lastError.clear();
+            WriteChatf("\ag[MQ2WebUpdate]\ax DLL handoff ready; start the independent Lua coordinator.");
+        }
+        else
+        {
+            g_lastError = error;
+            WriteChatf("\ar[MQ2WebUpdate]\ax DLL handoff rejected: %s", error.c_str());
+        }
         return;
     }
 
@@ -12183,7 +12447,17 @@ void WebUpdateCmd(
 
     if (command == "protect")
     {
-        ShowProtection();
+        if (g_fileResults.empty())
+        {
+            WriteChatf("\ay[MQ2WebUpdate]\ax Run /webupdate compare first to populate the mapped file plan.");
+        }
+        else
+        {
+            for (const auto& file : g_fileResults)
+                WriteChatf("\at[MQ2WebUpdate]\ax %s: %s %s",
+                    file.destinationPath.c_str(), file.status.c_str(),
+                    file.protection.c_str());
+        }
         return;
     }
 
@@ -12254,8 +12528,8 @@ PLUGIN_API void InitializePlugin()
     // persisted transaction identity.
     LoadConfiguration();
 
-    // MQ2WebUpdate 4.0 profile/mapping store is loaded independently from
-    // operational selection until the generalized planner is fully wired.
+    // Load the configured repositories and deployment mappings before
+    // starting any checks, staging, or transaction recovery.
     if (!LoadManagedProfiles())
     {
         WriteChatf(
@@ -12347,7 +12621,7 @@ PLUGIN_API void InitializePlugin()
         WriteChatf(
             "\ay[MQ2WebUpdate]\ax Automatic startup upstream check enabled."
         );
-        StartAsyncUpstreamCheck(false);
+        StartManagedMonitorCheck();
     }
 }
 
