@@ -20,6 +20,7 @@ local state = {
     initialized = false, configLoaded = false, versionLoaded = false,
     configError = nil, versionError = nil, pendingApply = false,
     refreshAfterApply = false, applyRefreshStarted = 0,
+    restartTriuneAfterApply = false,
     pendingProfile = nil,
     selectedManagedProfile = nil, selectedManagedMapping = nil,
     profileDraft = nil, mappingDraft = nil,
@@ -310,12 +311,14 @@ local function drawActions(e)
     if ImGui.Button('Check for Updates', core.px(145), core.px(26)) then
         state.pendingApply = false
         state.refreshAfterApply = false
+        state.restartTriuneAfterApply = false
         runCommand('/webupdate compare', 'Started read-only update comparison.')
     end
     ImGui.SameLine()
     if ImGui.Button('Stage Updates', core.px(125), core.px(26)) then
         state.pendingApply = false
         state.refreshAfterApply = false
+        state.restartTriuneAfterApply = false
         runCommand('/webupdate stage', 'Started verified update staging.')
     end
     endDisabled(disabled)
@@ -338,8 +341,21 @@ local function drawActions(e)
         ImGui.TextWrapped('Apply the verified staged transaction now? MQ2WebUpdate will back up, verify, commit, and roll back on failure. Link-protected files will not be overwritten.')
         if ImGui.Button('Yes, Apply Now', core.px(135), core.px(26)) then
             state.pendingApply = false
+            state.restartTriuneAfterApply = false
+            for _, file in ipairs(e.files or {}) do
+                local status = string.upper(tostring(file.status or ''))
+                local protection = string.upper(tostring(file.protection or ''))
+                local destination = string.lower(tostring(file.destinationPath or ''))
+                if (status == 'UPDATE' or status == 'MISSING') and
+                    not protection:find('PROTECTED', 1, true) and
+                    destination:match('%.lua$') then
+                    state.restartTriuneAfterApply = true
+                    break
+                end
+            end
             state.refreshAfterApply = runCommand('/webupdate apply',
                 'Requested staged transaction apply.')
+            if not state.refreshAfterApply then state.restartTriuneAfterApply = false end
             state.applyRefreshStarted = os.time()
         end
         ImGui.SameLine()
@@ -1613,6 +1629,7 @@ local function refreshAfterSuccessfulApply()
     if not state.refreshAfterApply then return end
     if os.time() - state.applyRefreshStarted > 60 then
         state.refreshAfterApply = false
+        state.restartTriuneAfterApply = false
         addLog('Apply refresh timed out. Run Check for Updates to refresh the file plan.')
         return
     end
@@ -1626,10 +1643,17 @@ local function refreshAfterSuccessfulApply()
     if normalized == 'APPLIED' then
         -- Clear first so a synchronous comparison cannot request another one.
         state.refreshAfterApply = false
-        runCommand('/webupdate compare', 'Apply completed; refreshing the file plan.')
+        local restart = state.restartTriuneAfterApply
+        state.restartTriuneAfterApply = false
+        if restart then
+            runCommand('/ac restart', 'Lua files applied; restarting Triune.')
+        else
+            runCommand('/webupdate compare', 'Apply completed; refreshing the file plan.')
+        end
     elseif normalized == 'ERROR' or normalized == 'FAILED' or
         normalized == 'ROLLBACK' or normalized == 'ROLLED BACK' then
         state.refreshAfterApply = false
+        state.restartTriuneAfterApply = false
         addLog('Apply did not complete; the file plan was not refreshed.')
     end
 end
@@ -1652,6 +1676,7 @@ function plugin.onInit(coreApi)
     state.startupPopupItems = {}
     state.showStartupPopup = false
     state.refreshAfterApply = false
+    state.restartTriuneAfterApply = false
     state.applyRefreshStarted = 0
     loadMetadata(); state.initialized = true
     addLog('Production Update Manager initialized.')
