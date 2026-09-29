@@ -4,6 +4,10 @@ A combat bot and set of in-game tools for the **[Project Triune](https://nms.bes
 
 On Project Triune every character is three classes at once. Triune AutoCombat runs all three for you: it casts your spells, fires your AAs and discs, pulls mobs, controls your pets, keeps your boxes together, and sits to med when it is safe. Everything is set up from one in-game window - no macros to write.
 
+## Morte tweak baseline
+
+The [v3.1-Morte.1 release](https://github.com/XxNeroMortexX/TriuneAutocombat/releases/tag/v3.1-Morte.1) at commit [`3b2ce13`](https://github.com/XxNeroMortexX/TriuneAutocombat/commit/3b2ce131a5496eac319a698471f317e1b4ec9265) is the fixed starting point: Gennro's Triune 3.1 Lua code plus the separate MQ2WebUpdate integration. Future Morte gameplay tweaks are developed and recorded after this tag; the tag stays on the original baseline.
+
 ---
 
 ## Install
