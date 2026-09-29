@@ -188,7 +188,7 @@ size_t g_errorCount = 0;
 
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
-constexpr const char* kWebUpdateVersion = "4.1.3";
+constexpr const char* kWebUpdateVersion = "4.1.5";
 constexpr const char* kWebUpdateApiVersion = "4.0";
 // Legacy defaults retained for migration of older settings files. The active
 // main repository and every deployment mapping are loaded from the saved
@@ -6738,13 +6738,14 @@ void RecoverInterruptedApplyTransactionAtStartup()
         const fs::path handoffRoot = root / "webupdate_stage";
         const fs::path ticket = handoffRoot / "dll-handoff.ini";
         const fs::path payload = handoffRoot / "dll-handoff-payload.dll";
+        const fs::path original = handoffRoot / "dll-handoff-original.dll";
         if (fs::exists(handoffRoot / "dll-handoff.active"))
         {
             error = "An earlier DLL handoff needs recovery before another can begin.";
             return false;
         }
         if (IsReparsePoint(stageRoot) || IsReparsePoint(handoffRoot) || IsReparsePoint(ticket) ||
-            IsReparsePoint(payload))
+            IsReparsePoint(payload) || IsReparsePoint(original))
         {
             error = "An existing DLL handoff path is a protected link.";
             return false;
@@ -6754,6 +6755,8 @@ void RecoverInterruptedApplyTransactionAtStartup()
         if (cleanupError) { error = "Could not clear the old DLL handoff ticket."; return false; }
         fs::remove(payload, cleanupError);
         if (cleanupError) { error = "Could not clear the old DLL handoff payload."; return false; }
+        fs::remove(original, cleanupError);
+        if (cleanupError) { error = "Could not clear the old DLL handoff backup."; return false; }
         std::string raw;
         mq2webupdate::stageplan::Manifest plan;
         if (IsReparsePoint(stageRoot) || IsReparsePoint(planPath) ||
@@ -6820,11 +6823,19 @@ void RecoverInterruptedApplyTransactionAtStartup()
         }
         const fs::path live = plugins / destinationName;
         const fs::path staged = stageRoot / plan.commitSha / dll->stageRelativePath;
+        const fs::path backup = root / "webupdate_backup" / profile.id / "dll" /
+            pluginName / plan.commitSha / destinationName;
+        const fs::path replacement = plugins / (destinationName + ".handoff.tmp");
+        const fs::path sidecar = plugins / (destinationName + ".handoff-old.tmp");
         if (HasReparsePointInPath(stageRoot, staged) ||
             IsReparsePoint(handoffRoot) ||
             HasReparsePointInPath(plugins, live) ||
             IsReparsePoint(staged) || IsReparsePoint(live) ||
-            IsReparsePoint(ticket) || IsReparsePoint(payload))
+            IsReparsePoint(ticket) || IsReparsePoint(payload) || IsReparsePoint(original) ||
+            IsReparsePoint(replacement) || IsReparsePoint(sidecar) ||
+            fs::exists(replacement) || fs::exists(sidecar) ||
+            HasReparsePointInPath(root / "webupdate_backup", backup) ||
+            IsReparsePoint(backup))
         {
             error = "A plugin or staging path is a protected link.";
             return false;
@@ -6864,9 +6875,33 @@ void RecoverInterruptedApplyTransactionAtStartup()
             error = "DLL is not a compatible PE32 x86 binary.";
             return false;
         }
+        if (oldPresent)
+        {
+            if (HasReparsePointInPath(root / "webupdate_backup", backup))
+            {
+                error = "DLL backup location is a protected link.";
+                return false;
+            }
+            std::error_code backupError;
+            fs::create_directories(backup.parent_path(), backupError);
+            std::string priorBackup;
+            if (backupError || HasReparsePointInPath(root / "webupdate_backup", backup) ||
+                (fs::exists(backup) &&
+                    (!ReadFileBinary(backup, priorBackup) || priorBackup != old)) ||
+                (!fs::exists(backup) && !WriteFileBinaryAtomic(backup, old)))
+            {
+                error = "Could not prepare the persistent verified DLL backup.";
+                return false;
+            }
+        }
         if (!WriteFileBinaryAtomic(payload, bytes))
         {
             error = "Could not create the verified DLL handoff payload.";
+            return false;
+        }
+        if (oldPresent && !WriteFileBinaryAtomic(original, old))
+        {
+            error = "Could not create the verified DLL handoff backup.";
             return false;
         }
         std::ostringstream out;

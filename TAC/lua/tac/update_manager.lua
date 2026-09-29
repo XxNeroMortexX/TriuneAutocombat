@@ -5,7 +5,7 @@
 local plugin = {
     id = 'update_manager', name = 'Update Manager', author = 'NeroMorte',
     description = 'Production update planning, staging, apply, policy, and diagnostics frontend.',
-    version = '4.1.0',
+    version = '4.1.4',
     window = {
         label = 'Updates', tooltip = 'Open the MQ2WebUpdate Update Manager.',
         flag = 'show_update_manager', desc = 'Check, stage, apply, and diagnose updates',
@@ -22,8 +22,7 @@ local state = {
     refreshAfterApply = false, applyRefreshStarted = 0,
     restartTriuneAfterApply = false,
     pendingDllApply = false, launchDllCoordinator = false, dllMappingId = nil,
-    dllPluginName = nil, dllWasLoaded = nil, dllRecoveryStarted = 0,
-    waitDllReload = false, dllSawUnload = false, dllStartedAt = 0,
+    dllPluginName = nil, dllRecoveryStarted = 0,
     pendingProfile = nil,
     selectedManagedProfile = nil, selectedManagedMapping = nil,
     profileDraft = nil, mappingDraft = nil,
@@ -1746,13 +1745,13 @@ local function drawWindow()
         if recoveryFile then
             recoveryFile:close()
             colorText(C.yellow, 'An interrupted plugin DLL update needs recovery.')
-            beginDisabled(os.time() - state.dllRecoveryStarted < 120)
+            beginDisabled(os.time() - state.dllRecoveryStarted < 10)
             if ImGui.Button('Recover Interrupted DLL Update', core.px(235), core.px(26)) then
                 state.dllRecoveryStarted = os.time()
-                runCommand('/lua run webupdate_dll_handoff',
-                    'Started verified recovery of interrupted plugin DLL update.')
+                runCommand('/lua run TAC_support_modules/webupdate_dll_handoff',
+                    'Started independent recovery of interrupted plugin DLL update.')
             end
-            endDisabled(os.time() - state.dllRecoveryStarted < 120)
+            endDisabled(os.time() - state.dllRecoveryStarted < 10)
             ImGui.Separator()
         end
         if ImGui.BeginTabBar('##NeroMorteUpdateManagerTabs') then
@@ -1821,8 +1820,6 @@ function plugin.onInit(coreApi)
     state.refreshAfterApply = false
     state.pendingDllApply = false
     state.launchDllCoordinator = false
-    state.waitDllReload = false
-    state.dllSawUnload = false
     state.restartTriuneAfterApply = false
     state.applyRefreshStarted = 0
     loadMetadata(); state.initialized = true
@@ -1833,35 +1830,8 @@ function plugin.onDestroy() state.initialized = false end
 function plugin.onDrawUI()
     if state.launchDllCoordinator then
         state.launchDllCoordinator = false
-        local ok, wasLoaded = pcall(function()
-            return mq.TLO.Plugin(state.dllPluginName).IsLoaded()
-        end)
-        state.dllWasLoaded = ok and wasLoaded == true
-        state.waitDllReload = runCommand('/lua run webupdate_dll_handoff',
-            'Started independent DLL update coordinator.')
-        state.dllSawUnload = false
-        state.dllStartedAt = os.time()
-    end
-    if state.waitDllReload then
-        local ok, loaded = pcall(function()
-            return mq.TLO.Plugin(state.dllPluginName).IsLoaded()
-        end)
-        if ok and loaded == false then state.dllSawUnload = true end
-        local markerPresent = true
-        local markerPath = dllRecoveryMarkerPath()
-        if markerPath then
-            local f = io.open(markerPath, 'rb')
-            if f then f:close() else markerPresent = false end
-        end
-        if (state.dllSawUnload and ok and loaded == true) or
-            (os.time() - state.dllStartedAt >= 2 and not markerPresent and
-                (state.dllWasLoaded == false or (ok and loaded == true))) then
-            state.waitDllReload = false
-            runCommand('/webupdate compare', 'DLL handoff ended; checking installed file state.')
-        elseif os.time() - state.dllStartedAt > 90 then
-            state.waitDllReload = false
-            addLog('DLL handoff status unknown. Inspect MQ chat and handoff backup before retrying.')
-        end
+        runCommand('/lua run TAC_support_modules/webupdate_dll_handoff',
+            'Started independent Lua DLL handoff.')
     end
     refreshAfterSuccessfulApply()
     processTriuneStartupChecks()
