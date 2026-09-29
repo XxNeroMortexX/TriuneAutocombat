@@ -48,10 +48,14 @@ local registeredEvents = {}
 -- All state and helpers hang off this table (keeps the chunk under the 200-local limit).
 local AA = {}
 
+-- Edited By: NeroMorte - AA test state and verified repeatable purchase counts.
 local function resetState()
     AA.lastAutoSpendAAAt = 0
     AA.lastAutoSummonAt = 0
     AA.pendingFireworksSummon = nil
+    AA.pendingFireworksCursor = nil
+    AA.pendingConsumeExperience = nil
+    AA.repeatablePurchases = {}
     AA.scannedAAs = nil
     AA.scannedAAMap = nil
     AA.lastAAScanAt = 0
@@ -245,10 +249,14 @@ function AA.closeAAWindow()
     return not AA.isAAWindowOpen()
 end
 
+-- Edited By: NeroMorte - Recognize Consume Experience as a repeatable Special AA.
 function AA.isSpecialTabAA(name)
     if not name or name == '' then return false end
     local lower = tostring(name):lower()
     if lower:find('firework') then return true end
+    -- The Special-tab list is not always populated until the AA window has
+    -- been opened. Known repeatables must remain selectable in the table.
+    if lower == 'consume experience' then return true end
     if rt.cachedAAData and rt.cachedAAData[name] then
         local cat = rt.cachedAAData[name].category
         if cat and cat:lower():find('special') then return true end
@@ -806,6 +814,7 @@ end
 -- values right after a Train), the next rank's cost is probed from the
 -- client before a cached cost is considered, and a cached cost only counts
 -- when it was recorded at the current rank (see AA.cachedCostFor).
+-- Edited By: NeroMorte - Keep repeatable purchase costs independent of the cap spender choice.
 function AA.purchaseInfo(nm)
     local info = { name = nm, rank = 0, maxRank = 0, cost = 0, minLevel = 0, canTrain = nil, live = false }
     pcall(function()
@@ -844,7 +853,9 @@ function AA.purchaseInfo(nm)
         -- Special-tab repeatables (fireworks): no fixed max rank, the
         -- configured per-rank cost, and the client's CanTrain is not consulted.
         if info.maxRank <= 0 then info.maxRank = 1 end
-        info.cost = tonumber(ctrl.auto_spend_aa_cost) or 25
+        info.cost = nm:lower() == 'consume experience' and 100 or
+            (nm == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or
+            (sc and tonumber(sc.cost)) or (cd and tonumber(cd.cost)) or 25
         info.canTrain = nil
         info.fullyTrained = false
         info.invalid = false
@@ -872,8 +883,77 @@ end
 
 AA.PRIORITY_SPACING = 30.0    -- seconds between window attempts on one AA
 
+-- Edited By: NeroMorte - Per-AA ignore controls and Fireworks alias matching.
+function AA.isIgnored(name)
+    local ignored = ctrl.auto_aa_ignored or {}
+    if ignored[name] == true then return true end
+    local lower = tostring(name or ''):lower()
+    for savedName, enabled in pairs(ignored) do
+        if enabled then
+            local saved = tostring(savedName):lower()
+            if saved == lower or (saved:find('firework', 1, true) and lower:find('firework', 1, true)) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Edited By: NeroMorte - User-selected rank targets bounded by the client maximum.
+function AA.targetRank(name, maxRank)
+    local target = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name])
+    if not target or target < 1 then return maxRank end
+    return math.min(math.floor(target), maxRank)
+end
+
+-- Edited By: NeroMorte - Verified purchase limits for repeatable AAs during one Triune run.
+function AA.repeatableLimitReached(name)
+    if not AA.isSpecialTabAA(name) then return false end
+    local limit = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name]) or 0
+    return limit > 0 and (AA.repeatablePurchases[name] or 0) >= limit
+end
+
+-- Edited By: NeroMorte - User-selected purchase order.
+function AA.sortPurchaseCandidates(candidates)
+    table.sort(candidates, function(a, b)
+        local orders = ctrl.auto_aa_purchase_order or {}
+        local aOrder, bOrder = tonumber(orders[a.name]), tonumber(orders[b.name])
+        aOrder = aOrder and aOrder > 0 and aOrder or math.huge
+        bOrder = bOrder and bOrder > 0 and bOrder or math.huge
+        if aOrder ~= bOrder then return aOrder < bOrder end
+        if ctrl.auto_aa_buy_order ~= 'list' and a.cost ~= b.cost then return a.cost < b.cost end
+        return a.name:lower() < b.name:lower()
+    end)
+end
+
+-- Edited By: NeroMorte - Checked-priority and all-standard-AA purchase selection.
+function AA.automaticNames()
+    local names, seen = {}, {}
+    if ctrl.auto_aa_selection == 'all' then
+        if not AA.scannedAAs or #AA.scannedAAs == 0 then
+            AA.requestScan(0)
+            return nil
+        end
+        for _, item in ipairs(AA.scannedAAs) do
+            -- Repeatable Special abilities are handled by the cap spender.
+            if item.name and not AA.isSpecialTabAA(item.name) and not seen[item.name] then
+                names[#names + 1] = item.name
+                seen[item.name] = true
+            end
+        end
+    end
+    for name, enabled in pairs(ctrl.auto_aa_priorities or {}) do
+        if enabled and not seen[name] then
+            names[#names + 1] = name
+            seen[name] = true
+        end
+    end
+    return names
+end
+
 -- /ac aastatus: the spender's view of every priority, fresh (not the last
 -- tick's verdicts, which only exist while auto-spend is running).
+-- Edited By: NeroMorte - Report selected AA order and target-aware buying status.
 function AA.printPriorityStatus()
     local unspent, myLevel = 0, 0
     pcall(function() unspent = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
@@ -884,15 +964,23 @@ function AA.printPriorityStatus()
     if AA.pendingAATrain then
         print(string.format('\ag[Triune]\ax   Window purchase in progress: "%s" (step %s)', AA.pendingAATrain.name, tostring(AA.pendingAATrain.step)))
     end
-    local names = {}
-    for nm, enabled in pairs(ctrl.auto_aa_priorities or {}) do
-        if enabled then names[#names + 1] = nm end
-    end
-    if #names == 0 then
-        print('\ay[Triune]\ax   No prioritized AAs; only the cap spender runs.')
+    local names = AA.automaticNames()
+    if names == nil then
+        print('\ay[Triune]\ax   Scanning AAs; run /ac aastatus again after the scan.')
         return
     end
-    table.sort(names, function(a, b) return a:lower() < b:lower() end)
+    if #names == 0 then
+        print('\ay[Triune]\ax   No AAs selected for automatic training; only the configured cap spender may run.')
+        return
+    end
+    table.sort(names, function(a, b)
+        local orders = ctrl.auto_aa_purchase_order or {}
+        local ao, bo = tonumber(orders[a]) or 0, tonumber(orders[b]) or 0
+        if ao <= 0 then ao = math.huge end
+        if bo <= 0 then bo = math.huge end
+        if ao ~= bo then return ao < bo end
+        return a:lower() < b:lower()
+    end)
     local now = os.clock()
     for _, nm in ipairs(names) do
         local info = AA.purchaseInfo(nm)
@@ -912,7 +1000,11 @@ end
 -- Why a prioritized AA is not bought this tick (nil = it can be). Every
 -- answer but 'trained' and 'stub' leaves the AA outstanding, which keeps
 -- the cap spender off.
+-- Edited By: NeroMorte - Enforce ignore, rank target, and repeatable purchase limits.
 function AA.priorityBlocker(info, unspent, myLevel, now)
+    if AA.isIgnored(info.name) then return 'ignored' end
+    if AA.repeatableLimitReached(info.name) then return 'target' end
+    if not info.isSpecial and info.maxRank > 0 and info.rank >= AA.targetRank(info.name, info.maxRank) then return 'target' end
     if info.fullyTrained then return 'trained' end
     if info.invalid then return 'stub' end
     if myLevel > 0 and info.minLevel > 0 and myLevel < info.minLevel then return 'level' end
@@ -924,7 +1016,10 @@ function AA.priorityBlocker(info, unspent, myLevel, now)
     return nil
 end
 
+-- Edited By: NeroMorte - Explain ignore and target-limit blockers.
 AA.BLOCKER_TEXT = {
+    ignored  = 'ignored for automatic purchases',
+    target   = 'selected target rank reached',
     trained  = 'already at max rank',
     stub     = 'no valid max rank reported by the client',
     level    = 'character level below the AA minimum',
@@ -936,16 +1031,19 @@ AA.BLOCKER_TEXT = {
 
 -- Remembers the latest verdict per priority for /ac aastatus, and prints a
 -- blocker once when it first applies (waiting states stay quiet).
+-- Edited By: NeroMorte - Avoid repeated target-limit status messages.
 function AA.notePriorityStatus(info, why, unspent)
     AA.prioStatus = AA.prioStatus or {}
     local prev = AA.prioStatus[info.name]
     AA.prioStatus[info.name] = { why = why, cost = info.cost, rank = info.rank, maxRank = info.maxRank, canTrain = info.canTrain, at = os.clock() }
-    if why and why ~= 'points' and why ~= 'spacing' and why ~= 'backoff' and (not prev or prev.why ~= why) then
+    if ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[info.name] and
+        why and why ~= 'points' and why ~= 'spacing' and why ~= 'backoff' and (not prev or prev.why ~= why) then
         print(string.format('\ay[Triune]\ax Prioritized AA "%s" (Rank %d/%d, Cost %d, Unspent %d) skipped: %s.',
             info.name, info.rank, info.maxRank, info.cost, unspent, AA.BLOCKER_TEXT[why] or why))
     end
 end
 
+-- Edited By: NeroMorte - Use the correct Consume Experience repeatable cost.
 function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, knownCost, isKnownCharAA, category, isFromUI)
     if not name or name == '' or tonumber(name) then return end
     name = tostring(name):match('^%s*(.-)%s*$')
@@ -1091,7 +1189,8 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
         cost = 0
     elseif cost <= 0 then
         if isSpecial then
-            cost = tonumber(ctrl.auto_spend_aa_cost) or 25
+            cost = name:lower() == 'consume experience' and 100 or
+                (name == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or 25
         else
             cost = AA.nextRankCost(name, rank)
         end
@@ -1244,6 +1343,7 @@ end
 -- and the purchase workflow queue it through AA.requestScan. Name-keyed TLO
 -- results (skill check, ownership probe) are cached in AA.scanCtx for the
 -- duration of one scan, since most names are recorded several times.
+-- Edited By: NeroMorte - Keep both supported repeatables in the purchase table.
 function AA.scanPlayerAAs(force)
     local now = os.clock()
     if not force and AA.lastAAScanAt and (now - AA.lastAAScanAt) < AA.SCAN_MIN_INTERVAL and AA.scannedAAs and #AA.scannedAAs > 0 then
@@ -1398,6 +1498,11 @@ function AA.scanPlayerAAs(force)
     if ctrl.auto_spend_aa_name and ctrl.auto_spend_aa_name ~= '' then
         AA.recordScannedAA(list, foundMap, ctrl.auto_spend_aa_name, nil, nil, nil, true, nil, false)
     end
+    -- Supported repeatables belong in the purchase table independently of
+    -- which one is selected as the fallback cap spender. The AA window must
+    -- still locate and confirm the exact purchase before activation.
+    AA.recordScannedAA(list, foundMap, 'Alternately Advanced Fireworks', nil, nil, nil, true, 'Special', false)
+    AA.recordScannedAA(list, foundMap, 'Consume Experience', nil, nil, 100, true, 'Special', false)
 
     -- 5. Scan character AltAbility indices across known ID ranges
     pcall(function()
@@ -1449,6 +1554,7 @@ function AA.runPendingScan()
     end
 end
 
+-- Edited By: NeroMorte - Display the configured purchase sequence.
 function AA.getFilteredSortedAAs()
     if not AA.scannedAAs or #AA.scannedAAs == 0 then
         -- Runs from the window (draw thread): only ask for a scan.
@@ -1500,6 +1606,16 @@ function AA.getFilteredSortedAAs()
                 if asc then return costA < costB else return costA > costB end
             end
             return a.name:lower() < b.name:lower()
+        elseif sortBy == 'order' then
+            local orders = ctrl.auto_aa_purchase_order or {}
+            local aOrder, bOrder = tonumber(orders[a.name]), tonumber(orders[b.name])
+            aOrder = aOrder and aOrder > 0 and aOrder or math.huge
+            bOrder = bOrder and bOrder > 0 and bOrder or math.huge
+            if aOrder ~= bOrder then return asc and aOrder < bOrder or aOrder > bOrder end
+            if ctrl.auto_aa_buy_order ~= 'list' and a.cost ~= b.cost then
+                return (a.cost or 0) < (b.cost or 0)
+            end
+            return a.name:lower() < b.name:lower()
         elseif sortBy == 'trained' then
             local tA = a.fullyTrained and 1 or 0
             local tB = b.fullyTrained and 1 or 0
@@ -1522,10 +1638,19 @@ function AA.getFilteredSortedAAs()
     return result
 end
 
-function AA.startAATrainWorkflow(targetName, allowStop)
+-- Edited By: NeroMorte - Recheck automatic purchase limits and Power Source requirements.
+function AA.startAATrainWorkflow(targetName, allowStop, automatic)
     if AA.pendingAATrain then return false end
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if type(targetName) == 'string' then targetName = targetName:match('^%s*(.-)%s*$') end
+    if automatic then
+        if AA.repeatableLimitReached(targetName) then return false end
+        if targetName:lower() == 'consume experience' and ctrl.auto_consume_experience and
+            (AA.pendingConsumeExperience or not AA.powerSourceEquipped()) then return false end
+        local info = AA.purchaseInfo(targetName)
+        if AA.isIgnored(targetName) or (not info.isSpecial and info.maxRank > 0 and
+            info.rank >= AA.targetRank(targetName, info.maxRank)) then return false end
+    end
 
     local aaId = 0
     local aaType = 0
@@ -1543,7 +1668,7 @@ function AA.startAATrainWorkflow(targetName, allowStop)
             end
         end
     end)
-    if aaId == 0 and (targetName:lower():find('firework') or targetName == (ctrl.auto_spend_aa_name or '')) then
+    if aaId == 0 and targetName:lower():find('firework') then
         aaId = tonumber(ctrl.auto_spend_aa_id or 17788) or 17788
         aaType = 4
     end
@@ -1604,6 +1729,7 @@ function AA.startAATrainWorkflow(targetName, allowStop)
         pointsBefore = nil,          -- Me.AAPoints before the Train click (purchase check)
         openedByUs = false,
         allowStop = allowStop or false,
+        automatic = automatic == true,
         startedAt = os.clock(),
         nextStepAt = os.clock() + 0.5,
         retries = 0
@@ -1635,6 +1761,7 @@ function AA.abortAATrain(task)
     AA.pendingAATrain = nil
 end
 
+-- Edited By: NeroMorte - Count verified purchases and queue repeatable activation after verification.
 function AA.processAATrainWorkflow()
     local task = AA.pendingAATrain
     if not task then return end
@@ -1891,6 +2018,14 @@ function AA.processAATrainWorkflow()
         end
 
     elseif task.step == 'click_train' then
+        if task.automatic then
+            local info = AA.purchaseInfo(task.name)
+            if AA.isIgnored(task.name) or AA.repeatableLimitReached(task.name) or (not info.isSpecial and info.maxRank > 0 and
+                info.rank >= AA.targetRank(task.name, info.maxRank)) then
+                AA.abortAATrain(task)
+                return
+            end
+        end
         local win = AA.getAAWindow()
         local winName = AA.getAAWindowName()
         local trainButtons = { 'AAW_TrainButton', 'TrainButton', 'AA_TrainButton' }
@@ -1924,14 +2059,6 @@ function AA.processAATrainWorkflow()
         end
 
         print(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
-        local isFw = task.name and (task.name:lower():find('firework') ~= nil or task.name == (ctrl.auto_spend_aa_name or ''))
-        if isFw then
-            -- The purchase has to round-trip the server before the AA can be
-            -- activated; /alt act right after the click was a no-op. Schedule
-            -- the summon instead (see AA.processPendingFireworksSummon).
-            local fwId = tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788
-            AA.scheduleFireworksSummon(fwId, task.name)
-        end
         task.step = 'verify'
         task.verifyUntil = now + 2.5
         task.nextStepAt = now + 0.3
@@ -1963,6 +2090,18 @@ function AA.processAATrainWorkflow()
         AA.lastAATrainAttempt[task.name] = now
         AA.pendingAATrain = nil
         if task.purchased then
+            if AA.isSpecialTabAA(task.name) then
+                AA.repeatablePurchases[task.name] = (AA.repeatablePurchases[task.name] or 0) + 1
+                AA.aaFilterDirty = true
+            end
+            if ctrl.auto_summon_fireworks and not AA.isIgnored(task.name) and
+                task.name and task.name:lower():find('firework') then
+                AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)
+            end
+            if ctrl.auto_consume_experience and task.name and task.name:lower() == 'consume experience' then
+                AA.pendingConsumeExperience = { at = now + 3.0, tries = 0 }
+                print('\ag[Triune]\ax Consume Experience purchased; activation queued after the AA becomes ready.')
+            end
             AA.trainBackoff[task.name] = nil
             AA.trainFailLogged[task.name] = nil
             -- One deferred scan once the client has the new rank (the
@@ -2004,9 +2143,11 @@ function AA.processAATrainWorkflow()
     end
 end
 
+-- Edited By: NeroMorte - Apply selection, ignore, targets, order, and repeatable limits to automatic buying.
 function AA.checkAutoSpendAA(allowStop)
     if not ctrl.auto_spend_aa then return false end
     if AA.pendingAATrain then return false end
+    if AA.pendingConsumeExperience then return false end
 
     -- Strict anti-pause check: never spend AAs while casting or moving
     if rt.isCasting() then return false end
@@ -2069,17 +2210,24 @@ function AA.checkAutoSpendAA(allowStop)
     -- or an invalid stub - only priorities are bought: the cap spender
     -- below stays off so fireworks can never eat a pool a priority needs.
     local outstanding, outstandingWhy = nil, nil
-    if ctrl.auto_aa_priorities and next(ctrl.auto_aa_priorities) then
+    local firstOrderedBlocked = math.huge
+    local automaticNames = AA.automaticNames()
+    if automaticNames == nil then return false end
+    if #automaticNames > 0 then
         local candidates = {}
-        for nm, enabled in pairs(ctrl.auto_aa_priorities) do
-            if enabled then
+        for _, nm in ipairs(automaticNames) do
+            if not AA.isIgnored(nm) then
                 local info = AA.purchaseInfo(nm)
                 local why = AA.priorityBlocker(info, unspent, myLevel, now)
                 AA.notePriorityStatus(info, why, unspent)
                 if why == nil then
                     candidates[#candidates + 1] = info
-                elseif why ~= 'trained' and why ~= 'stub' and not outstanding then
+                elseif why ~= 'trained' and why ~= 'target' and why ~= 'stub' and not outstanding then
                     outstanding, outstandingWhy = nm, why
+                end
+                if why and why ~= 'trained' and why ~= 'target' and why ~= 'stub' then
+                    local order = tonumber(ctrl.auto_aa_purchase_order and ctrl.auto_aa_purchase_order[nm]) or 0
+                    if order > 0 and order < firstOrderedBlocked then firstOrderedBlocked = order end
                 end
             end
         end
@@ -2102,20 +2250,16 @@ function AA.checkAutoSpendAA(allowStop)
                 if rt.stopMoving then rt.stopMoving() end
             end
 
-            if ctrl.auto_aa_buy_order == 'list' then
-                table.sort(candidates, function(a, b) return a.name:lower() < b.name:lower() end)
-            else
-                table.sort(candidates, function(a, b)
-                    if a.cost ~= b.cost then return a.cost < b.cost end
-                    return a.name:lower() < b.name:lower()
-                end)
-            end
+            AA.sortPurchaseCandidates(candidates)
             local target = candidates[1]
+            local targetOrder = tonumber(ctrl.auto_aa_purchase_order and ctrl.auto_aa_purchase_order[target.name]) or 0
+            if targetOrder <= 0 then targetOrder = math.huge end
+            if firstOrderedBlocked < targetOrder then return false end
             AA.lastAutoSpendAAAt = now
             print(string.format('\ag[Triune]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
                 target.isSpecial and 'Special tab ability' or 'prioritized ability',
                 target.name, target.rank, target.maxRank, target.cost, unspent))
-            return AA.startAATrainWorkflow(target.name, allowStop)
+            return AA.startAATrainWorkflow(target.name, allowStop, true)
         end
     end
 
@@ -2123,6 +2267,8 @@ function AA.checkAutoSpendAA(allowStop)
     local threshold = AA.threshold()
     local cost = tonumber(ctrl.auto_spend_aa_cost) or 25
     local effectiveName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+    if AA.isIgnored(effectiveName) then return false end
+    if AA.repeatableLimitReached(effectiveName) then return false end
     local isSpecialCap = (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) or effectiveName:lower():find('firework')
 
     local lastCapAttempt = (AA.lastAATrainAttempt and AA.lastAATrainAttempt[effectiveName]) or -AA.PRIORITY_SPACING
@@ -2167,19 +2313,20 @@ function AA.checkAutoSpendAA(allowStop)
             AA.lastAutoSpendAAAt = now
             print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
-            return AA.startAATrainWorkflow(effectiveName, allowStop)
+            return AA.startAATrainWorkflow(effectiveName, allowStop, true)
         end
 
         if cost > 0 and unspent >= cost then
             AA.lastAutoSpendAAAt = now
             print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
-            return AA.startAATrainWorkflow(effectiveName, allowStop)
+            return AA.startAATrainWorkflow(effectiveName, allowStop, true)
         end
     end
     return false
 end
 
+-- Edited By: NeroMorte - Apply the configured selection and limits to generic Spend Now.
 function AA.manualSpendAA(targetName)
     -- If a specific ability is being trained, always train that specific ability natively!
     if targetName and targetName ~= '' then
@@ -2202,12 +2349,14 @@ function AA.manualSpendAA(targetName)
     -- Check prioritized abilities (same live-first classification as the
     -- automatic pass; the attempt spacing and backoffs were just cleared)
     local topPrioritized = nil
-    if ctrl.auto_aa_priorities and next(ctrl.auto_aa_priorities) then
+    local automaticNames = AA.automaticNames()
+    if automaticNames == nil then return false end
+    if automaticNames and #automaticNames > 0 then
         local candidates = {}
         local myLevel = 0
         pcall(function() myLevel = tonumber(mq.TLO.Me.Level() or 0) or 0 end)
-        for nm, enabled in pairs(ctrl.auto_aa_priorities) do
-            if enabled then
+        for _, nm in ipairs(automaticNames) do
+            if not AA.isIgnored(nm) then
                 local info = AA.purchaseInfo(nm)
                 if AA.priorityBlocker(info, unspent, myLevel, os.clock()) == nil then
                     candidates[#candidates + 1] = info
@@ -2216,14 +2365,7 @@ function AA.manualSpendAA(targetName)
         end
 
         if #candidates > 0 then
-            if ctrl.auto_aa_buy_order == 'list' then
-                table.sort(candidates, function(a, b) return a.name:lower() < b.name:lower() end)
-            else
-                table.sort(candidates, function(a, b)
-                    if a.cost ~= b.cost then return a.cost < b.cost end
-                    return a.name:lower() < b.name:lower()
-                end)
-            end
+            AA.sortPurchaseCandidates(candidates)
             topPrioritized = candidates[1]
         end
     end
@@ -2236,6 +2378,8 @@ function AA.manualSpendAA(targetName)
 
     -- If Fireworks is configured cap spender and no other prios:
     local fallbackName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+    if AA.isIgnored(fallbackName) then return false end
+    if AA.repeatableLimitReached(fallbackName) then return false end
     if AA.isSpecialTabAA and AA.isSpecialTabAA(fallbackName) and (not ctrl.auto_aa_priorities or not next(ctrl.auto_aa_priorities)) then
         return AA.startAATrainWorkflow(fallbackName)
     end
@@ -2286,10 +2430,11 @@ end
 -- AltAbilityReady is only ever true for owned ones, so either is proof of
 -- ownership. Without this the auto-summon spammed /alt act every 3s on
 -- characters that had not bought the AA yet.
+-- Edited By: NeroMorte - Check Fireworks ownership independently of Consume Experience.
 function AA.hasFireworksAA(aaId)
     local owned = false
     pcall(function()
-        local keys = { ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks', 'Alternately Advanced Fireworks', 'Summon Firework' }
+        local keys = { 'Alternately Advanced Fireworks', 'Summon Firework' }
         if aaId and aaId > 0 then keys[#keys + 1] = aaId end
         for _, key in ipairs(keys) do
             local ma = mq.TLO.Me.AltAbility(key)
@@ -2325,20 +2470,109 @@ function AA.scheduleFireworksSummon(fwId, reason)
         delay, AA.pendingFireworksSummon.id, tostring(reason or 'fireworks AA')))
 end
 
+-- Edited By: NeroMorte - Read the cursor safely before summoning or handling Fireworks.
+function AA.cursorItemId()
+    local ok, id = pcall(function() return tonumber(mq.TLO.Cursor.ID() or 0) end)
+    if ok then return id end
+    return nil
+end
+
+-- Edited By: NeroMorte - Summon only with an empty cursor and queue the selected item action.
+function AA.activateFireworks(aaId)
+    -- Do not summon onto an occupied or unreadable cursor. In particular, the
+    -- optional delete action must never operate on a pre-existing item.
+    if AA.pendingFireworksCursor or AA.cursorItemId() ~= 0 then return false end
+    mq.cmdf('/alt act %d', aaId)
+    if ctrl.auto_fireworks_cursor_action ~= 'leave' then
+        AA.pendingFireworksCursor = { at = os.clock() + 0.4, expires = os.clock() + 6.0,
+            action = ctrl.auto_fireworks_cursor_action == 'delete' and 'delete' or 'inventory' }
+    end
+    return true
+end
+
+-- Edited By: NeroMorte - Inventory/delete only verified Firework item 22309.
+function AA.processFireworksCursor()
+    local job = AA.pendingFireworksCursor
+    if not job then return end
+    local now = os.clock()
+    if now < job.at then return end
+    local id = AA.cursorItemId()
+    if id == 22309 then
+        AA.pendingFireworksCursor = nil
+        mq.cmd(job.action == 'delete' and '/destroy' or '/autoinventory')
+        return
+    end
+    -- Another item on the cursor belongs to the player; leave it alone.
+    if (id and id ~= 0) or now >= job.expires then AA.pendingFireworksCursor = nil end
+end
+
+-- Edited By: NeroMorte - Activate AA 17789 after a verified purchase with an equipped Power Source.
+function AA.processConsumeExperience()
+    local job = AA.pendingConsumeExperience
+    if not job then return end
+    if not ctrl.auto_consume_experience or AA.isIgnored('Consume Experience') then
+        AA.pendingConsumeExperience = nil
+        return
+    end
+    local now = os.clock()
+    if now < job.at or rt.isCasting() or mq.TLO.Me.Dead() or mq.TLO.Me.Combat() or mq.TLO.Me.Moving() then return end
+    if not AA.powerSourceEquipped() then
+        AA.pendingConsumeExperience = nil
+        print('\ay[Triune]\ax Consume Experience purchased, but no Power Source is equipped; leaving activation to you.')
+        return
+    end
+    local ready = false
+    pcall(function()
+        local ability = mq.TLO.Me.AltAbilityReady(17789)
+        ready = ability and ability() == true or false
+    end)
+    if ready then
+        AA.pendingConsumeExperience = nil
+        mq.cmd('/alt activate 17789')
+        print('\ag[Triune]\ax Activated Consume Experience with a Power Source equipped.')
+        return
+    end
+    job.tries = job.tries + 1
+    if job.tries >= 5 then
+        AA.pendingConsumeExperience = nil
+        print('\ay[Triune]\ax Consume Experience purchase was verified, but activation did not become ready; leaving it for manual use.')
+    else
+        job.at = now + 3.0
+    end
+end
+
+-- Edited By: NeroMorte - Check the equipped Power Source slot.
+function AA.powerSourceEquipped()
+    local equipped = false
+    pcall(function()
+        local item = mq.TLO.Me.Inventory('powersource')
+        equipped = item and tonumber(item.ID() or 0) > 0 or false
+    end)
+    return equipped
+end
+
+-- Edited By: NeroMorte - Honor ignore/settings and use guarded cursor handling.
 function AA.processPendingFireworksSummon()
     local job = AA.pendingFireworksSummon
     if not job then return false end
+    if AA.isIgnored(job.reason or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks') or
+        not ctrl.auto_summon_fireworks then
+        AA.pendingFireworksSummon = nil
+        return false
+    end
     local now = os.clock()
     if now < (job.at or 0) then return false end
     -- Wait for an idle moment; the schedule simply slides while busy.
     if rt.isCasting() or mq.TLO.Me.Dead() or mq.TLO.Me.Combat() or mq.TLO.Me.Moving() then return false end
     if AA.hasFireworksAA(job.id) then
-        AA.pendingFireworksSummon = nil
-        AA.lastAutoSummonAt = now
-        mq.cmdf('/alt act %d', job.id)
-        rt.pendingCursorClearAt = now + 0.4
-        print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
-        return true
+        if AA.activateFireworks(job.id) then
+            AA.pendingFireworksSummon = nil
+            AA.lastAutoSummonAt = now
+            print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
+            return true
+        end
+        job.at = now + 1.0
+        return false
     end
     job.tries = (job.tries or 0) + 1
     if job.tries >= AA.FIREWORKS_SUMMON_MAX_TRIES then
@@ -2350,9 +2584,11 @@ function AA.processPendingFireworksSummon()
     return false
 end
 
+-- Edited By: NeroMorte - Use guarded Fireworks activation and independent ownership checks.
 function AA.checkAutoSummonFireworks()
     if not ctrl.auto_summon_fireworks then return false end
-    if AA.pendingFireworksSummon then return false end
+    if AA.isIgnored('Alternately Advanced Fireworks') then return false end
+    if AA.pendingFireworksSummon or AA.pendingFireworksCursor then return false end
     local now = os.clock()
     if (now - (AA.lastAutoSummonAt or 0)) < math.max(3.0, AA.fireworksSummonDelay()) then return false end
 
@@ -2381,22 +2617,24 @@ function AA.checkAutoSummonFireworks()
     end)
     if coolingDown then return false end
 
+    if not AA.activateFireworks(aaId) then return false end
     AA.lastAutoSummonAt = now
-    mq.cmdf('/alt act %d', aaId)
     print(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
-    rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
 
+-- Edited By: NeroMorte - Use guarded Fireworks activation for the manual button.
 function AA.manualSummonFireworks()
     local aaId = tonumber(ctrl.auto_spend_aa_id) or 17788
     if not AA.hasFireworksAA(aaId) then
-        print(string.format('\ay[Triune]\ax Cannot summon fireworks: the "%s" AA has not been purchased yet.', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
+        print('\ay[Triune]\ax Cannot summon fireworks: the Fireworks AA has not been purchased yet.')
         return false
     end
-    mq.cmdf('/alt act %d', aaId)
+    if not AA.activateFireworks(aaId) then
+        print('\ay[Triune]\ax Fireworks summon skipped: cursor is occupied or unavailable.')
+        return false
+    end
     print(string.format('\ag[Triune]\ax Summoning fireworks via /alt act %d (Summon Firework)...', aaId))
-    rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
 
@@ -2405,6 +2643,7 @@ end
 -- Auto AA popout window (was a main-window tab)
 -- ----------------------------------------------------------------------------
 -- UI: Auto AA / Point Spender & AA Progression window
+-- Edited By: NeroMorte - AA ignore/target/order controls and visible repeatable spender options.
 function AA.drawWindow()
     if not ctrl.show_auto_aa then return end
     core.pushTheme()
@@ -2527,6 +2766,126 @@ function AA.drawWindow()
         ImGui.SetTooltip('%s', 'Unchecks all prioritized abilities.')
     end
 
+    ImGui.SetNextItemWidth(core.px(195))
+    local selection = ctrl.auto_aa_selection == 'all' and 2 or 1
+    local newSelection = ImGui.Combo('Auto-buy selection##autoAaSelection', selection,
+        { 'Checked priorities only', 'All standard AAs' })
+    if newSelection ~= selection then
+        ctrl.auto_aa_selection = newSelection == 2 and 'all' or 'priorities'
+        if newSelection == 2 then AA.requestScan(0) end
+        core.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('%s', 'Checked priorities only buys AAs whose Prio box you checked. All standard AAs buys all scanned non-Special AAs unless ignored or at the target rank. Either mode uses the separate cap spender after its selected AAs are finished.')
+    end
+    ImGui.TextDisabled(ctrl.auto_aa_selection == 'all'
+        and 'All standard AAs: buys scanned regular AAs; repeatable Special AAs use the cap spender below.'
+        or 'Checked priorities only: buys checked Prio rows; the cap spender runs after priorities are complete.')
+
+    -- Repeatable cap spender controls stay above the scrolling AA table.
+    -- Fireworks & Utility Actions Collapsible Section
+    ImGui.Spacing()
+    if ImGui.CollapsingHeader('Fireworks & Consume Experience##autoAaFwHeader') then
+            ImGui.Indent(10)
+            local curName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+            local curId = ctrl.auto_spend_aa_id or 17788
+            ImGui.Text('Repeatable cap spender (after selected AAs):')
+            if ImGui.RadioButton('Fireworks##capFireworks', curName:lower():find('firework', 1, true) ~= nil) then
+                ctrl.auto_spend_aa_name = 'Alternately Advanced Fireworks'
+                ctrl.auto_spend_aa_cost = 25
+                AA.requestScan(0)
+                core.saveLoadout(true)
+            end
+            ImGui.SameLine()
+            if ImGui.RadioButton('Consume Experience (100 AA)##capConsume', curName:lower() == 'consume experience') then
+                ctrl.auto_spend_aa_name = 'Consume Experience'
+                ctrl.auto_spend_aa_cost = 100
+                AA.requestScan(0)
+                core.saveLoadout(true)
+            end
+            ImGui.TextDisabled('Consume Experience activation is a separate checkbox below; equip a Power Source first.')
+
+            local summonVal = ImGui.Checkbox('Enable Auto-Summon Fireworks (/alt act)', ctrl.auto_summon_fireworks or false)
+            if summonVal ~= (ctrl.auto_summon_fireworks or false) then
+                ctrl.auto_summon_fireworks = summonVal
+                core.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'When ready and once purchased, activates the Fireworks AA. Cursor handling follows the choice below and only acts on item 22309.')
+            end
+            ImGui.Text('Fireworks item 22309 after summon:')
+            for _, choice in ipairs({ { 'inventory', 'Inventory' }, { 'delete', 'Delete' }, { 'leave', 'Leave on cursor' } }) do
+                if choice[1] ~= 'inventory' then ImGui.SameLine() end
+                if ImGui.RadioButton(choice[2] .. '##fireworksCursor' .. choice[1],
+                    ctrl.auto_fireworks_cursor_action == choice[1]) then
+                    ctrl.auto_fireworks_cursor_action = choice[1]
+                    core.saveLoadout(true)
+                end
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'The delete choice only destroys item ID 22309 on the cursor after this AA summons it.')
+            end
+            ImGui.SameLine()
+            ImGui.PushItemWidth(140)
+            local curDelay = AA.fireworksSummonDelay()
+            local newDelay = ImGui.SliderFloat('Summon delay (s)##fwSummonDelay', curDelay, 0.5, 15.0, '%.1f')
+            ImGui.PopItemWidth()
+            if newDelay and math.abs(newDelay - curDelay) > 0.01 then
+                ctrl.auto_summon_delay_sec = newDelay
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'How long to wait after buying the fireworks AA before /alt act is issued (the purchase must reach the server first).\nAlso the minimum spacing between automatic summons. Default 3s.')
+            end
+
+            ImGui.SameLine()
+            local summonLabel = string.format('Summon Fireworks (/alt act %d)##manualSummonBtn', curId)
+            if ImGui.Button(summonLabel) then
+                if AA.manualSummonFireworks then AA.manualSummonFireworks() end
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework). Cursor handling follows the choice above.', curId))
+            end
+
+            ImGui.SameLine()
+            if ImGui.Button('Clear Cursor (/autoinv)##clearCursorAutoAaBtn') then
+                rt.pendingCursorClearAt = os.clock()
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'Clears any item currently on cursor into your inventory bags.')
+            end
+
+            ImGui.SetNextItemWidth(core.px(260))
+            local newName = ImGui.InputText('Cap Spender AA Name##autoAaCapName', curName, 128)
+            if newName and newName ~= curName and newName ~= '' then
+                ctrl.auto_spend_aa_name = newName
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'The fallback AA Ability name used for point dumping when cap is reached (e.g. Alternately Advanced Fireworks).')
+            end
+
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(core.px(120))
+            local newId = ImGui.InputInt('Activation ID##autoAaActId', curId)
+            if newId ~= curId and newId > 0 then
+                ctrl.auto_spend_aa_id = newId
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'Fireworks AA activation ID (default 17788). Item spell 36880 is separate.')
+            end
+            local consume = ImGui.Checkbox('Activate Consume Experience after buying it##autoConsumeXp', ctrl.auto_consume_experience or false)
+            if consume ~= (ctrl.auto_consume_experience or false) then
+                ctrl.auto_consume_experience = consume
+                core.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'After a verified Consume Experience purchase, activate /alt activate 17789 only if a Power Source is equipped and the AA is ready. Add Consume Experience to the AA purchase list or choose it as the cap spender separately.')
+            end
+            ImGui.Unindent(10)
+        end
+
     ImGui.Separator()
 
     -- Compact Row 2: Search, Sort & View Filter Toggles
@@ -2560,8 +2919,8 @@ function AA.drawWindow()
 
     ImGui.SameLine()
     ImGui.SetNextItemWidth(core.px(105))
-    local sortNames = { 'Name', 'Cost', 'Trained' }
-    local sortKeys = { 'name', 'cost', 'trained' }
+    local sortNames = { 'Order', 'Name', 'Cost', 'Trained' }
+    local sortKeys = { 'order', 'name', 'cost', 'trained' }
     local curSortIdx = 1
     for idx, sk in ipairs(sortKeys) do
         if ctrl.auto_aa_sort_by == sk then curSortIdx = idx; break end
@@ -2573,7 +2932,7 @@ function AA.drawWindow()
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Sort by ability name, point cost to buy next rank, or training status.')
+        ImGui.SetTooltip('%s', 'Order shows the planned purchase sequence. You can also sort by name, cost, or training status.')
     end
 
     ImGui.SameLine()
@@ -2623,11 +2982,15 @@ function AA.drawWindow()
             ImGuiTableFlags.RowBg,
             ImGuiTableFlags.Borders,
             ImGuiTableFlags.Resizable,
-            ImGuiTableFlags.SizingStretchProp
+            ImGuiTableFlags.SizingStretchProp,
+            ImGuiTableFlags.ScrollX
         )
-        if ImGui.BeginTable('##AutoAABrowserTable', 6, tableFlags) then
+        if ImGui.BeginTable('##AutoAABrowserTable', 9, tableFlags) then
             ImGui.TableSetupColumn('Prio', ImGuiTableColumnFlags.WidthFixed, core.px(32))
             ImGui.TableSetupColumn('Ability Name', ImGuiTableColumnFlags.WidthStretch, 200)
+            ImGui.TableSetupColumn('Ignore', ImGuiTableColumnFlags.WidthFixed, core.px(46))
+            ImGui.TableSetupColumn('Stop at', ImGuiTableColumnFlags.WidthFixed, core.px(72))
+            ImGui.TableSetupColumn('Order', ImGuiTableColumnFlags.WidthFixed, core.px(65))
             ImGui.TableSetupColumn('Rank', ImGuiTableColumnFlags.WidthFixed, core.px(55))
             ImGui.TableSetupColumn('Cost', ImGuiTableColumnFlags.WidthFixed, core.px(55))
             ImGui.TableSetupColumn('Status', ImGuiTableColumnFlags.WidthFixed, core.px(95))
@@ -2640,6 +3003,7 @@ function AA.drawWindow()
                 ImGui.TableNextRow()
                 ImGui.PushID(i)
                 local ui = itm.ui
+                local repeatable = AA.isSpecialTabAA(itm.name)
                 if not ui then
                     ui = {
                         rank = (itm.maxRank and itm.maxRank > 0) and string.format('%d/%d', itm.rank, itm.maxRank) or string.format('%d/?', itm.rank),
@@ -2675,9 +3039,59 @@ function AA.drawWindow()
                     rt.showAATooltip(itm)
                 end
 
-                -- Col 3: Rank
+                -- Ignore affects automatic purchases and the cap spender, not a deliberate Train click.
                 ImGui.TableNextColumn()
-                if itm.fullyTrained then
+                local ignored = AA.isIgnored(itm.name)
+                local newIgnored = ImGui.Checkbox('##aaIgnore', ignored)
+                if newIgnored ~= ignored then
+                    ctrl.auto_aa_ignored = ctrl.auto_aa_ignored or {}
+                    ctrl.auto_aa_ignored[itm.name] = newIgnored or nil
+                    core.saveLoadout(true)
+                end
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip('%s', 'Never buy this AA automatically.')
+                end
+
+                -- Target is an absolute rank; zero means the client-reported maximum.
+                ImGui.TableNextColumn()
+                local target = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[itm.name]) or 0
+                ImGui.SetNextItemWidth(core.px(65))
+                local newTarget = ImGui.InputInt('##aaTarget', target, 1, 1)
+                if newTarget ~= target then
+                    ctrl.auto_aa_target_ranks = ctrl.auto_aa_target_ranks or {}
+                    newTarget = math.max(0, math.floor(newTarget))
+                    if not repeatable then newTarget = math.min(itm.maxRank or 0, newTarget) end
+                    ctrl.auto_aa_target_ranks[itm.name] = newTarget > 0 and newTarget or nil
+                    core.saveLoadout(true)
+                end
+                if ImGui.IsItemHovered() then
+                    if repeatable then
+                        ImGui.SetTooltip('%s', 'Repeatable AA: maximum verified purchases during this Triune run. Set 0 for unlimited. The purchase count resets when Triune starts again. A direct Train click overrides the limit.')
+                    else
+                        ImGui.SetTooltip('%s', string.format('Stop auto-buying at this rank (1-%d). Set 0 to buy to max rank.', itm.maxRank or 0))
+                    end
+                end
+
+                ImGui.TableNextColumn()
+                local order = tonumber(ctrl.auto_aa_purchase_order and ctrl.auto_aa_purchase_order[itm.name]) or 0
+                ImGui.SetNextItemWidth(core.px(60))
+                local newOrder = ImGui.InputInt('##aaOrder', order, 1, 1)
+                if newOrder ~= order then
+                    ctrl.auto_aa_purchase_order = ctrl.auto_aa_purchase_order or {}
+                    newOrder = math.max(0, math.floor(newOrder))
+                    ctrl.auto_aa_purchase_order[itm.name] = newOrder > 0 and newOrder or nil
+                    AA.aaFilterDirty = true
+                    core.saveLoadout(true)
+                end
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip('%s', 'Lower positive numbers buy first. Set 0 for no explicit order. Choose Order in the sort menu to display the same sequence.')
+                end
+
+                -- Rank
+                ImGui.TableNextColumn()
+                if repeatable then
+                    ImGui.Text(string.format('%d buys', AA.repeatablePurchases[itm.name] or 0))
+                elseif itm.fullyTrained then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], ui.rank)
                 elseif itm.maxRank and itm.maxRank > 0 then
                     ImGui.Text(ui.rank)
@@ -2704,7 +3118,13 @@ function AA.drawWindow()
 
                 -- Col 5: Status
                 ImGui.TableNextColumn()
-                if itm.fullyTrained then
+                if AA.isIgnored(itm.name) then
+                    ImGui.TextDisabled('Ignored')
+                elseif AA.repeatableLimitReached(itm.name) then
+                    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Limit reached')
+                elseif not repeatable and itm.maxRank > 0 and itm.rank >= AA.targetRank(itm.name, itm.maxRank) then
+                    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Target reached')
+                elseif itm.fullyTrained then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Max Rank')
                 elseif itm.cost and itm.cost > 0 and unspentAA >= itm.cost then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Can Train')
@@ -2757,73 +3177,6 @@ function AA.drawWindow()
             ImGui.EndTable()
         end
 
-        -- 4. Fireworks & Utility Actions Collapsible Section
-        ImGui.Spacing()
-        if ImGui.CollapsingHeader('Fireworks Spender & Utility Actions##autoAaFwHeader', false) then
-            ImGui.Indent(10)
-            local curName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
-            local curId = ctrl.auto_spend_aa_id or 17788
-
-            local summonVal = ImGui.Checkbox('Enable Auto-Summon Fireworks (/alt act)', ctrl.auto_summon_fireworks or false)
-            if summonVal ~= (ctrl.auto_summon_fireworks or false) then
-                ctrl.auto_summon_fireworks = summonVal
-                core.saveLoadout(true)
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'When ready (out of combat & stationary) and once the fireworks AA has been purchased, automatically activates it\n(/alt act 17788 or Summon Firework) and clears the cursor into inventory via /autoinventory.')
-            end
-            ImGui.SameLine()
-            ImGui.PushItemWidth(140)
-            local curDelay = AA.fireworksSummonDelay()
-            local newDelay = ImGui.SliderFloat('Summon delay (s)##fwSummonDelay', curDelay, 0.5, 15.0, '%.1f')
-            ImGui.PopItemWidth()
-            if newDelay and math.abs(newDelay - curDelay) > 0.01 then
-                ctrl.auto_summon_delay_sec = newDelay
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'How long to wait after buying the fireworks AA before /alt act is issued (the purchase must reach the server first).\nAlso the minimum spacing between automatic summons. Default 3s.')
-            end
-
-            ImGui.SameLine()
-            local summonLabel = string.format('Summon Fireworks (/alt act %d)##manualSummonBtn', curId)
-            if ImGui.Button(summonLabel) then
-                if AA.manualSummonFireworks then AA.manualSummonFireworks() end
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework) to summon fireworks and puts them into your inventory.', curId))
-            end
-
-            ImGui.SameLine()
-            if ImGui.Button('Clear Cursor (/autoinv)##clearCursorAutoAaBtn') then
-                rt.pendingCursorClearAt = os.clock()
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'Clears any item currently on cursor into your inventory bags.')
-            end
-
-            ImGui.SetNextItemWidth(core.px(260))
-            local newName = ImGui.InputText('Cap Spender AA Name##autoAaCapName', curName, 128)
-            if newName and newName ~= curName and newName ~= '' then
-                ctrl.auto_spend_aa_name = newName
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'The fallback AA Ability name used for point dumping when cap is reached (e.g. Alternately Advanced Fireworks).')
-            end
-
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(core.px(120))
-            local newId = ImGui.InputInt('Activation ID##autoAaActId', curId)
-            if newId ~= curId and newId > 0 then
-                ctrl.auto_spend_aa_id = newId
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'The Spell / Ability ID used for fireworks summoning (default: 17788, hotkey: Summon Firework).')
-            end
-            ImGui.Unindent(10)
-        end
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
@@ -2836,9 +3189,12 @@ end
 -- ----------------------------------------------------------------------------
 -- Per-tick driver (was inline in the core main loop)
 -- ----------------------------------------------------------------------------
+-- Edited By: NeroMorte - Drive repeatable activation and Fireworks cursor jobs.
 function AA.tick()
     ctrl = core.ctrl
     rt = core.runtime
+    AA.processFireworksCursor()
+    AA.processConsumeExperience()
     if AA.pendingAATrain and AA.processAATrainWorkflow then
         AA.processAATrainWorkflow()
     end
