@@ -188,7 +188,7 @@ size_t g_errorCount = 0;
 
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
-constexpr const char* kWebUpdateVersion = "4.1.5";
+constexpr const char* kWebUpdateVersion = "4.1.6";
 constexpr const char* kWebUpdateApiVersion = "4.0";
 // Legacy defaults retained for migration of older settings files. The active
 // main repository and every deployment mapping are loaded from the saved
@@ -2275,6 +2275,11 @@ bool g_restartRequired = false;
             const fs::file_status status =
                 fs::symlink_status(current, ec);
 
+            // A not-yet-created backup directory is safe to create later.
+            // Windows reports its absent parent as an error here, so treat
+            // only ENOENT as an absent path; every other error stays unsafe.
+            if (ec == std::errc::no_such_file_or_directory)
+                break;
             if (ec)
                 return true;
 

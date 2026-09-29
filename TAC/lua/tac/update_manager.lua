@@ -5,7 +5,7 @@
 local plugin = {
     id = 'update_manager', name = 'Update Manager', author = 'NeroMorte',
     description = 'Production update planning, staging, apply, policy, and diagnostics frontend.',
-    version = '4.1.4',
+    version = '4.1.6',
     window = {
         label = 'Updates', tooltip = 'Open the MQ2WebUpdate Update Manager.',
         flag = 'show_update_manager', desc = 'Check, stage, apply, and diagnose updates',
@@ -21,7 +21,7 @@ local state = {
     configError = nil, versionError = nil, pendingApply = false,
     refreshAfterApply = false, applyRefreshStarted = 0,
     restartTriuneAfterApply = false,
-    pendingDllApply = false, launchDllCoordinator = false, dllMappingId = nil,
+    pendingDllApply = false, pendingDllTicket = nil, dllMappingId = nil,
     dllPluginName = nil, dllRecoveryStarted = 0,
     pendingProfile = nil,
     selectedManagedProfile = nil, selectedManagedMapping = nil,
@@ -84,6 +84,43 @@ local function dllRecoveryMarkerPath()
         return root and root .. '\\webupdate_stage\\dll-handoff.active'
     end)
     return ok and path or nil
+end
+
+local function dllHandoffPath(filename)
+    local marker = dllRecoveryMarkerPath()
+    return marker and marker:gsub('dll%-handoff%.active$', filename) or nil
+end
+
+local function processPendingDllTicket()
+    local pending = state.pendingDllTicket
+    if not pending then return end
+    local ticketPath = dllHandoffPath('dll-handoff.ini')
+    local ticket = ticketPath and io.open(ticketPath, 'rb') or nil
+    if ticket then
+        local raw = ticket:read(4097)
+        ticket:close()
+        local fields = {}
+        for line in (raw or ''):gmatch('[^\r\n]+') do
+            local key, value = line:match('^([A-Za-z0-9]+)=(.*)$')
+            if key then fields[key] = value end
+        end
+        local payloadPath = dllHandoffPath('dll-handoff-payload.dll')
+        local payload = payloadPath and io.open(payloadPath, 'rb') or nil
+        if payload then payload:close() end
+        state.pendingDllTicket = nil
+        if raw and #raw <= 4096 and fields.Format == 'MQ2WebUpdateDllHandoff' and
+            fields.MappingID == pending.mappingId and
+            fields.PluginName == pending.pluginName and
+            fields.CommitSHA == pending.sha and payload then
+            runCommand('/lua run TAC_support_modules/webupdate_dll_handoff',
+                'Started independent Lua DLL handoff from verified ticket.')
+        else
+            addLog('DLL handoff ticket did not match the requested update; plugin remains installed.')
+        end
+    elseif os.time() - pending.started >= 15 then
+        state.pendingDllTicket = nil
+        addLog('DLL handoff preparation failed: no verified ticket was published. See backend Last Error.')
+    end
 end
 
 local function readEngine()
@@ -342,6 +379,7 @@ local function drawActions(e)
     local function stagedPluginName(file)
         local destination = tostring(file.destinationPath or '')
         local name = destination:match('[\\/]plugins[\\/]([%w_-]+)%.dll$')
+            or tostring(file.name or ''):match('^plugins/([%w_-]+)%.dll$')
         if not name then return nil end
         for _, profile in ipairs(e.managedProfiles or {}) do
             if profile.role == 'main' then
@@ -398,12 +436,22 @@ local function drawActions(e)
         ImGui.TextWrapped('Update ' .. tostring(state.dllPluginName) .. ' from its verified staged file, with backup and rollback. Other staged files will need a fresh Stage afterward.')
         if ImGui.Button('Yes, Update DLL', core.px(145), core.px(26)) then
             state.pendingDllApply = false
-            local sent = runCommand('/webupdate dll prepare ' .. state.dllMappingId,
-                'Requested verified DLL handoff preparation.')
-            local verified = sent and readEngine()
-            state.launchDllCoordinator = verified and verified.lastError == '' or false
-            if not state.launchDllCoordinator then
-                addLog('DLL handoff preparation failed; plugin remains installed.')
+            local ticketPath = dllHandoffPath('dll-handoff.ini')
+            local existing = ticketPath and io.open(ticketPath, 'rb') or nil
+            if existing then
+                existing:close()
+                addLog('An earlier DLL handoff ticket remains; resolve it before preparing another.')
+            elseif ticketPath then
+                state.pendingDllTicket = {
+                    mappingId = state.dllMappingId, pluginName = state.dllPluginName,
+                    sha = e.remoteSHA, started = os.time(),
+                }
+                if not runCommand('/webupdate dll prepare ' .. state.dllMappingId,
+                    'Requested verified DLL handoff preparation.') then
+                    state.pendingDllTicket = nil
+                end
+            else
+                addLog('DLL handoff path is unavailable; plugin remains installed.')
             end
         end
         ImGui.SameLine()
@@ -1819,7 +1867,7 @@ function plugin.onInit(coreApi)
     state.showStartupPopup = false
     state.refreshAfterApply = false
     state.pendingDllApply = false
-    state.launchDllCoordinator = false
+    state.pendingDllTicket = nil
     state.restartTriuneAfterApply = false
     state.applyRefreshStarted = 0
     loadMetadata(); state.initialized = true
@@ -1828,11 +1876,7 @@ end
 
 function plugin.onDestroy() state.initialized = false end
 function plugin.onDrawUI()
-    if state.launchDllCoordinator then
-        state.launchDllCoordinator = false
-        runCommand('/lua run TAC_support_modules/webupdate_dll_handoff',
-            'Started independent Lua DLL handoff.')
-    end
+    processPendingDllTicket()
     refreshAfterSuccessfulApply()
     processTriuneStartupChecks()
     drawTriuneStartupPopup()
