@@ -54,6 +54,7 @@ local function resetState()
     AA.pendingFireworksSummon = nil
     AA.pendingFireworksCursor = nil
     AA.pendingConsumeExperience = nil
+    AA.repeatablePurchases = {}
     AA.scannedAAs = nil
     AA.scannedAAMap = nil
     AA.lastAAScanAt = 0
@@ -252,10 +253,8 @@ function AA.isSpecialTabAA(name)
     local lower = tostring(name):lower()
     if lower:find('firework') then return true end
     -- The Special-tab list is not always populated until the AA window has
-    -- been opened. An explicitly selected repeatable cap spender must still
-    -- be visible and purchasable through the normal AA-window workflow.
-    if lower == 'consume experience' and ctrl and
-        tostring(ctrl.auto_spend_aa_name or ''):lower() == lower then return true end
+    -- been opened. Known repeatables must remain selectable in the table.
+    if lower == 'consume experience' then return true end
     if rt.cachedAAData and rt.cachedAAData[name] then
         local cat = rt.cachedAAData[name].category
         if cat and cat:lower():find('special') then return true end
@@ -851,7 +850,9 @@ function AA.purchaseInfo(nm)
         -- Special-tab repeatables (fireworks): no fixed max rank, the
         -- configured per-rank cost, and the client's CanTrain is not consulted.
         if info.maxRank <= 0 then info.maxRank = 1 end
-        info.cost = tonumber(ctrl.auto_spend_aa_cost) or 25
+        info.cost = nm:lower() == 'consume experience' and 100 or
+            (nm == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or
+            (sc and tonumber(sc.cost)) or (cd and tonumber(cd.cost)) or 25
         info.canTrain = nil
         info.fullyTrained = false
         info.invalid = false
@@ -898,6 +899,12 @@ function AA.targetRank(name, maxRank)
     local target = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name])
     if not target or target < 1 then return maxRank end
     return math.min(math.floor(target), maxRank)
+end
+
+function AA.repeatableLimitReached(name)
+    if not AA.isSpecialTabAA(name) then return false end
+    local limit = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name]) or 0
+    return limit > 0 and (AA.repeatablePurchases[name] or 0) >= limit
 end
 
 function AA.sortPurchaseCandidates(candidates)
@@ -986,6 +993,7 @@ end
 -- the cap spender off.
 function AA.priorityBlocker(info, unspent, myLevel, now)
     if AA.isIgnored(info.name) then return 'ignored' end
+    if AA.repeatableLimitReached(info.name) then return 'target' end
     if not info.isSpecial and info.maxRank > 0 and info.rank >= AA.targetRank(info.name, info.maxRank) then return 'target' end
     if info.fullyTrained then return 'trained' end
     if info.invalid then return 'stub' end
@@ -1168,7 +1176,8 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
         cost = 0
     elseif cost <= 0 then
         if isSpecial then
-            cost = tonumber(ctrl.auto_spend_aa_cost) or 25
+            cost = name:lower() == 'consume experience' and 100 or
+                (name == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or 25
         else
             cost = AA.nextRankCost(name, rank)
         end
@@ -1475,6 +1484,11 @@ function AA.scanPlayerAAs(force)
     if ctrl.auto_spend_aa_name and ctrl.auto_spend_aa_name ~= '' then
         AA.recordScannedAA(list, foundMap, ctrl.auto_spend_aa_name, nil, nil, nil, true, nil, false)
     end
+    -- Supported repeatables belong in the purchase table independently of
+    -- which one is selected as the fallback cap spender. The AA window must
+    -- still locate and confirm the exact purchase before activation.
+    AA.recordScannedAA(list, foundMap, 'Alternately Advanced Fireworks', nil, nil, nil, true, 'Special', false)
+    AA.recordScannedAA(list, foundMap, 'Consume Experience', nil, nil, 100, true, 'Special', false)
 
     -- 5. Scan character AltAbility indices across known ID ranges
     pcall(function()
@@ -1614,6 +1628,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if type(targetName) == 'string' then targetName = targetName:match('^%s*(.-)%s*$') end
     if automatic then
+        if AA.repeatableLimitReached(targetName) then return false end
         if targetName:lower() == 'consume experience' and ctrl.auto_consume_experience and
             (AA.pendingConsumeExperience or not AA.powerSourceEquipped()) then return false end
         local info = AA.purchaseInfo(targetName)
@@ -1988,7 +2003,7 @@ function AA.processAATrainWorkflow()
     elseif task.step == 'click_train' then
         if task.automatic then
             local info = AA.purchaseInfo(task.name)
-            if AA.isIgnored(task.name) or (not info.isSpecial and info.maxRank > 0 and
+            if AA.isIgnored(task.name) or AA.repeatableLimitReached(task.name) or (not info.isSpecial and info.maxRank > 0 and
                 info.rank >= AA.targetRank(task.name, info.maxRank)) then
                 AA.abortAATrain(task)
                 return
@@ -2058,6 +2073,10 @@ function AA.processAATrainWorkflow()
         AA.lastAATrainAttempt[task.name] = now
         AA.pendingAATrain = nil
         if task.purchased then
+            if AA.isSpecialTabAA(task.name) then
+                AA.repeatablePurchases[task.name] = (AA.repeatablePurchases[task.name] or 0) + 1
+                AA.aaFilterDirty = true
+            end
             if ctrl.auto_summon_fireworks and not AA.isIgnored(task.name) and
                 task.name and task.name:lower():find('firework') then
                 AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)
@@ -2231,6 +2250,7 @@ function AA.checkAutoSpendAA(allowStop)
     local cost = tonumber(ctrl.auto_spend_aa_cost) or 25
     local effectiveName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if AA.isIgnored(effectiveName) then return false end
+    if AA.repeatableLimitReached(effectiveName) then return false end
     local isSpecialCap = (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) or effectiveName:lower():find('firework')
 
     local lastCapAttempt = (AA.lastAATrainAttempt and AA.lastAATrainAttempt[effectiveName]) or -AA.PRIORITY_SPACING
@@ -2340,6 +2360,7 @@ function AA.manualSpendAA(targetName)
     -- If Fireworks is configured cap spender and no other prios:
     local fallbackName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if AA.isIgnored(fallbackName) then return false end
+    if AA.repeatableLimitReached(fallbackName) then return false end
     if AA.isSpecialTabAA and AA.isSpecialTabAA(fallbackName) and (not ctrl.auto_aa_priorities or not next(ctrl.auto_aa_priorities)) then
         return AA.startAATrainWorkflow(fallbackName)
     end
@@ -2953,6 +2974,7 @@ function AA.drawWindow()
                 ImGui.TableNextRow()
                 ImGui.PushID(i)
                 local ui = itm.ui
+                local repeatable = AA.isSpecialTabAA(itm.name)
                 if not ui then
                     ui = {
                         rank = (itm.maxRank and itm.maxRank > 0) and string.format('%d/%d', itm.rank, itm.maxRank) or string.format('%d/?', itm.rank),
@@ -3008,12 +3030,17 @@ function AA.drawWindow()
                 local newTarget = ImGui.InputInt('##aaTarget', target, 1, 1)
                 if newTarget ~= target then
                     ctrl.auto_aa_target_ranks = ctrl.auto_aa_target_ranks or {}
-                    newTarget = math.max(0, math.min(itm.maxRank or 0, math.floor(newTarget)))
+                    newTarget = math.max(0, math.floor(newTarget))
+                    if not repeatable then newTarget = math.min(itm.maxRank or 0, newTarget) end
                     ctrl.auto_aa_target_ranks[itm.name] = newTarget > 0 and newTarget or nil
                     core.saveLoadout(true)
                 end
                 if ImGui.IsItemHovered() then
-                    ImGui.SetTooltip('%s', string.format('Stop auto-buying at this rank (1-%d). Set 0 to buy to max rank.', itm.maxRank or 0))
+                    if repeatable then
+                        ImGui.SetTooltip('%s', 'Repeatable AA: maximum verified purchases during this Triune run. Set 0 for unlimited. The purchase count resets when Triune starts again. A direct Train click overrides the limit.')
+                    else
+                        ImGui.SetTooltip('%s', string.format('Stop auto-buying at this rank (1-%d). Set 0 to buy to max rank.', itm.maxRank or 0))
+                    end
                 end
 
                 ImGui.TableNextColumn()
@@ -3033,7 +3060,9 @@ function AA.drawWindow()
 
                 -- Rank
                 ImGui.TableNextColumn()
-                if itm.fullyTrained then
+                if repeatable then
+                    ImGui.Text(string.format('%d buys', AA.repeatablePurchases[itm.name] or 0))
+                elseif itm.fullyTrained then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], ui.rank)
                 elseif itm.maxRank and itm.maxRank > 0 then
                     ImGui.Text(ui.rank)
@@ -3062,7 +3091,9 @@ function AA.drawWindow()
                 ImGui.TableNextColumn()
                 if AA.isIgnored(itm.name) then
                     ImGui.TextDisabled('Ignored')
-                elseif itm.maxRank > 0 and itm.rank >= AA.targetRank(itm.name, itm.maxRank) then
+                elseif AA.repeatableLimitReached(itm.name) then
+                    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Limit reached')
+                elseif not repeatable and itm.maxRank > 0 and itm.rank >= AA.targetRank(itm.name, itm.maxRank) then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Target reached')
                 elseif itm.fullyTrained then
                     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Max Rank')
