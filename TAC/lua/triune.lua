@@ -290,6 +290,7 @@ local function sanitizeModeConfig(c)
         c.auto_spend_aa_action = 'window'
     end
     if c.auto_summon_fireworks == nil then c.auto_summon_fireworks = false end
+    -- Edited By: NeroMorte - Persist AA ignore, target/order, repeatable activation and cursor settings.
     if c.auto_fireworks_cursor_action ~= 'inventory' and c.auto_fireworks_cursor_action ~= 'delete' and
         c.auto_fireworks_cursor_action ~= 'leave' then c.auto_fireworks_cursor_action = 'inventory' end
     if c.auto_consume_experience == nil then c.auto_consume_experience = false end
@@ -541,6 +542,7 @@ local function defaultCtrl()
         auto_spend_aa_name       = 'Alternately Advanced Fireworks',
         auto_spend_aa_action     = 'window',
         auto_summon_fireworks    = false,
+        -- Edited By: NeroMorte - Defaults for the expanded Auto AA controls.
         auto_fireworks_cursor_action = 'inventory',
         auto_consume_experience = false,
         auto_aa_priorities       = {},

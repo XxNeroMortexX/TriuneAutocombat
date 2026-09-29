@@ -48,6 +48,7 @@ local registeredEvents = {}
 -- All state and helpers hang off this table (keeps the chunk under the 200-local limit).
 local AA = {}
 
+-- Edited By: NeroMorte - AA test state and verified repeatable purchase counts.
 local function resetState()
     AA.lastAutoSpendAAAt = 0
     AA.lastAutoSummonAt = 0
@@ -248,6 +249,7 @@ function AA.closeAAWindow()
     return not AA.isAAWindowOpen()
 end
 
+-- Edited By: NeroMorte - Recognize Consume Experience as a repeatable Special AA.
 function AA.isSpecialTabAA(name)
     if not name or name == '' then return false end
     local lower = tostring(name):lower()
@@ -812,6 +814,7 @@ end
 -- values right after a Train), the next rank's cost is probed from the
 -- client before a cached cost is considered, and a cached cost only counts
 -- when it was recorded at the current rank (see AA.cachedCostFor).
+-- Edited By: NeroMorte - Keep repeatable purchase costs independent of the cap spender choice.
 function AA.purchaseInfo(nm)
     local info = { name = nm, rank = 0, maxRank = 0, cost = 0, minLevel = 0, canTrain = nil, live = false }
     pcall(function()
@@ -880,6 +883,7 @@ end
 
 AA.PRIORITY_SPACING = 30.0    -- seconds between window attempts on one AA
 
+-- Edited By: NeroMorte - Per-AA ignore controls and Fireworks alias matching.
 function AA.isIgnored(name)
     local ignored = ctrl.auto_aa_ignored or {}
     if ignored[name] == true then return true end
@@ -895,18 +899,21 @@ function AA.isIgnored(name)
     return false
 end
 
+-- Edited By: NeroMorte - User-selected rank targets bounded by the client maximum.
 function AA.targetRank(name, maxRank)
     local target = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name])
     if not target or target < 1 then return maxRank end
     return math.min(math.floor(target), maxRank)
 end
 
+-- Edited By: NeroMorte - Verified purchase limits for repeatable AAs during one Triune run.
 function AA.repeatableLimitReached(name)
     if not AA.isSpecialTabAA(name) then return false end
     local limit = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[name]) or 0
     return limit > 0 and (AA.repeatablePurchases[name] or 0) >= limit
 end
 
+-- Edited By: NeroMorte - User-selected purchase order.
 function AA.sortPurchaseCandidates(candidates)
     table.sort(candidates, function(a, b)
         local orders = ctrl.auto_aa_purchase_order or {}
@@ -919,6 +926,7 @@ function AA.sortPurchaseCandidates(candidates)
     end)
 end
 
+-- Edited By: NeroMorte - Checked-priority and all-standard-AA purchase selection.
 function AA.automaticNames()
     local names, seen = {}, {}
     if ctrl.auto_aa_selection == 'all' then
@@ -945,6 +953,7 @@ end
 
 -- /ac aastatus: the spender's view of every priority, fresh (not the last
 -- tick's verdicts, which only exist while auto-spend is running).
+-- Edited By: NeroMorte - Report selected AA order and target-aware buying status.
 function AA.printPriorityStatus()
     local unspent, myLevel = 0, 0
     pcall(function() unspent = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
@@ -991,6 +1000,7 @@ end
 -- Why a prioritized AA is not bought this tick (nil = it can be). Every
 -- answer but 'trained' and 'stub' leaves the AA outstanding, which keeps
 -- the cap spender off.
+-- Edited By: NeroMorte - Enforce ignore, rank target, and repeatable purchase limits.
 function AA.priorityBlocker(info, unspent, myLevel, now)
     if AA.isIgnored(info.name) then return 'ignored' end
     if AA.repeatableLimitReached(info.name) then return 'target' end
@@ -1006,6 +1016,7 @@ function AA.priorityBlocker(info, unspent, myLevel, now)
     return nil
 end
 
+-- Edited By: NeroMorte - Explain ignore and target-limit blockers.
 AA.BLOCKER_TEXT = {
     ignored  = 'ignored for automatic purchases',
     target   = 'selected target rank reached',
@@ -1020,6 +1031,7 @@ AA.BLOCKER_TEXT = {
 
 -- Remembers the latest verdict per priority for /ac aastatus, and prints a
 -- blocker once when it first applies (waiting states stay quiet).
+-- Edited By: NeroMorte - Avoid repeated target-limit status messages.
 function AA.notePriorityStatus(info, why, unspent)
     AA.prioStatus = AA.prioStatus or {}
     local prev = AA.prioStatus[info.name]
@@ -1031,6 +1043,7 @@ function AA.notePriorityStatus(info, why, unspent)
     end
 end
 
+-- Edited By: NeroMorte - Use the correct Consume Experience repeatable cost.
 function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, knownCost, isKnownCharAA, category, isFromUI)
     if not name or name == '' or tonumber(name) then return end
     name = tostring(name):match('^%s*(.-)%s*$')
@@ -1330,6 +1343,7 @@ end
 -- and the purchase workflow queue it through AA.requestScan. Name-keyed TLO
 -- results (skill check, ownership probe) are cached in AA.scanCtx for the
 -- duration of one scan, since most names are recorded several times.
+-- Edited By: NeroMorte - Keep both supported repeatables in the purchase table.
 function AA.scanPlayerAAs(force)
     local now = os.clock()
     if not force and AA.lastAAScanAt and (now - AA.lastAAScanAt) < AA.SCAN_MIN_INTERVAL and AA.scannedAAs and #AA.scannedAAs > 0 then
@@ -1540,6 +1554,7 @@ function AA.runPendingScan()
     end
 end
 
+-- Edited By: NeroMorte - Display the configured purchase sequence.
 function AA.getFilteredSortedAAs()
     if not AA.scannedAAs or #AA.scannedAAs == 0 then
         -- Runs from the window (draw thread): only ask for a scan.
@@ -1623,6 +1638,7 @@ function AA.getFilteredSortedAAs()
     return result
 end
 
+-- Edited By: NeroMorte - Recheck automatic purchase limits and Power Source requirements.
 function AA.startAATrainWorkflow(targetName, allowStop, automatic)
     if AA.pendingAATrain then return false end
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
@@ -1745,6 +1761,7 @@ function AA.abortAATrain(task)
     AA.pendingAATrain = nil
 end
 
+-- Edited By: NeroMorte - Count verified purchases and queue repeatable activation after verification.
 function AA.processAATrainWorkflow()
     local task = AA.pendingAATrain
     if not task then return end
@@ -2126,6 +2143,7 @@ function AA.processAATrainWorkflow()
     end
 end
 
+-- Edited By: NeroMorte - Apply selection, ignore, targets, order, and repeatable limits to automatic buying.
 function AA.checkAutoSpendAA(allowStop)
     if not ctrl.auto_spend_aa then return false end
     if AA.pendingAATrain then return false end
@@ -2308,6 +2326,7 @@ function AA.checkAutoSpendAA(allowStop)
     return false
 end
 
+-- Edited By: NeroMorte - Apply the configured selection and limits to generic Spend Now.
 function AA.manualSpendAA(targetName)
     -- If a specific ability is being trained, always train that specific ability natively!
     if targetName and targetName ~= '' then
@@ -2411,6 +2430,7 @@ end
 -- AltAbilityReady is only ever true for owned ones, so either is proof of
 -- ownership. Without this the auto-summon spammed /alt act every 3s on
 -- characters that had not bought the AA yet.
+-- Edited By: NeroMorte - Check Fireworks ownership independently of Consume Experience.
 function AA.hasFireworksAA(aaId)
     local owned = false
     pcall(function()
@@ -2450,12 +2470,14 @@ function AA.scheduleFireworksSummon(fwId, reason)
         delay, AA.pendingFireworksSummon.id, tostring(reason or 'fireworks AA')))
 end
 
+-- Edited By: NeroMorte - Read the cursor safely before summoning or handling Fireworks.
 function AA.cursorItemId()
     local ok, id = pcall(function() return tonumber(mq.TLO.Cursor.ID() or 0) end)
     if ok then return id end
     return nil
 end
 
+-- Edited By: NeroMorte - Summon only with an empty cursor and queue the selected item action.
 function AA.activateFireworks(aaId)
     -- Do not summon onto an occupied or unreadable cursor. In particular, the
     -- optional delete action must never operate on a pre-existing item.
@@ -2468,6 +2490,7 @@ function AA.activateFireworks(aaId)
     return true
 end
 
+-- Edited By: NeroMorte - Inventory/delete only verified Firework item 22309.
 function AA.processFireworksCursor()
     local job = AA.pendingFireworksCursor
     if not job then return end
@@ -2483,6 +2506,7 @@ function AA.processFireworksCursor()
     if (id and id ~= 0) or now >= job.expires then AA.pendingFireworksCursor = nil end
 end
 
+-- Edited By: NeroMorte - Activate AA 17789 after a verified purchase with an equipped Power Source.
 function AA.processConsumeExperience()
     local job = AA.pendingConsumeExperience
     if not job then return end
@@ -2517,6 +2541,7 @@ function AA.processConsumeExperience()
     end
 end
 
+-- Edited By: NeroMorte - Check the equipped Power Source slot.
 function AA.powerSourceEquipped()
     local equipped = false
     pcall(function()
@@ -2526,6 +2551,7 @@ function AA.powerSourceEquipped()
     return equipped
 end
 
+-- Edited By: NeroMorte - Honor ignore/settings and use guarded cursor handling.
 function AA.processPendingFireworksSummon()
     local job = AA.pendingFireworksSummon
     if not job then return false end
@@ -2558,6 +2584,7 @@ function AA.processPendingFireworksSummon()
     return false
 end
 
+-- Edited By: NeroMorte - Use guarded Fireworks activation and independent ownership checks.
 function AA.checkAutoSummonFireworks()
     if not ctrl.auto_summon_fireworks then return false end
     if AA.isIgnored('Alternately Advanced Fireworks') then return false end
@@ -2596,6 +2623,7 @@ function AA.checkAutoSummonFireworks()
     return true
 end
 
+-- Edited By: NeroMorte - Use guarded Fireworks activation for the manual button.
 function AA.manualSummonFireworks()
     local aaId = tonumber(ctrl.auto_spend_aa_id) or 17788
     if not AA.hasFireworksAA(aaId) then
@@ -2615,6 +2643,7 @@ end
 -- Auto AA popout window (was a main-window tab)
 -- ----------------------------------------------------------------------------
 -- UI: Auto AA / Point Spender & AA Progression window
+-- Edited By: NeroMorte - AA ignore/target/order controls and visible repeatable spender options.
 function AA.drawWindow()
     if not ctrl.show_auto_aa then return end
     core.pushTheme()
@@ -3160,6 +3189,7 @@ end
 -- ----------------------------------------------------------------------------
 -- Per-tick driver (was inline in the core main loop)
 -- ----------------------------------------------------------------------------
+-- Edited By: NeroMorte - Drive repeatable activation and Fireworks cursor jobs.
 function AA.tick()
     ctrl = core.ctrl
     rt = core.runtime
