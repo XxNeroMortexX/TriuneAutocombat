@@ -290,6 +290,9 @@ local function sanitizeModeConfig(c)
         c.auto_spend_aa_action = 'window'
     end
     if c.auto_summon_fireworks == nil then c.auto_summon_fireworks = false end
+    if c.auto_fireworks_cursor_action ~= 'inventory' and c.auto_fireworks_cursor_action ~= 'delete' and
+        c.auto_fireworks_cursor_action ~= 'leave' then c.auto_fireworks_cursor_action = 'inventory' end
+    if c.auto_consume_experience == nil then c.auto_consume_experience = false end
     if type(c.auto_aa_priorities) ~= 'table' then c.auto_aa_priorities = {} end
     if type(c.auto_aa_ignored) ~= 'table' then c.auto_aa_ignored = {} end
     if type(c.auto_aa_target_ranks) ~= 'table' then c.auto_aa_target_ranks = {} end
@@ -538,6 +541,8 @@ local function defaultCtrl()
         auto_spend_aa_name       = 'Alternately Advanced Fireworks',
         auto_spend_aa_action     = 'window',
         auto_summon_fireworks    = false,
+        auto_fireworks_cursor_action = 'inventory',
+        auto_consume_experience = false,
         auto_aa_priorities       = {},
         auto_aa_ignored          = {},
         auto_aa_target_ranks     = {},

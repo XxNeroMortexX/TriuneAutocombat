@@ -7,4 +7,4 @@ Changes after that tag should be listed here with the commit that introduced the
 
 ## In progress
 
-- Auto AA: per-ability ignore, target rank, and purchase order; optional all-standard-AA mode. Fireworks cursor handling and the power-slot item XP spender require in-game ability/item details and verification.
+- Auto AA: per-ability ignore, target rank, and purchase order; optional all-standard-AA mode. Fireworks activation can inventory, leave, or delete only the verified item ID 22309 on the cursor. Consume Experience can activate AA 17789 after a verified purchase, with an equipped Power Source and ready AA. These new controls need an in-game test before merging into main.

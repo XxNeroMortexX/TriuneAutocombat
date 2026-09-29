@@ -52,6 +52,8 @@ local function resetState()
     AA.lastAutoSpendAAAt = 0
     AA.lastAutoSummonAt = 0
     AA.pendingFireworksSummon = nil
+    AA.pendingFireworksCursor = nil
+    AA.pendingConsumeExperience = nil
     AA.scannedAAs = nil
     AA.scannedAAMap = nil
     AA.lastAAScanAt = 0
@@ -1607,6 +1609,8 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if type(targetName) == 'string' then targetName = targetName:match('^%s*(.-)%s*$') end
     if automatic then
+        if targetName:lower() == 'consume experience' and ctrl.auto_consume_experience and
+            (AA.pendingConsumeExperience or not AA.powerSourceEquipped()) then return false end
         local info = AA.purchaseInfo(targetName)
         if AA.isIgnored(targetName) or (not info.isSpecial and info.maxRank > 0 and
             info.rank >= AA.targetRank(targetName, info.maxRank)) then return false end
@@ -1628,7 +1632,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
             end
         end
     end)
-    if aaId == 0 and (targetName:lower():find('firework') or targetName == (ctrl.auto_spend_aa_name or '')) then
+    if aaId == 0 and targetName:lower():find('firework') then
         aaId = tonumber(ctrl.auto_spend_aa_id or 17788) or 17788
         aaType = 4
     end
@@ -2053,6 +2057,10 @@ function AA.processAATrainWorkflow()
                 task.name and task.name:lower():find('firework') then
                 AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)
             end
+            if ctrl.auto_consume_experience and task.name and task.name:lower() == 'consume experience' then
+                AA.pendingConsumeExperience = { at = now + 3.0, tries = 0 }
+                print('\ag[Triune]\ax Consume Experience purchased; activation queued after the AA becomes ready.')
+            end
             AA.trainBackoff[task.name] = nil
             AA.trainFailLogged[task.name] = nil
             -- One deferred scan once the client has the new rank (the
@@ -2097,6 +2105,7 @@ end
 function AA.checkAutoSpendAA(allowStop)
     if not ctrl.auto_spend_aa then return false end
     if AA.pendingAATrain then return false end
+    if AA.pendingConsumeExperience then return false end
 
     -- Strict anti-pause check: never spend AAs while casting or moving
     if rt.isCasting() then return false end
@@ -2415,6 +2424,82 @@ function AA.scheduleFireworksSummon(fwId, reason)
         delay, AA.pendingFireworksSummon.id, tostring(reason or 'fireworks AA')))
 end
 
+function AA.cursorItemId()
+    local ok, id = pcall(function() return tonumber(mq.TLO.Cursor.ID() or 0) end)
+    if ok then return id end
+    return nil
+end
+
+function AA.activateFireworks(aaId)
+    -- Do not summon onto an occupied or unreadable cursor. In particular, the
+    -- optional delete action must never operate on a pre-existing item.
+    if AA.pendingFireworksCursor or AA.cursorItemId() ~= 0 then return false end
+    mq.cmdf('/alt act %d', aaId)
+    if ctrl.auto_fireworks_cursor_action ~= 'leave' then
+        AA.pendingFireworksCursor = { at = os.clock() + 0.4, expires = os.clock() + 6.0,
+            action = ctrl.auto_fireworks_cursor_action == 'delete' and 'delete' or 'inventory' }
+    end
+    return true
+end
+
+function AA.processFireworksCursor()
+    local job = AA.pendingFireworksCursor
+    if not job then return end
+    local now = os.clock()
+    if now < job.at then return end
+    local id = AA.cursorItemId()
+    if id == 22309 then
+        AA.pendingFireworksCursor = nil
+        mq.cmd(job.action == 'delete' and '/destroy' or '/autoinventory')
+        return
+    end
+    -- Another item on the cursor belongs to the player; leave it alone.
+    if (id and id ~= 0) or now >= job.expires then AA.pendingFireworksCursor = nil end
+end
+
+function AA.processConsumeExperience()
+    local job = AA.pendingConsumeExperience
+    if not job then return end
+    if not ctrl.auto_consume_experience or AA.isIgnored('Consume Experience') then
+        AA.pendingConsumeExperience = nil
+        return
+    end
+    local now = os.clock()
+    if now < job.at or rt.isCasting() or mq.TLO.Me.Dead() or mq.TLO.Me.Combat() or mq.TLO.Me.Moving() then return end
+    if not AA.powerSourceEquipped() then
+        AA.pendingConsumeExperience = nil
+        print('\ay[Triune]\ax Consume Experience purchased, but no Power Source is equipped; leaving activation to you.')
+        return
+    end
+    local ready = false
+    pcall(function()
+        local ability = mq.TLO.Me.AltAbilityReady(17789)
+        ready = ability and ability() == true or false
+    end)
+    if ready then
+        AA.pendingConsumeExperience = nil
+        mq.cmd('/alt activate 17789')
+        print('\ag[Triune]\ax Activated Consume Experience with a Power Source equipped.')
+        return
+    end
+    job.tries = job.tries + 1
+    if job.tries >= 5 then
+        AA.pendingConsumeExperience = nil
+        print('\ay[Triune]\ax Consume Experience purchase was verified, but activation did not become ready; leaving it for manual use.')
+    else
+        job.at = now + 3.0
+    end
+end
+
+function AA.powerSourceEquipped()
+    local equipped = false
+    pcall(function()
+        local item = mq.TLO.Me.Inventory('powersource')
+        equipped = item and tonumber(item.ID() or 0) > 0 or false
+    end)
+    return equipped
+end
+
 function AA.processPendingFireworksSummon()
     local job = AA.pendingFireworksSummon
     if not job then return false end
@@ -2428,12 +2513,14 @@ function AA.processPendingFireworksSummon()
     -- Wait for an idle moment; the schedule simply slides while busy.
     if rt.isCasting() or mq.TLO.Me.Dead() or mq.TLO.Me.Combat() or mq.TLO.Me.Moving() then return false end
     if AA.hasFireworksAA(job.id) then
-        AA.pendingFireworksSummon = nil
-        AA.lastAutoSummonAt = now
-        mq.cmdf('/alt act %d', job.id)
-        rt.pendingCursorClearAt = now + 0.4
-        print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
-        return true
+        if AA.activateFireworks(job.id) then
+            AA.pendingFireworksSummon = nil
+            AA.lastAutoSummonAt = now
+            print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
+            return true
+        end
+        job.at = now + 1.0
+        return false
     end
     job.tries = (job.tries or 0) + 1
     if job.tries >= AA.FIREWORKS_SUMMON_MAX_TRIES then
@@ -2448,7 +2535,7 @@ end
 function AA.checkAutoSummonFireworks()
     if not ctrl.auto_summon_fireworks then return false end
     if AA.isIgnored(ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks') then return false end
-    if AA.pendingFireworksSummon then return false end
+    if AA.pendingFireworksSummon or AA.pendingFireworksCursor then return false end
     local now = os.clock()
     if (now - (AA.lastAutoSummonAt or 0)) < math.max(3.0, AA.fireworksSummonDelay()) then return false end
 
@@ -2477,10 +2564,9 @@ function AA.checkAutoSummonFireworks()
     end)
     if coolingDown then return false end
 
+    if not AA.activateFireworks(aaId) then return false end
     AA.lastAutoSummonAt = now
-    mq.cmdf('/alt act %d', aaId)
     print(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
-    rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
 
@@ -2490,9 +2576,11 @@ function AA.manualSummonFireworks()
         print(string.format('\ay[Triune]\ax Cannot summon fireworks: the "%s" AA has not been purchased yet.', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
         return false
     end
-    mq.cmdf('/alt act %d', aaId)
+    if not AA.activateFireworks(aaId) then
+        print('\ay[Triune]\ax Fireworks summon skipped: cursor is occupied or unavailable.')
+        return false
+    end
     print(string.format('\ag[Triune]\ax Summoning fireworks via /alt act %d (Summon Firework)...', aaId))
-    rt.pendingCursorClearAt = os.clock() + 0.4
     return true
 end
 
@@ -2930,7 +3018,19 @@ function AA.drawWindow()
                 core.saveLoadout(true)
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'When ready (out of combat & stationary) and once the fireworks AA has been purchased, automatically activates it\n(/alt act 17788 or Summon Firework) and clears the cursor into inventory via /autoinventory.')
+                ImGui.SetTooltip('%s', 'When ready and once purchased, activates the Fireworks AA. Cursor handling follows the choice below and only acts on item 22309.')
+            end
+            ImGui.Text('Fireworks item 22309 after summon:')
+            for _, choice in ipairs({ { 'inventory', 'Inventory' }, { 'delete', 'Delete' }, { 'leave', 'Leave on cursor' } }) do
+                if choice[1] ~= 'inventory' then ImGui.SameLine() end
+                if ImGui.RadioButton(choice[2] .. '##fireworksCursor' .. choice[1],
+                    ctrl.auto_fireworks_cursor_action == choice[1]) then
+                    ctrl.auto_fireworks_cursor_action = choice[1]
+                    core.saveLoadout(true)
+                end
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'The delete choice only destroys item ID 22309 on the cursor after this AA summons it.')
             end
             ImGui.SameLine()
             ImGui.PushItemWidth(140)
@@ -2951,7 +3051,7 @@ function AA.drawWindow()
                 if AA.manualSummonFireworks then AA.manualSummonFireworks() end
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework) to summon fireworks and puts them into your inventory.', curId))
+                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework). Cursor handling follows the choice above.', curId))
             end
 
             ImGui.SameLine()
@@ -2980,7 +3080,15 @@ function AA.drawWindow()
             end
             if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'The Spell / Ability ID used for fireworks summoning (default: 17788, hotkey: Summon Firework).')
+                ImGui.SetTooltip('%s', 'Fireworks AA activation ID (default 17788). Item spell 36880 is separate.')
+            end
+            local consume = ImGui.Checkbox('Activate Consume Experience after buying it##autoConsumeXp', ctrl.auto_consume_experience or false)
+            if consume ~= (ctrl.auto_consume_experience or false) then
+                ctrl.auto_consume_experience = consume
+                core.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'After a verified Consume Experience purchase, activate /alt activate 17789 only if a Power Source is equipped and the AA is ready. Add Consume Experience to the AA purchase list or choose it as the cap spender separately.')
             end
             ImGui.Unindent(10)
         end
@@ -2999,6 +3107,8 @@ end
 function AA.tick()
     ctrl = core.ctrl
     rt = core.runtime
+    AA.processFireworksCursor()
+    AA.processConsumeExperience()
     if AA.pendingAATrain and AA.processAATrainWorkflow then
         AA.processAATrainWorkflow()
     end
