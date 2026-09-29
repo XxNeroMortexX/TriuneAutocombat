@@ -53,6 +53,7 @@ local function resetState()
     AA.lastAutoSpendAAAt = 0
     AA.lastAutoSummonAt = 0
     AA.pendingFireworksSummon = nil
+    -- Edited By: NeroMorte - Reset cursor/activation jobs and verified repeatable purchase counts.
     AA.pendingFireworksCursor = nil
     AA.pendingConsumeExperience = nil
     AA.repeatablePurchases = {}
@@ -254,6 +255,7 @@ function AA.isSpecialTabAA(name)
     if not name or name == '' then return false end
     local lower = tostring(name):lower()
     if lower:find('firework') then return true end
+    -- Edited By: NeroMorte - Recognize Consume Experience even before the Special tab is populated.
     -- The Special-tab list is not always populated until the AA window has
     -- been opened. Known repeatables must remain selectable in the table.
     if lower == 'consume experience' then return true end
@@ -853,6 +855,7 @@ function AA.purchaseInfo(nm)
         -- Special-tab repeatables (fireworks): no fixed max rank, the
         -- configured per-rank cost, and the client's CanTrain is not consulted.
         if info.maxRank <= 0 then info.maxRank = 1 end
+        -- Edited By: NeroMorte - Resolve each repeatable AA cost independently of the cap choice.
         info.cost = nm:lower() == 'consume experience' and 100 or
             (nm == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or
             (sc and tonumber(sc.cost)) or (cd and tonumber(cd.cost)) or 25
@@ -964,6 +967,7 @@ function AA.printPriorityStatus()
     if AA.pendingAATrain then
         print(string.format('\ag[Triune]\ax   Window purchase in progress: "%s" (step %s)', AA.pendingAATrain.name, tostring(AA.pendingAATrain.step)))
     end
+    -- Edited By: NeroMorte - Report the configured automatic selection.
     local names = AA.automaticNames()
     if names == nil then
         print('\ay[Triune]\ax   Scanning AAs; run /ac aastatus again after the scan.')
@@ -973,6 +977,7 @@ function AA.printPriorityStatus()
         print('\ay[Triune]\ax   No AAs selected for automatic training; only the configured cap spender may run.')
         return
     end
+    -- Edited By: NeroMorte - Report AAs in the configured purchase order.
     table.sort(names, function(a, b)
         local orders = ctrl.auto_aa_purchase_order or {}
         local ao, bo = tonumber(orders[a]) or 0, tonumber(orders[b]) or 0
@@ -1189,6 +1194,7 @@ function AA.recordScannedAA(list, foundMap, name, knownRank, knownMaxRank, known
         cost = 0
     elseif cost <= 0 then
         if isSpecial then
+            -- Edited By: NeroMorte - Use the repeatable-specific scan cost.
             cost = name:lower() == 'consume experience' and 100 or
                 (name == ctrl.auto_spend_aa_name and tonumber(ctrl.auto_spend_aa_cost) or nil) or 25
         else
@@ -1498,6 +1504,7 @@ function AA.scanPlayerAAs(force)
     if ctrl.auto_spend_aa_name and ctrl.auto_spend_aa_name ~= '' then
         AA.recordScannedAA(list, foundMap, ctrl.auto_spend_aa_name, nil, nil, nil, true, nil, false)
     end
+    -- Edited By: NeroMorte - Include both repeatable AAs regardless of the cap selection.
     -- Supported repeatables belong in the purchase table independently of
     -- which one is selected as the fallback cap spender. The AA window must
     -- still locate and confirm the exact purchase before activation.
@@ -1606,6 +1613,7 @@ function AA.getFilteredSortedAAs()
                 if asc then return costA < costB else return costA > costB end
             end
             return a.name:lower() < b.name:lower()
+        -- Edited By: NeroMorte - Sort the displayed rows by configured purchase order.
         elseif sortBy == 'order' then
             local orders = ctrl.auto_aa_purchase_order or {}
             local aOrder, bOrder = tonumber(orders[a.name]), tonumber(orders[b.name])
@@ -1643,6 +1651,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
     if AA.pendingAATrain then return false end
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if type(targetName) == 'string' then targetName = targetName:match('^%s*(.-)%s*$') end
+    -- Edited By: NeroMorte - Check automatic limits and Power Source before opening the purchase workflow.
     if automatic then
         if AA.repeatableLimitReached(targetName) then return false end
         if targetName:lower() == 'consume experience' and ctrl.auto_consume_experience and
@@ -1668,6 +1677,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
             end
         end
     end)
+    -- Edited By: NeroMorte - Restrict the Fireworks activation-ID fallback to Fireworks.
     if aaId == 0 and targetName:lower():find('firework') then
         aaId = tonumber(ctrl.auto_spend_aa_id or 17788) or 17788
         aaType = 4
@@ -1729,6 +1739,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
         pointsBefore = nil,          -- Me.AAPoints before the Train click (purchase check)
         openedByUs = false,
         allowStop = allowStop or false,
+        -- Edited By: NeroMorte - Remember whether this workflow must enforce automatic purchase limits.
         automatic = automatic == true,
         startedAt = os.clock(),
         nextStepAt = os.clock() + 0.5,
@@ -2018,6 +2029,7 @@ function AA.processAATrainWorkflow()
         end
 
     elseif task.step == 'click_train' then
+        -- Edited By: NeroMorte - Recheck ignore and purchase targets immediately before training.
         if task.automatic then
             local info = AA.purchaseInfo(task.name)
             if AA.isIgnored(task.name) or AA.repeatableLimitReached(task.name) or (not info.isSpecial and info.maxRank > 0 and
@@ -2059,6 +2071,7 @@ function AA.processAATrainWorkflow()
         end
 
         print(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
+        -- Edited By: NeroMorte - Defer repeatable activation until purchase verification succeeds.
         task.step = 'verify'
         task.verifyUntil = now + 2.5
         task.nextStepAt = now + 0.3
@@ -2090,14 +2103,17 @@ function AA.processAATrainWorkflow()
         AA.lastAATrainAttempt[task.name] = now
         AA.pendingAATrain = nil
         if task.purchased then
+            -- Edited By: NeroMorte - Count only verified repeatable purchases.
             if AA.isSpecialTabAA(task.name) then
                 AA.repeatablePurchases[task.name] = (AA.repeatablePurchases[task.name] or 0) + 1
                 AA.aaFilterDirty = true
             end
+            -- Edited By: NeroMorte - Queue guarded Fireworks activation after the verified purchase.
             if ctrl.auto_summon_fireworks and not AA.isIgnored(task.name) and
                 task.name and task.name:lower():find('firework') then
                 AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)
             end
+            -- Edited By: NeroMorte - Queue Consume Experience activation after the verified purchase.
             if ctrl.auto_consume_experience and task.name and task.name:lower() == 'consume experience' then
                 AA.pendingConsumeExperience = { at = now + 3.0, tries = 0 }
                 print('\ag[Triune]\ax Consume Experience purchased; activation queued after the AA becomes ready.')
@@ -2147,6 +2163,7 @@ end
 function AA.checkAutoSpendAA(allowStop)
     if not ctrl.auto_spend_aa then return false end
     if AA.pendingAATrain then return false end
+    -- Edited By: NeroMorte - Wait for pending Consume Experience activation before more automatic spending.
     if AA.pendingConsumeExperience then return false end
 
     -- Strict anti-pause check: never spend AAs while casting or moving
@@ -2210,7 +2227,9 @@ function AA.checkAutoSpendAA(allowStop)
     -- or an invalid stub - only priorities are bought: the cap spender
     -- below stays off so fireworks can never eat a pool a priority needs.
     local outstanding, outstandingWhy = nil, nil
+    -- Edited By: NeroMorte - Build selected candidates while preserving earlier blocked purchase orders.
     local firstOrderedBlocked = math.huge
+    -- Edited By: NeroMorte - Use the configured automatic selection for candidate purchases.
     local automaticNames = AA.automaticNames()
     if automaticNames == nil then return false end
     if #automaticNames > 0 then
@@ -2250,6 +2269,7 @@ function AA.checkAutoSpendAA(allowStop)
                 if rt.stopMoving then rt.stopMoving() end
             end
 
+            -- Edited By: NeroMorte - Use the configured order when selecting the next purchase.
             AA.sortPurchaseCandidates(candidates)
             local target = candidates[1]
             local targetOrder = tonumber(ctrl.auto_aa_purchase_order and ctrl.auto_aa_purchase_order[target.name]) or 0
@@ -2267,6 +2287,7 @@ function AA.checkAutoSpendAA(allowStop)
     local threshold = AA.threshold()
     local cost = tonumber(ctrl.auto_spend_aa_cost) or 25
     local effectiveName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+    -- Edited By: NeroMorte - Apply ignore and repeatable purchase limits to the cap spender.
     if AA.isIgnored(effectiveName) then return false end
     if AA.repeatableLimitReached(effectiveName) then return false end
     local isSpecialCap = (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) or effectiveName:lower():find('firework')
@@ -2313,6 +2334,7 @@ function AA.checkAutoSpendAA(allowStop)
             AA.lastAutoSpendAAAt = now
             print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
+            -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
             return AA.startAATrainWorkflow(effectiveName, allowStop, true)
         end
 
@@ -2320,6 +2342,7 @@ function AA.checkAutoSpendAA(allowStop)
             AA.lastAutoSpendAAAt = now
             print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
+            -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
             return AA.startAATrainWorkflow(effectiveName, allowStop, true)
         end
     end
@@ -2349,6 +2372,7 @@ function AA.manualSpendAA(targetName)
     -- Check prioritized abilities (same live-first classification as the
     -- automatic pass; the attempt spacing and backoffs were just cleared)
     local topPrioritized = nil
+    -- Edited By: NeroMorte - Use the configured automatic selection for candidate purchases.
     local automaticNames = AA.automaticNames()
     if automaticNames == nil then return false end
     if automaticNames and #automaticNames > 0 then
@@ -2365,6 +2389,7 @@ function AA.manualSpendAA(targetName)
         end
 
         if #candidates > 0 then
+            -- Edited By: NeroMorte - Use the configured order when selecting the next purchase.
             AA.sortPurchaseCandidates(candidates)
             topPrioritized = candidates[1]
         end
@@ -2378,6 +2403,7 @@ function AA.manualSpendAA(targetName)
 
     -- If Fireworks is configured cap spender and no other prios:
     local fallbackName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+    -- Edited By: NeroMorte - Honor ignore and repeatable limits for generic Spend Now.
     if AA.isIgnored(fallbackName) then return false end
     if AA.repeatableLimitReached(fallbackName) then return false end
     if AA.isSpecialTabAA and AA.isSpecialTabAA(fallbackName) and (not ctrl.auto_aa_priorities or not next(ctrl.auto_aa_priorities)) then
@@ -2555,6 +2581,7 @@ end
 function AA.processPendingFireworksSummon()
     local job = AA.pendingFireworksSummon
     if not job then return false end
+    -- Edited By: NeroMorte - Cancel queued Fireworks when ignored or automatic summoning is disabled.
     if AA.isIgnored(job.reason or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks') or
         not ctrl.auto_summon_fireworks then
         AA.pendingFireworksSummon = nil
@@ -2565,6 +2592,7 @@ function AA.processPendingFireworksSummon()
     -- Wait for an idle moment; the schedule simply slides while busy.
     if rt.isCasting() or mq.TLO.Me.Dead() or mq.TLO.Me.Combat() or mq.TLO.Me.Moving() then return false end
     if AA.hasFireworksAA(job.id) then
+        -- Edited By: NeroMorte - Use empty-cursor validation and the selected Fireworks item action.
         if AA.activateFireworks(job.id) then
             AA.pendingFireworksSummon = nil
             AA.lastAutoSummonAt = now
@@ -2587,6 +2615,7 @@ end
 -- Edited By: NeroMorte - Use guarded Fireworks activation and independent ownership checks.
 function AA.checkAutoSummonFireworks()
     if not ctrl.auto_summon_fireworks then return false end
+    -- Edited By: NeroMorte - Honor Fireworks ignore and avoid overlapping cursor jobs.
     if AA.isIgnored('Alternately Advanced Fireworks') then return false end
     if AA.pendingFireworksSummon or AA.pendingFireworksCursor then return false end
     local now = os.clock()
@@ -2617,6 +2646,7 @@ function AA.checkAutoSummonFireworks()
     end)
     if coolingDown then return false end
 
+    -- Edited By: NeroMorte - Use the guarded Fireworks activation helper.
     if not AA.activateFireworks(aaId) then return false end
     AA.lastAutoSummonAt = now
     print(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
@@ -2630,6 +2660,7 @@ function AA.manualSummonFireworks()
         print('\ay[Triune]\ax Cannot summon fireworks: the Fireworks AA has not been purchased yet.')
         return false
     end
+    -- Edited By: NeroMorte - Use the guarded Fireworks activation helper.
     if not AA.activateFireworks(aaId) then
         print('\ay[Triune]\ax Fireworks summon skipped: cursor is occupied or unavailable.')
         return false
@@ -2767,6 +2798,7 @@ function AA.drawWindow()
     end
 
     ImGui.SetNextItemWidth(core.px(195))
+    -- Edited By: NeroMorte - Expose checked-only versus all-standard-AA purchase selection.
     local selection = ctrl.auto_aa_selection == 'all' and 2 or 1
     local newSelection = ImGui.Combo('Auto-buy selection##autoAaSelection', selection,
         { 'Checked priorities only', 'All standard AAs' })
@@ -2782,6 +2814,7 @@ function AA.drawWindow()
         and 'All standard AAs: buys scanned regular AAs; repeatable Special AAs use the cap spender below.'
         or 'Checked priorities only: buys checked Prio rows; the cap spender runs after priorities are complete.')
 
+    -- Edited By: NeroMorte - Keep repeatable controls visible above the scrolling table.
     -- Repeatable cap spender controls stay above the scrolling AA table.
     -- Fireworks & Utility Actions Collapsible Section
     ImGui.Spacing()
@@ -2813,6 +2846,7 @@ function AA.drawWindow()
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('%s', 'When ready and once purchased, activates the Fireworks AA. Cursor handling follows the choice below and only acts on item 22309.')
             end
+            -- Edited By: NeroMorte - Expose inventory/delete/leave handling for the verified Fireworks item.
             ImGui.Text('Fireworks item 22309 after summon:')
             for _, choice in ipairs({ { 'inventory', 'Inventory' }, { 'delete', 'Delete' }, { 'leave', 'Leave on cursor' } }) do
                 if choice[1] ~= 'inventory' then ImGui.SameLine() end
@@ -2875,6 +2909,7 @@ function AA.drawWindow()
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('%s', 'Fireworks AA activation ID (default 17788). Item spell 36880 is separate.')
             end
+            -- Edited By: NeroMorte - Expose post-purchase Consume Experience activation.
             local consume = ImGui.Checkbox('Activate Consume Experience after buying it##autoConsumeXp', ctrl.auto_consume_experience or false)
             if consume ~= (ctrl.auto_consume_experience or false) then
                 ctrl.auto_consume_experience = consume
@@ -2919,6 +2954,7 @@ function AA.drawWindow()
 
     ImGui.SameLine()
     ImGui.SetNextItemWidth(core.px(105))
+    -- Edited By: NeroMorte - Expose purchase-order sorting in the AA browser.
     local sortNames = { 'Order', 'Name', 'Cost', 'Trained' }
     local sortKeys = { 'order', 'name', 'cost', 'trained' }
     local curSortIdx = 1
@@ -2985,9 +3021,11 @@ function AA.drawWindow()
             ImGuiTableFlags.SizingStretchProp,
             ImGuiTableFlags.ScrollX
         )
+        -- Edited By: NeroMorte - Expand the browser for Ignore, Stop at, and Order controls.
         if ImGui.BeginTable('##AutoAABrowserTable', 9, tableFlags) then
             ImGui.TableSetupColumn('Prio', ImGuiTableColumnFlags.WidthFixed, core.px(32))
             ImGui.TableSetupColumn('Ability Name', ImGuiTableColumnFlags.WidthStretch, 200)
+            -- Edited By: NeroMorte - Add the per-AA configuration columns.
             ImGui.TableSetupColumn('Ignore', ImGuiTableColumnFlags.WidthFixed, core.px(46))
             ImGui.TableSetupColumn('Stop at', ImGuiTableColumnFlags.WidthFixed, core.px(72))
             ImGui.TableSetupColumn('Order', ImGuiTableColumnFlags.WidthFixed, core.px(65))
@@ -3003,6 +3041,7 @@ function AA.drawWindow()
                 ImGui.TableNextRow()
                 ImGui.PushID(i)
                 local ui = itm.ui
+                -- Edited By: NeroMorte - Distinguish repeatable purchase counts from ordinary ranks.
                 local repeatable = AA.isSpecialTabAA(itm.name)
                 if not ui then
                     ui = {
@@ -3039,6 +3078,7 @@ function AA.drawWindow()
                     rt.showAATooltip(itm)
                 end
 
+                -- Edited By: NeroMorte - Expose per-row automatic purchase exclusion.
                 -- Ignore affects automatic purchases and the cap spender, not a deliberate Train click.
                 ImGui.TableNextColumn()
                 local ignored = AA.isIgnored(itm.name)
@@ -3052,6 +3092,7 @@ function AA.drawWindow()
                     ImGui.SetTooltip('%s', 'Never buy this AA automatically.')
                 end
 
+                -- Edited By: NeroMorte - Expose bounded rank targets or per-run repeatable purchase limits.
                 -- Target is an absolute rank; zero means the client-reported maximum.
                 ImGui.TableNextColumn()
                 local target = tonumber(ctrl.auto_aa_target_ranks and ctrl.auto_aa_target_ranks[itm.name]) or 0
@@ -3073,6 +3114,7 @@ function AA.drawWindow()
                 end
 
                 ImGui.TableNextColumn()
+                -- Edited By: NeroMorte - Expose each AA purchase sequence number.
                 local order = tonumber(ctrl.auto_aa_purchase_order and ctrl.auto_aa_purchase_order[itm.name]) or 0
                 ImGui.SetNextItemWidth(core.px(60))
                 local newOrder = ImGui.InputInt('##aaOrder', order, 1, 1)
@@ -3089,6 +3131,7 @@ function AA.drawWindow()
 
                 -- Rank
                 ImGui.TableNextColumn()
+                -- Edited By: NeroMorte - Display verified repeatable purchase counts in the Rank column.
                 if repeatable then
                     ImGui.Text(string.format('%d buys', AA.repeatablePurchases[itm.name] or 0))
                 elseif itm.fullyTrained then
@@ -3118,6 +3161,7 @@ function AA.drawWindow()
 
                 -- Col 5: Status
                 ImGui.TableNextColumn()
+                -- Edited By: NeroMorte - Display ignored, purchase-limit, and rank-target status.
                 if AA.isIgnored(itm.name) then
                     ImGui.TextDisabled('Ignored')
                 elseif AA.repeatableLimitReached(itm.name) then
@@ -3193,6 +3237,7 @@ end
 function AA.tick()
     ctrl = core.ctrl
     rt = core.runtime
+    -- Edited By: NeroMorte - Drive independent cursor handling and Consume Experience activation jobs.
     AA.processFireworksCursor()
     AA.processConsumeExperience()
     if AA.pendingAATrain and AA.processAATrainWorkflow then
