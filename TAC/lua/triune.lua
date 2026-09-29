@@ -291,7 +291,11 @@ local function sanitizeModeConfig(c)
     end
     if c.auto_summon_fireworks == nil then c.auto_summon_fireworks = false end
     if type(c.auto_aa_priorities) ~= 'table' then c.auto_aa_priorities = {} end
-    if c.auto_aa_sort_by ~= 'name' and c.auto_aa_sort_by ~= 'cost' and c.auto_aa_sort_by ~= 'trained' then
+    if type(c.auto_aa_ignored) ~= 'table' then c.auto_aa_ignored = {} end
+    if type(c.auto_aa_target_ranks) ~= 'table' then c.auto_aa_target_ranks = {} end
+    if type(c.auto_aa_purchase_order) ~= 'table' then c.auto_aa_purchase_order = {} end
+    if c.auto_aa_selection ~= 'all' then c.auto_aa_selection = 'priorities' end
+    if c.auto_aa_sort_by ~= 'name' and c.auto_aa_sort_by ~= 'cost' and c.auto_aa_sort_by ~= 'trained' and c.auto_aa_sort_by ~= 'order' then
         c.auto_aa_sort_by = 'name'
     end
     if c.auto_aa_sort_asc == nil then c.auto_aa_sort_asc = true end
@@ -535,7 +539,11 @@ local function defaultCtrl()
         auto_spend_aa_action     = 'window',
         auto_summon_fireworks    = false,
         auto_aa_priorities       = {},
-        auto_aa_sort_by          = 'name',
+        auto_aa_ignored          = {},
+        auto_aa_target_ranks     = {},
+        auto_aa_purchase_order   = {},
+        auto_aa_selection        = 'priorities',
+        auto_aa_sort_by          = 'order',
         auto_aa_sort_asc         = true,
         auto_aa_search           = '',
         auto_aa_hide_maxed       = false,
