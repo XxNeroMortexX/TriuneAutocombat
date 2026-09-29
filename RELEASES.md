@@ -4,6 +4,32 @@ Short, human-readable notes for each release. The GitHub release page is built
 from the entry that matches the tag (`v3.0` -> `## 3.0`). The full, detailed
 history of every change stays in [CHANGELOG.md](CHANGELOG.md).
 
+## 3.1-Morte.1
+
+First installer release for NeroMorte's Triune fork, based on Gennro 3.1 and
+the current upstream main, including the Med Break group-combat option.
+
+### In-game updates
+
+- **MQ2WebUpdate 4.1.6** ships in `plugins/` with the Lua Update Manager and
+  independent DLL coordinator. On first launch, load it with
+  `/plugin mq2webupdate load` and open **Updates** in Triune.
+- The updater checks the NeroMorte Main Download repository and monitors
+  Gennro Official. It shows file plans, protects linked files, verifies staged
+  downloads, applies changed Lua files, and can safely replace its own DLL.
+- Plugin mappings, repository roles, and destinations are editable in the GUI
+  and saved in the updater profile INI. Existing character settings are not
+  included in the release archive.
+
+For a first install, extract `TriuneAutocombat-Install.zip` at the MacroQuest
+root. It puts files directly under `lua/`, `config/`, `resources/`, and
+`plugins/`. MQ2Nav navmeshes are not bundled: download the
+[complete mesh pack](https://mqmesh.com/resources/zips/MQ2Nav_meshes.zip)
+separately and extract its `.navmesh` files into MacroQuest's
+`resources/MQ2Nav/` folder. After installation, use the in-game updater.
+
+---
+
 ## 3.1
 
 A bug-fix release for 3.0. No new plugins; if you are on 3.0 this is a

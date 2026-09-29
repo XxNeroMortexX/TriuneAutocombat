@@ -9,13 +9,14 @@ On Project Triune every character is three classes at once. Triune AutoCombat ru
 ## Install
 
 1. Download the latest **RoF2** MacroQuest from [macroquest/macroquest/releases](https://github.com/macroquest/macroquest/releases) and extract it somewhere like `C:\MacroQuest`.
-2. Download Triune from [Triune AutoCombat releases](https://github.com/gennro/TriuneAutocombat/releases/latest):
-   - **`TriuneAutocombat-full.zip`** - first install. Has everything, including the MQ2Nav zone navmeshes.
-   - **`TriuneAutocombat-Update.zip`** - updating. Everything except the navmeshes (they rarely change).
-3. Extract the zip **into the root of your MacroQuest folder**. It merges `lua/`, `config/` and `resources/` into place. Overwrite if asked - your own settings and loadouts are never touched.
-4. Start `MacroQuest.exe`, then log into Project Triune.
+2. Download **`TriuneAutocombat-Install.zip`** from [NeroMorte's Triune releases](https://github.com/XxNeroMortexX/TriuneAutocombat/releases/latest).
+3. Extract the ZIP **into the root of your MacroQuest folder**. Its `lua/`, `config/`, `resources/`, and `plugins/` directories merge into those folders. Existing character loadouts are not part of the archive.
+4. For MQ2Nav navigation, download the [complete mesh pack](https://mqmesh.com/resources/zips/MQ2Nav_meshes.zip) separately and extract its `.navmesh` files into `resources/MQ2Nav/` under your MacroQuest folder. The mesh pack is hosted by a separate site and is not bundled with this release.
+5. Start `MacroQuest.exe`, then log into Project Triune.
 
 Triune opens by itself when you log in. If you close it, type `/ac` or `/lua run triune`.
+
+On the first install, load the backend with `/plugin mq2webupdate load`. Open **Updates** in Triune to check the NeroMorte Main Download repository. For later updates, use **Check for Updates**, **Stage Updates**, and the appropriate confirmed apply button in game. Plugin DLL replacements use an independent Lua coordinator so the updater can unload and reload its own DLL. Files linked into MacroQuest are protected; update their source checkout separately. Repository and deployment mappings can be edited in the updater GUI and saved in its profile INI.
 
 > Windows users: add your MacroQuest folder as an antivirus exception before running it.
 
@@ -81,7 +82,7 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Cursor Manager | `/ac cursorui` | Clears whatever is stuck on your cursor. |
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
 | Floating damage | Settings -> Plugins | Big animated numbers for crits. |
-| Update Checker | `/ac update` | Tells you when a newer Triune release is out. Nothing is downloaded. |
+| Updates | Header **Updates** button | Compares, stages, and applies files from the configured Main Download repository; monitors Gennro separately. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
 
 Each of these is a plugin in `lua/tac/`. Turn them on or off under **Settings -> Plugins**.
@@ -133,8 +134,10 @@ All paths are inside your MacroQuest folder.
 | `Logs/triune_*.log` | Diagnostic logs (when Log To File is on). |
 | `lua/triune.lua` | The bot itself. |
 | `lua/tac/*.lua` | The plugins listed above. Drop your own `.lua` plugin here and it loads. |
+| `lua/TAC_support_modules/webupdate_dll_handoff.lua` | Independent coordinator for verified plugin DLL replacement. |
+| `plugins/MQ2WebUpdate.dll` | Generic update backend; load with `/plugin mq2webupdate load`. |
 | `resources/gamedb/` | The offline game database (in both release zips). |
-| `resources/MQ2Nav/` | Zone navmeshes (full release only). |
+| `resources/MQ2Nav/` | Zone navmeshes installed separately from the linked mesh pack. |
 
 ---
 
@@ -146,7 +149,8 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 
 ## Links
 
-- [Triune AutoCombat releases](https://github.com/gennro/TriuneAutocombat/releases/latest)
+- [NeroMorte fork releases](https://github.com/XxNeroMortexX/TriuneAutocombat/releases/latest)
+- [Gennro official project](https://github.com/gennro/TriuneAutocombat)
 - [MacroQuest releases (RoF2)](https://github.com/macroquest/macroquest/releases)
 - [Project Triune](https://nms.bestemu.com/)
 - [Release notes](RELEASES.md) - short summary per release
