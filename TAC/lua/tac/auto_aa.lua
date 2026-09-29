@@ -2735,7 +2735,7 @@ function AA.drawWindow()
     -- Repeatable cap spender controls stay above the scrolling AA table.
     -- Fireworks & Utility Actions Collapsible Section
     ImGui.Spacing()
-    if ImGui.CollapsingHeader('Fireworks & Consume Experience##autoAaFwHeader', false) then
+    if ImGui.CollapsingHeader('Fireworks & Consume Experience##autoAaFwHeader') then
             ImGui.Indent(10)
             local curName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
             local curId = ctrl.auto_spend_aa_id or 17788
