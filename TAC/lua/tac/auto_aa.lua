@@ -251,6 +251,11 @@ function AA.isSpecialTabAA(name)
     if not name or name == '' then return false end
     local lower = tostring(name):lower()
     if lower:find('firework') then return true end
+    -- The Special-tab list is not always populated until the AA window has
+    -- been opened. An explicitly selected repeatable cap spender must still
+    -- be visible and purchasable through the normal AA-window workflow.
+    if lower == 'consume experience' and ctrl and
+        tostring(ctrl.auto_spend_aa_name or ''):lower() == lower then return true end
     if rt.cachedAAData and rt.cachedAAData[name] then
         local cat = rt.cachedAAData[name].category
         if cat and cat:lower():find('special') then return true end
@@ -2388,7 +2393,7 @@ end
 function AA.hasFireworksAA(aaId)
     local owned = false
     pcall(function()
-        local keys = { ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks', 'Alternately Advanced Fireworks', 'Summon Firework' }
+        local keys = { 'Alternately Advanced Fireworks', 'Summon Firework' }
         if aaId and aaId > 0 then keys[#keys + 1] = aaId end
         for _, key in ipairs(keys) do
             local ma = mq.TLO.Me.AltAbility(key)
@@ -2534,7 +2539,7 @@ end
 
 function AA.checkAutoSummonFireworks()
     if not ctrl.auto_summon_fireworks then return false end
-    if AA.isIgnored(ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks') then return false end
+    if AA.isIgnored('Alternately Advanced Fireworks') then return false end
     if AA.pendingFireworksSummon or AA.pendingFireworksCursor then return false end
     local now = os.clock()
     if (now - (AA.lastAutoSummonAt or 0)) < math.max(3.0, AA.fireworksSummonDelay()) then return false end
@@ -2573,7 +2578,7 @@ end
 function AA.manualSummonFireworks()
     local aaId = tonumber(ctrl.auto_spend_aa_id) or 17788
     if not AA.hasFireworksAA(aaId) then
-        print(string.format('\ay[Triune]\ax Cannot summon fireworks: the "%s" AA has not been purchased yet.', ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'))
+        print('\ay[Triune]\ax Cannot summon fireworks: the Fireworks AA has not been purchased yet.')
         return false
     end
     if not AA.activateFireworks(aaId) then
@@ -2721,8 +2726,115 @@ function AA.drawWindow()
         core.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'All standard AAs uses the scanned character AA list. Special-tab repeatables use the separate cap spender. Ignore and target-rank settings apply to either mode.')
+        ImGui.SetTooltip('%s', 'Checked priorities only buys AAs whose Prio box you checked. All standard AAs buys all scanned non-Special AAs unless ignored or at the target rank. Either mode uses the separate cap spender after its selected AAs are finished.')
     end
+    ImGui.TextDisabled(ctrl.auto_aa_selection == 'all'
+        and 'All standard AAs: buys scanned regular AAs; repeatable Special AAs use the cap spender below.'
+        or 'Checked priorities only: buys checked Prio rows; the cap spender runs after priorities are complete.')
+
+    -- Repeatable cap spender controls stay above the scrolling AA table.
+    -- Fireworks & Utility Actions Collapsible Section
+    ImGui.Spacing()
+    if ImGui.CollapsingHeader('Fireworks & Consume Experience##autoAaFwHeader', false) then
+            ImGui.Indent(10)
+            local curName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
+            local curId = ctrl.auto_spend_aa_id or 17788
+            ImGui.Text('Repeatable cap spender (after selected AAs):')
+            if ImGui.RadioButton('Fireworks##capFireworks', curName:lower():find('firework', 1, true) ~= nil) then
+                ctrl.auto_spend_aa_name = 'Alternately Advanced Fireworks'
+                ctrl.auto_spend_aa_cost = 25
+                AA.requestScan(0)
+                core.saveLoadout(true)
+            end
+            ImGui.SameLine()
+            if ImGui.RadioButton('Consume Experience (100 AA)##capConsume', curName:lower() == 'consume experience') then
+                ctrl.auto_spend_aa_name = 'Consume Experience'
+                ctrl.auto_spend_aa_cost = 100
+                AA.requestScan(0)
+                core.saveLoadout(true)
+            end
+            ImGui.TextDisabled('Consume Experience activation is a separate checkbox below; equip a Power Source first.')
+
+            local summonVal = ImGui.Checkbox('Enable Auto-Summon Fireworks (/alt act)', ctrl.auto_summon_fireworks or false)
+            if summonVal ~= (ctrl.auto_summon_fireworks or false) then
+                ctrl.auto_summon_fireworks = summonVal
+                core.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'When ready and once purchased, activates the Fireworks AA. Cursor handling follows the choice below and only acts on item 22309.')
+            end
+            ImGui.Text('Fireworks item 22309 after summon:')
+            for _, choice in ipairs({ { 'inventory', 'Inventory' }, { 'delete', 'Delete' }, { 'leave', 'Leave on cursor' } }) do
+                if choice[1] ~= 'inventory' then ImGui.SameLine() end
+                if ImGui.RadioButton(choice[2] .. '##fireworksCursor' .. choice[1],
+                    ctrl.auto_fireworks_cursor_action == choice[1]) then
+                    ctrl.auto_fireworks_cursor_action = choice[1]
+                    core.saveLoadout(true)
+                end
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'The delete choice only destroys item ID 22309 on the cursor after this AA summons it.')
+            end
+            ImGui.SameLine()
+            ImGui.PushItemWidth(140)
+            local curDelay = AA.fireworksSummonDelay()
+            local newDelay = ImGui.SliderFloat('Summon delay (s)##fwSummonDelay', curDelay, 0.5, 15.0, '%.1f')
+            ImGui.PopItemWidth()
+            if newDelay and math.abs(newDelay - curDelay) > 0.01 then
+                ctrl.auto_summon_delay_sec = newDelay
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'How long to wait after buying the fireworks AA before /alt act is issued (the purchase must reach the server first).\nAlso the minimum spacing between automatic summons. Default 3s.')
+            end
+
+            ImGui.SameLine()
+            local summonLabel = string.format('Summon Fireworks (/alt act %d)##manualSummonBtn', curId)
+            if ImGui.Button(summonLabel) then
+                if AA.manualSummonFireworks then AA.manualSummonFireworks() end
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework). Cursor handling follows the choice above.', curId))
+            end
+
+            ImGui.SameLine()
+            if ImGui.Button('Clear Cursor (/autoinv)##clearCursorAutoAaBtn') then
+                rt.pendingCursorClearAt = os.clock()
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'Clears any item currently on cursor into your inventory bags.')
+            end
+
+            ImGui.SetNextItemWidth(core.px(260))
+            local newName = ImGui.InputText('Cap Spender AA Name##autoAaCapName', curName, 128)
+            if newName and newName ~= curName and newName ~= '' then
+                ctrl.auto_spend_aa_name = newName
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'The fallback AA Ability name used for point dumping when cap is reached (e.g. Alternately Advanced Fireworks).')
+            end
+
+            ImGui.SameLine()
+            ImGui.SetNextItemWidth(core.px(120))
+            local newId = ImGui.InputInt('Activation ID##autoAaActId', curId)
+            if newId ~= curId and newId > 0 then
+                ctrl.auto_spend_aa_id = newId
+            end
+            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'Fireworks AA activation ID (default 17788). Item spell 36880 is separate.')
+            end
+            local consume = ImGui.Checkbox('Activate Consume Experience after buying it##autoConsumeXp', ctrl.auto_consume_experience or false)
+            if consume ~= (ctrl.auto_consume_experience or false) then
+                ctrl.auto_consume_experience = consume
+                core.saveLoadout(true)
+            end
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('%s', 'After a verified Consume Experience purchase, activate /alt activate 17789 only if a Power Source is equipped and the AA is ready. Add Consume Experience to the AA purchase list or choose it as the cap spender separately.')
+            end
+            ImGui.Unindent(10)
+        end
 
     ImGui.Separator()
 
@@ -3005,93 +3117,6 @@ function AA.drawWindow()
             ImGui.EndTable()
         end
 
-        -- 4. Fireworks & Utility Actions Collapsible Section
-        ImGui.Spacing()
-        if ImGui.CollapsingHeader('Fireworks Spender & Utility Actions##autoAaFwHeader', false) then
-            ImGui.Indent(10)
-            local curName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
-            local curId = ctrl.auto_spend_aa_id or 17788
-
-            local summonVal = ImGui.Checkbox('Enable Auto-Summon Fireworks (/alt act)', ctrl.auto_summon_fireworks or false)
-            if summonVal ~= (ctrl.auto_summon_fireworks or false) then
-                ctrl.auto_summon_fireworks = summonVal
-                core.saveLoadout(true)
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'When ready and once purchased, activates the Fireworks AA. Cursor handling follows the choice below and only acts on item 22309.')
-            end
-            ImGui.Text('Fireworks item 22309 after summon:')
-            for _, choice in ipairs({ { 'inventory', 'Inventory' }, { 'delete', 'Delete' }, { 'leave', 'Leave on cursor' } }) do
-                if choice[1] ~= 'inventory' then ImGui.SameLine() end
-                if ImGui.RadioButton(choice[2] .. '##fireworksCursor' .. choice[1],
-                    ctrl.auto_fireworks_cursor_action == choice[1]) then
-                    ctrl.auto_fireworks_cursor_action = choice[1]
-                    core.saveLoadout(true)
-                end
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'The delete choice only destroys item ID 22309 on the cursor after this AA summons it.')
-            end
-            ImGui.SameLine()
-            ImGui.PushItemWidth(140)
-            local curDelay = AA.fireworksSummonDelay()
-            local newDelay = ImGui.SliderFloat('Summon delay (s)##fwSummonDelay', curDelay, 0.5, 15.0, '%.1f')
-            ImGui.PopItemWidth()
-            if newDelay and math.abs(newDelay - curDelay) > 0.01 then
-                ctrl.auto_summon_delay_sec = newDelay
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'How long to wait after buying the fireworks AA before /alt act is issued (the purchase must reach the server first).\nAlso the minimum spacing between automatic summons. Default 3s.')
-            end
-
-            ImGui.SameLine()
-            local summonLabel = string.format('Summon Fireworks (/alt act %d)##manualSummonBtn', curId)
-            if ImGui.Button(summonLabel) then
-                if AA.manualSummonFireworks then AA.manualSummonFireworks() end
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', string.format('Manually triggers /alt act %d (Summon Firework). Cursor handling follows the choice above.', curId))
-            end
-
-            ImGui.SameLine()
-            if ImGui.Button('Clear Cursor (/autoinv)##clearCursorAutoAaBtn') then
-                rt.pendingCursorClearAt = os.clock()
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'Clears any item currently on cursor into your inventory bags.')
-            end
-
-            ImGui.SetNextItemWidth(core.px(260))
-            local newName = ImGui.InputText('Cap Spender AA Name##autoAaCapName', curName, 128)
-            if newName and newName ~= curName and newName ~= '' then
-                ctrl.auto_spend_aa_name = newName
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'The fallback AA Ability name used for point dumping when cap is reached (e.g. Alternately Advanced Fireworks).')
-            end
-
-            ImGui.SameLine()
-            ImGui.SetNextItemWidth(core.px(120))
-            local newId = ImGui.InputInt('Activation ID##autoAaActId', curId)
-            if newId ~= curId and newId > 0 then
-                ctrl.auto_spend_aa_id = newId
-            end
-            if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'Fireworks AA activation ID (default 17788). Item spell 36880 is separate.')
-            end
-            local consume = ImGui.Checkbox('Activate Consume Experience after buying it##autoConsumeXp', ctrl.auto_consume_experience or false)
-            if consume ~= (ctrl.auto_consume_experience or false) then
-                ctrl.auto_consume_experience = consume
-                core.saveLoadout(true)
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'After a verified Consume Experience purchase, activate /alt activate 17789 only if a Power Source is equipped and the AA is ready. Add Consume Experience to the AA purchase list or choose it as the cap spender separately.')
-            end
-            ImGui.Unindent(10)
-        end
     end
     ImGui.EndChild()
     ImGui.PopStyleVar(2)
