@@ -122,7 +122,7 @@ namespace mq2webupdate::profiles
     {
         std::ostringstream output;
         output << "Format=MQ2WebUpdateProfiles\n";
-        output << "Version=3\n";
+        output << "Version=4\n";
         output << "ProfileCount=" << profiles.size() << "\n";
 
         for (std::size_t profileIndex = 0;
@@ -235,9 +235,10 @@ namespace mq2webupdate::profiles
         const bool version1 = fields["Version"] == "1";
         const bool version2 = fields["Version"] == "2";
         const bool version3 = fields["Version"] == "3";
+        const bool version4 = fields["Version"] == "4";
 
         if (fields["Format"] != "MQ2WebUpdateProfiles" ||
-            (!version1 && !version2 && !version3))
+            (!version1 && !version2 && !version3 && !version4))
         {
             error = "Unsupported profile-store format or version.";
             return false;
@@ -286,7 +287,7 @@ namespace mq2webupdate::profiles
                 return false;
             }
 
-            if ((version2 || version3) && !Decode(prefix + "Provider", provider))
+            if ((version2 || version3 || version4) && !Decode(prefix + "Provider", provider))
             {
                 error = "Invalid profile provider field.";
                 return false;
@@ -305,7 +306,7 @@ namespace mq2webupdate::profiles
             profile.role = *parsedRole;
             profile.provider = *parsedProvider;
 
-            if (version3)
+            if (version3 || version4)
             {
                 std::uint64_t interval = 0;
                 if (!ParseBoolean(fields[prefix + "MonitorOnStartup"], profile.monitorOnStartup) ||

@@ -188,7 +188,7 @@ size_t g_errorCount = 0;
 
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
-constexpr const char* kWebUpdateVersion = "4.1.1";
+constexpr const char* kWebUpdateVersion = "4.1.3";
 constexpr const char* kWebUpdateApiVersion = "4.0";
 // Legacy defaults retained for migration of older settings files. The active
 // main repository and every deployment mapping are loaded from the saved
@@ -1264,6 +1264,18 @@ bool g_restartRequired = false;
         auto gennro =
             MakeTriuneProfile("gennro", "Gennro Official", "gennro");
         morte.role = profilemodel::ProfileRole::MainDownload;
+        profilemodel::Mapping plugin;
+        plugin.id = "plugin-mq2webupdate";
+        plugin.name = "MQ2WebUpdate DLL";
+        plugin.remotePath = "MQ2WebUpdate/MQ2WebUpdate.dll";
+        plugin.destinationRoot = profilemodel::DestinationRoot::Plugins;
+        plugin.destinationPath.clear();
+        plugin.recursive = false;
+        plugin.required = false;
+        plugin.restartRequired = false;
+        plugin.includePatterns = { "**" };
+        plugin.maximumFileBytes = 64ull * 1024ull * 1024ull;
+        morte.mappings.push_back(std::move(plugin));
         gennro.role = profilemodel::ProfileRole::MonitorOnly;
         gennro.monitorOnStartup = true;
         gennro.monitorIntervalMinutes = 60;
@@ -1390,8 +1402,10 @@ bool g_restartRequired = false;
                 path.wstring().c_str(),
                 MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         {
+            const DWORD win32Error = GetLastError();
             fs::remove(temp, ec);
-            g_profileStoreError = "Atomic profile-store publication failed.";
+            g_profileStoreError = "Atomic profile-store publication failed (Win32 " +
+                std::to_string(win32Error) + ").";
             return false;
         }
 
@@ -1428,6 +1442,7 @@ bool g_restartRequired = false;
         const std::string data(
             (std::istreambuf_iterator<char>(input)),
             std::istreambuf_iterator<char>());
+        input.close(); // Windows cannot atomically replace an open profile store.
         std::vector<profilemodel::Profile> parsed;
 
         if (!profilemodel::ParseProfileStore(
@@ -1436,6 +1451,30 @@ bool g_restartRequired = false;
                 g_profileStoreError))
         {
             return false;
+        }
+
+        // Existing v3 stores predate the built-in DLL mapping. Upgrade once,
+        // then let the saved v4 mapping remain entirely user-editable.
+        const bool legacyStore =
+            data.find("\nVersion=4\n") == std::string::npos &&
+            data.find("\nVersion=4\r\n") == std::string::npos;
+        if (legacyStore)
+        {
+            const auto defaults = BuildDefaultManagedProfiles();
+            const auto& defaultMapping = defaults.front().mappings.back();
+            for (auto& profile : parsed)
+            {
+                if (profile.id != "morte" ||
+                    profile.owner != "XxNeroMortexX" ||
+                    profile.repository != "TriuneAutocombat" ||
+                    profile.reference != "main")
+                    continue;
+                const bool exists = std::any_of(profile.mappings.begin(),
+                    profile.mappings.end(), [&](const profilemodel::Mapping& mapping)
+                    { return mapping.id == defaultMapping.id; });
+                if (!exists) profile.mappings.push_back(defaultMapping);
+            }
+            if (!WriteProfileStoreAtomic(parsed)) return false;
         }
 
         g_managedProfiles = std::move(parsed);
