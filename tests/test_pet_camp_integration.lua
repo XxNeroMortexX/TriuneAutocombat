@@ -95,3 +95,17 @@ dispatchRuntime.checkPetCampDispatch(); assert(dispatchRuntime.petCampDispatchAc
 targetId = 101; dispatchRuntime.checkPetCampDispatch(); assert(not dispatchRuntime.petCampPulse and commandLog[#commandLog] == '/attack off')
 dispatchRuntime.endPetCampDispatch(true); assert(commandLog[#commandLog] == '/attack off') -- Even without a tracked pulse.
 print('PASS: actual action gates, all five dispatchers, no-chase movement guard, original command isolation and balanced pet-button styles')
+
+-- Execute the actual host snapshot predicate with the real TLO placement.
+local safe = assert(source:match('safeProbe = function%(%)%s*(.-)\n        end,\n        command = sendPetCmd'))
+local idle = true
+local probeRuntime = { petCamp = { phase = 'IDLE' }, anyXtarAlive = function() return not idle end }
+local probeEnv = setmetatable({ runtime = probeRuntime,
+    mq = { TLO = { MacroQuest = {}, EverQuest = { GameState = function() return 'INGAME' end },
+        Me = { Dead = function() return false end, Feigning = function() return false end,
+            Moving = function() return false end, Combat = function() return false end } } },
+    isCastingOrStarting = function() return false end }, { __index = _G })
+local safeProbe = assert(load('return function() '..safe..' end', 'safeSnapshot', 't', probeEnv))()
+assert(safeProbe()); idle = false; assert(not safeProbe()); idle = true
+probeRuntime.petCamp.phase = 'GATHER'; assert(not safeProbe())
+print('PASS: safe automatic snapshots use EverQuest.GameState and defer during fights/pulls')

@@ -235,9 +235,9 @@ function Controller:combatTick()
     for id in pairs(self.batch) do if not a.alive(id) then self.batch[id] = nil end end
     local owned, near, defense = {}, nil, nil
     for id in pairs(self.batch) do owned[id] = true end
-    for _, id in ipairs(xt) do
-        if a.engagedByUs(id, self.cache) then owned[id] = true end
-    end
+    -- Created By: NeroMorte - Actual hostile XTarget IDs are the fight boundary; ToT can change mid-fight.
+    local onXT = {}
+    for _, id in ipairs(xt) do owned[id], onXT[id] = true, true end
     for id in pairs(owned) do
         if a.alive(id) and self:ownerAllowed(id) then
             if not near or a.campDistance(id) < a.campDistance(near) then near = id end
@@ -255,6 +255,15 @@ function Controller:combatTick()
     end
     if self.phase == 'FIGHT' or self.phase == 'RETURN' then
         if next(owned) or #xt > 0 then
+            if c.pet_camp_pull_back ~= true then
+                for _, id in ipairs(xt) do
+                    if a.alive(id) then
+                        self:attack(id, 'all')
+                        self.message = 'Pets finishing the remaining XTargets'
+                        return true, self:ownerAllowed(id)
+                    end
+                end
+            end
             self.message = 'Waiting for the remaining pull to reach camp'
             return false, false
         end
@@ -271,9 +280,11 @@ function Controller:combatTick()
     end
     if c.pet_camp_pull_back ~= true then
         local id = self.fightId
-        if not id or not a.alive(id) or not a.inPullRadius(id) then
-            local exclusions = {}; for _, xid in ipairs(xt) do exclusions[xid] = true end
-            id = a.find(exclusions)
+        -- Created By: NeroMorte - Finish every live hostile XTarget before pulling a fresh mob.
+        if #xt > 0 then
+            if not id or not a.alive(id) or not onXT[id] then id = xt[1] end
+        elseif not id or not a.alive(id) or not a.inPullRadius(id) then
+            id = a.find({})
         end
         if id then
             a.releasePets()
@@ -311,16 +322,17 @@ function Controller:combatTick()
                 self.message = 'Waiting for the pull target to settle'; return true, false
             end
         end
-        if a.alive(tag.id) and a.engagedByUs(tag.id, self.cache) then
+        -- Created By: NeroMorte - Confirm this exact pull ID in XTargets before advancing or recalling.
+        if a.alive(tag.id) and onXT[tag.id] then
             if a.endDispatch then a.endDispatch() end
             self.batch[tag.id], self.tag = true, nil
-        elseif not a.alive(tag.id) or now - tag.at >= 10 then
+        elseif not a.alive(tag.id) or now - tag.at >= 120 then
             if a.endDispatch then a.endDispatch() end
             self.skipped[tag.id], self.tag = now + 30, nil
         else
             -- A support cast/target change can cancel the owner trigger before pets see it.
             if now - self.lastAttackAt >= 3 then self:attack(tag.id, puller.scope) end
-            self.message = string.format('Tagging mob; %d/%d confirmed', count(self.batch), c.pet_camp_batch_size)
+            self.message = string.format('Waiting for pull target in XTargets; %d/%d confirmed', count(self.batch), c.pet_camp_batch_size)
             return true, false
         end
     end

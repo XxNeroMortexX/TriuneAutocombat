@@ -11781,7 +11781,7 @@ function UI.drawControlTab()
 
         -- Edited By: NeroMorte - Stationary camp settings are contextual and save with the loadout.
         if ctrl.submode == 'Camp' and ctrl.pull_style == 'Pet' then
-            ctrl.pet_camp_enabled = ImGui.Checkbox('Pets Only - Stay at Camp##petCampEnabled', ctrl.pet_camp_enabled == true)
+            ctrl.pet_camp_enabled = ImGui.Checkbox('Pets Pull - Player Stay in Camp##petCampEnabled', ctrl.pet_camp_enabled == true)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Pets fight inside Pull Radius. You stay at camp and help only inside Player Assist Radius or when directly threatened. No chasing; support casts still require range.')
             end
@@ -21695,6 +21695,8 @@ function runtime.pullerTick()
             runtime.pullState = 'FIGHTING'
             return
         end
+        -- Edited By: NeroMorte - A filtered/unreachable XTarget still belongs to the current fight.
+        if runtime.anyXtarAlive(true) then stopMoving(); return end
         if mq.TLO.Me.Combat() then return end -- already fighting something; don't pull yet
 
         -- If current target is right next to camp (within 25 units), fight it directly
@@ -21759,7 +21761,8 @@ function runtime.pullerTick()
                 runtime.pullTargetId = aggroId
                 runtime.pullState = 'TO_CAMP'
             end
-        elseif not mq.TLO.Me.Combat() and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
+        -- Edited By: NeroMorte - Never swap an engaged pull for a fresh closer mob.
+        elseif not runtime.anyXtarAlive(true) and not mq.TLO.Me.Combat() and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
             local closerId, candDist, curDist = runtime.checkCloserTarget(runtime.pullTargetId, ctrl.camp_radius, maxCampZ,
                 ctrl.pull_min_level, ctrl.pull_max_level)
             if closerId and runtime.setTarget(closerId) then
@@ -23028,7 +23031,8 @@ local function combatTick()
 
                 local scanRadius = hasWps and (ctrl.waypoint_scan_radius or 100) or (ctrl.hunter_radius or 1500)
                 local id = huntNPCXtarget(maxHuntXtarZ, maxHuntXtarDist)
-                if not id then
+                -- Edited By: NeroMorte - Finish existing XTargets before a fresh Hunt pull; preserve explicit Ignore Distant opt-in.
+                if not id and (not anyXtarAlive(true) or ctrl.ignore_distant_xtargets == true) then
                     id = findRoamTarget(scanRadius, maxHuntZ, ctrl.hunter_min_level, ctrl.hunter_max_level)
                 end
                 if id and setTarget(id) then
@@ -24955,7 +24959,8 @@ function runtime.initPetCamp()
             if id and id > 0 and isSpawnAlive(id) then runtime.setTarget(id) else mq.cmd('/target clear') end
         end,
         safeProbe = function()
-            return mq.TLO.MacroQuest.GameState() == 'INGAME' and not mq.TLO.Me.Dead()
+            -- Edited By: NeroMorte - GameState belongs to EverQuest; allow safe automatic pet snapshots.
+            return mq.TLO.EverQuest.GameState() == 'INGAME' and not mq.TLO.Me.Dead()
                 and not mq.TLO.Me.Feigning() and not mq.TLO.Me.Moving() and not isCastingOrStarting()
                 and not mq.TLO.Me.Combat() and not runtime.anyXtarAlive(true)
                 and not (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat())

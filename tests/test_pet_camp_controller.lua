@@ -94,7 +94,7 @@ assert(f.commands[#f.commands] == 'attack nec')
 for _, cmd in ipairs(f.commands) do assert(cmd ~= 'attack all' and not cmd:find('qattack')) end
 assert(c.batch[100] == nil) -- Sending an attack is not a confirmed tag.
 -- Different nearby/group XTargets do not count as the pulling pet's confirmed tags.
-f.xt = { 101 }; f.mobs[101] = { dist = 20, engaged = false }
+f.xt = { 101 }; f.mobs[101] = { dist = 200, engaged = false }
 f.now = 1; c:combatTick(); assert(c.tag.id == 100 and c.batch[101] == nil)
 f.mobs[100].engaged = true; f.xt = { 100, 101 }
 f.mobs[102] = { dist = 200 }
@@ -126,7 +126,7 @@ end
 
 -- Tag timeout skips failure, pet death recalls, and direct threats permit defense without chase.
 f, c = fixture(); c:petTell('Morer', "'Taunting attackers as ordered, Master.'")
-f.mobs[100] = { dist = 200 }; c:combatTick(); f.now = 11; c:combatTick()
+f.mobs[100] = { dist = 200 }; c:combatTick(); f.now = 121; c:combatTick()
 assert(c.tag == nil and c.skipped[100] and c.batch[100] == nil)
 f.mobs[103] = { dist = 150, direct = true, engaged = true }; f.xt = { 103 }
 assert(c:ownerAllowed(103)); assert(not c:ownerAllowed(100))
@@ -165,3 +165,21 @@ assert(f.commands[#f.commands] == 'follow all')
 local defaults = {}; module.defaults(defaults)
 assert(defaults.pet_camp_enabled == false and defaults.pet_camp_batch_size == 1)
 print('PASS: pet identity/cache/events, safe target snapshots, single taunting pet, confirmed tags, arrival/quotas, recall, defense and disabled behavior')
+
+-- A matching ToT is insufficient: wait for the selected ID to appear in an actual XTarget slot.
+f, c = fixture(); f.c.pet_camp_batch_size = 1
+c:petTell('Morer', "'Taunting attackers as ordered, Master.'")
+f.mobs[100] = { dist = 200, engaged = true }; f.mobs[101] = { dist = 250 }
+c:combatTick(); f.now = 15; c:combatTick()
+assert(c.tag.id == 100 and not c.batch[100] and c.phase == 'GATHER')
+f.xt = { 100 }; f.now = 16; c:combatTick()
+assert(c.phase == 'RETURN' and c.batch[100] and f.forcedStop == true)
+-- Pets-only mode cannot acquire a fresh mob while another hostile XTarget remains.
+f, c = fixture(); f.c.pet_camp_pull_back = false
+f.mobs[100] = { dist = 200 }; f.mobs[101] = { dist = 210 }; f.mobs[102] = { dist = 220 }
+c:combatTick(); assert(c.fightId == 100)
+f.mobs[100].dead = true; f.xt = { 101 }; f.now = 1; c:combatTick()
+assert(c.fightId == 101 and f.target == 101)
+f.mobs[101].dead = true; f.xt = {}; f.now = 2; c:combatTick()
+assert(c.fightId == 102)
+print('PASS: exact XTarget confirmation, long-distance wait, count-one recall, remaining-fight priority')
