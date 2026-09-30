@@ -15,6 +15,7 @@ local function check(targetType, beneficial, recipient, original, heal, moving, 
     local tracker = { isLockedOut = function() return false end }
     local runtime = {
         lastCast = {},
+        petCampActionAllowed = function() return true end, -- Original behavior with mode disabled.
         isHealAction = function() return heal end,
         isDetrimentalAction = function() return not beneficial end,
         isTargetInRange = function() return true end,

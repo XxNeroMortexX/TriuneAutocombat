@@ -180,6 +180,8 @@ end
 local function sanitizeModeConfig(c)
     c = c or ctrl
     if not c then return end
+    -- Edited By: NeroMorte - Default only after resolving the optional ctrl argument.
+    require('TAC_support_modules.pet_camp_controller').defaults(c)
     local m = c.mode
     if m == 'Manual Hunter' then
         c.mode = 'Manual'
@@ -352,6 +354,12 @@ local function defaultCtrl()
         manual_stick         = true,
         manual_auto_nav      = false,
         pull_style           = 'Melee',
+        -- Edited By: NeroMorte - Opt-in stationary pet combat; ordinary pulling remains the default.
+        pet_camp_enabled     = false,
+        pet_camp_pull_back   = false,
+        pet_camp_assist_radius = 30,
+        pet_camp_batch_size  = 1,
+        pet_camp_puller_class = 'Auto',
         pull_spell           = '',
         pull_spell_gem       = 1,
         pull_engage_dist     = 100,
@@ -1531,6 +1539,8 @@ local function sendPetCmd(verb, scope)
     scope = scope or petState.selectedScope or 'all'
     local fullCmd = string.format('#petcmd %s %s', verb, scope)
     mq.cmdf('/say %s', fullCmd)
+    -- Edited By: NeroMorte - Do not highlight requested pet states as if confirmed.
+    if runtime.petCamp then runtime.petCamp:noteCommand(verb, scope) end
     petState.lastPetCmdSent = fullCmd
     petState.lastPetCmdTime = os.clock()
     print(string.format('\ag[Triune Pet]\ax Issued: \at%s\ax', fullCmd))
@@ -10121,6 +10131,8 @@ local function setManualHunterPetHold(on, force)
     if on then
         if force or petState.manualHunterHold ~= true then
             mq.cmd('/say #petcmd hold all')
+            -- Edited By: NeroMorte - Invalidate cached holds after the server toggle request.
+            if runtime.petCamp then runtime.petCamp:noteCommand('hold', 'all'); runtime.petCamp:noteCommand('ghold on', 'all') end
             mq.cmd('/say #petcmd ghold on')
             mq.cmd('/pet back off')
             petState.manualHunterHold = true
@@ -10129,6 +10141,8 @@ local function setManualHunterPetHold(on, force)
     else
         if force or petState.manualHunterHold ~= false then
             mq.cmd('/say #petcmd ghold off')
+            -- Edited By: NeroMorte - Automatic global commands also invalidate per-pet telemetry.
+            if runtime.petCamp then runtime.petCamp:noteCommand('ghold off', 'all') end
             petState.manualHunterHold = false
             petState.petHoldActive = false
         end
@@ -11765,7 +11779,42 @@ function UI.drawControlTab()
             end
         end
 
-        if (ctrl.pull_style or 'Melee') ~= 'Melee' then
+        -- Edited By: NeroMorte - Stationary camp settings are contextual and save with the loadout.
+        if ctrl.submode == 'Camp' and ctrl.pull_style == 'Pet' then
+            ctrl.pet_camp_enabled = ImGui.Checkbox('Pets Only - Stay at Camp##petCampEnabled', ctrl.pet_camp_enabled == true)
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Pets fight inside Pull Radius. You stay at camp and help only inside Player Assist Radius or when directly threatened. No chasing; support casts still require range.')
+            end
+            if ctrl.pet_camp_enabled then
+                ImGui.SetNextItemWidth(UI.px(180))
+                ctrl.pet_camp_assist_radius = UI.distanceSlider('Player Assist Radius##petCampAssist', ctrl.pet_camp_assist_radius or 30, 1, 250)
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('Distance from camp to the mob. Your spells and melee still require their actual range. Pets also help finish mobs here.') end
+                ctrl.pet_camp_pull_back = ImGui.Checkbox('Pet Pull Back to Camp##petCampPullBack', ctrl.pet_camp_pull_back == true)
+                if ImGui.IsItemHovered() then ImGui.SetTooltip('One pet with confirmed Taunt ON tags mobs, then returns. If all living pets have confirmed Taunt OFF, use all pets. A mob arriving at camp ends gathering immediately, even before the chosen count.') end
+                if ctrl.pet_camp_pull_back then
+                    ImGui.SetNextItemWidth(UI.px(180))
+                    ctrl.pet_camp_batch_size = ImGui.SliderInt('Mobs per Pull##petCampBatch', ctrl.pet_camp_batch_size or 1, 1, 100)
+                    ctrl.pet_camp_batch_size = math.max(1, math.min(100, ctrl.pet_camp_batch_size))
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Count confirmed tags. When no next eligible mob exists, recall after a brief recheck and fight the smaller batch.') end
+                    local choices = { 'Auto' }
+                    local current = 1
+                    local slots = getMultiPetList()
+                    for _, slot in ipairs(slots) do
+                        if slot.petId and slot.scope ~= 'all' then
+                            choices[#choices + 1] = slot.cls
+                            if ctrl.pet_camp_puller_class == slot.cls then current = #choices end
+                        end
+                    end
+                    ImGui.SetNextItemWidth(UI.px(180))
+                    local selected, changed = ImGui.Combo('Pulling Pet##petCampPuller', current, choices)
+                    if changed then ctrl.pet_camp_puller_class = choices[selected] or 'Auto' end
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Auto chooses one living pet with confirmed Taunt ON. All confirmed OFF falls back to all pets. Unknown states wait for a refresh. Refresh pet states while out of combat if unknown.') end
+                end
+                if runtime.petCamp and runtime.petCamp.message ~= '' then ImGui.TextWrapped('%s', runtime.petCamp.message) end
+            end
+        end
+
+        if (ctrl.pull_style or 'Melee') ~= 'Melee' and not (ctrl.submode == 'Camp' and ctrl.pull_style == 'Pet' and ctrl.pet_camp_enabled) then
             ImGui.SetNextItemWidth(UI.px(180))
             -- Edited By: NeroMorte - Accept and save engagement distances above the original drag scale.
             local engageDist, engageChanged = UI.distanceSlider('Engagement Distance##pullEngageDist', ctrl.pull_engage_dist or 100, 15, 250)
@@ -12617,10 +12666,39 @@ function UI.drawControlTab()
     ImGui.EndTabItem()
 end
 
+-- Edited By: NeroMorte - Highlight actual cached pet states, never infer unknown as OFF.
+function UI.petStateButton(label, id, field, expected, large)
+    local value
+    if runtime.petCamp then
+        if id == 'all' then value = runtime.petCamp:allValue(field)
+        else value = runtime.petCamp:value(id, field) end
+    end
+    local active = value ~= nil and value == expected
+    local colors = 0
+    if active then
+        colors = pushButtonColors({ { 'Button', 0.30, 0.26, 0.08 }, { 'ButtonHovered', 0.38, 0.32, 0.10 },
+            { 'ButtonActive', 0.25, 0.21, 0.06 }, { 'Text', 1.0, 0.90, 0.15 } })
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameBorderSize, 2)
+    end
+    local clicked = large and ImGui.Button(label) or (not large and ImGui.SmallButton(label))
+    if active then ImGui.PopStyleVar() end
+    if colors > 0 then ImGui.PopStyleColor(colors) end
+    if ImGui.IsItemHovered() then
+        if value == nil then
+            ImGui.SetTooltip('%s', field == 'assist' and 'Assist state is unknown: no verified pet-stance TLO or server report is available.' or 'State unknown or awaiting confirmation. Refresh Pet States when safely out of combat.')
+        else ImGui.SetTooltip('Yellow/pressed is the last confirmed state for this pet.') end
+    end
+    return clicked
+end
+
 function UI.drawPetControlTab()
     if not ImGui.BeginTabItem('Pets') then return end
 
     local petSlots, extraPets = getMultiPetList()
+
+    -- Edited By: NeroMorte - Safe snapshots restore the target; deferred during combat/casting.
+    if ImGui.SmallButton('Refresh Pet States##refreshPetStates') and runtime.petCamp then runtime.petCamp:refresh() end
+    if ImGui.IsItemHovered() then ImGui.SetTooltip('Refresh each pet when idle and safe, then restore your selected target. Unknown states are not highlighted.') end
 
     -- 1. Global Pet Command Center (Compact Header & Telemetry)
     accent(GOLD, 'Pet Command Center')
@@ -12665,65 +12743,66 @@ function UI.drawPetControlTab()
     end
 
     -- Primary Combat Actions (all on one line)
-    if ImGui.Button('Attack All##atkGlobal') then sendPetCmd('attack', 'all') end
+    if UI.petStateButton('Attack All##atkGlobal', 'all', 'combat', true, true) then sendPetCmd('attack', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Send all pets to attack current target (#petcmd attack all).') end
     ImGui.SameLine()
     if ImGui.Button('Back Off##backGlobal') then sendPetCmd('back', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Call all pets back to your side (#petcmd back all).') end
     ImGui.SameLine()
-    if ImGui.Button('Follow##flwGlobal') then sendPetCmd('follow', 'all') end
+    if UI.petStateButton('Follow##flwGlobal', 'all', 'stance', 'FOLLOW', true) then sendPetCmd('follow', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Order all pets to follow master (#petcmd follow all).') end
     ImGui.SameLine()
-    if ImGui.Button('Stop##stopGlobal') then sendPetCmd('stop', 'all') end
+    if UI.petStateButton('Stop##stopGlobal', 'all', 'stop', true, true) then sendPetCmd('stop', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Stop all pets movement in place (#petcmd stop all).') end
     ImGui.SameLine()
-    if ImGui.Button('Guard##guardGlobal') then sendPetCmd('guard', 'all') end
+    if UI.petStateButton('Guard##guardGlobal', 'all', 'stance', 'GUARD', true) then sendPetCmd('guard', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Order all pets to guard current location (#petcmd guard all).') end
     ImGui.SameLine()
-    if ImGui.Button('Sit##sitGlobal') then sendPetCmd('sit', 'all') end
+    if UI.petStateButton('Sit##sitGlobal', 'all', 'stance', 'SIT', true) then sendPetCmd('sit', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Order all pets to sit (#petcmd sit all).') end
     ImGui.SameLine()
     if ImGui.Button('Dismiss All##leaveGlobal') then sendPetCmd('leave', 'all') end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Dismiss all active pets (#petcmd leave all).') end
 
+    -- Edited By: NeroMorte - Highlight unanimous known states on the global toggle buttons.
     -- Stance Toggles (compact 2-row layout)
     ImGui.TextDisabled('All Stances:')
     ImGui.SameLine()
     ImGui.Text('Taunt')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##tntOnGlobal') then sendPetCmd('taunt on', 'all') end
+    if UI.petStateButton('ON##tntOnGlobal', 'all', 'taunt', true) then sendPetCmd('taunt on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##tntOffGlobal') then sendPetCmd('taunt off', 'all') end
+    if UI.petStateButton('OFF##tntOffGlobal', 'all', 'taunt', false) then sendPetCmd('taunt off', 'all') end
     ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
     ImGui.Text('Hold')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##hldOnGlobal') then sendPetCmd('hold on', 'all') end
+    if UI.petStateButton('ON##hldOnGlobal', 'all', 'hold', true) then sendPetCmd('hold on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##hldOffGlobal') then sendPetCmd('hold off', 'all') end
+    if UI.petStateButton('OFF##hldOffGlobal', 'all', 'hold', false) then sendPetCmd('hold off', 'all') end
     ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
     ImGui.Text('GHold')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##ghldOnGlobal') then sendPetCmd('ghold on', 'all') end
+    if UI.petStateButton('ON##ghldOnGlobal', 'all', 'ghold', true) then sendPetCmd('ghold on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##ghldOffGlobal') then sendPetCmd('ghold off', 'all') end
+    if UI.petStateButton('OFF##ghldOffGlobal', 'all', 'ghold', false) then sendPetCmd('ghold off', 'all') end
 
     ImGui.Text('SpellHold')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##sphOnGlobal') then sendPetCmd('spellhold on', 'all') end
+    if UI.petStateButton('ON##sphOnGlobal', 'all', 'spellhold', true) then sendPetCmd('spellhold on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##sphOffGlobal') then sendPetCmd('spellhold off', 'all') end
+    if UI.petStateButton('OFF##sphOffGlobal', 'all', 'spellhold', false) then sendPetCmd('spellhold off', 'all') end
     ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
     ImGui.Text('Focus')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##fcsOnGlobal') then sendPetCmd('focus on', 'all') end
+    if UI.petStateButton('ON##fcsOnGlobal', 'all', 'focus', true) then sendPetCmd('focus on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##fcsOffGlobal') then sendPetCmd('focus off', 'all') end
+    if UI.petStateButton('OFF##fcsOffGlobal', 'all', 'focus', false) then sendPetCmd('focus off', 'all') end
     ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
     ImGui.Text('Assist')
     ImGui.SameLine()
-    if ImGui.SmallButton('ON##astOnGlobal') then sendPetCmd('assist on', 'all') end
+    if UI.petStateButton('ON##astOnGlobal', 'all', 'assist', true) then sendPetCmd('assist on', 'all') end
     ImGui.SameLine()
-    if ImGui.SmallButton('OFF##astOffGlobal') then sendPetCmd('assist off', 'all') end
+    if UI.petStateButton('OFF##astOffGlobal', 'all', 'assist', false) then sendPetCmd('assist off', 'all') end
 
     ImGui.Separator()
 
@@ -12814,8 +12893,9 @@ function UI.drawPetControlTab()
                     ImGui.TextDisabled('None active')
                 end
 
+                -- Edited By: NeroMorte - Highlight each pet independently from the shared state cache.
                 -- Row 5: Individual Actions
-                if ImGui.SmallButton(string.format('Attack##atk%d', slot.slotNum)) then
+                if UI.petStateButton(string.format('Attack##atk%d', slot.slotNum), slot.petId, 'combat', true) then
                     sendPetCmd('attack', slot.scope)
                 end
                 ImGui.SameLine()
@@ -12823,19 +12903,19 @@ function UI.drawPetControlTab()
                     sendPetCmd('back', slot.scope)
                 end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('Follow##flw%d', slot.slotNum)) then
+                if UI.petStateButton(string.format('Follow##flw%d', slot.slotNum), slot.petId, 'stance', 'FOLLOW') then
                     sendPetCmd('follow', slot.scope)
                 end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('Stop##stp%d', slot.slotNum)) then
+                if UI.petStateButton(string.format('Stop##stp%d', slot.slotNum), slot.petId, 'stop', true) then
                     sendPetCmd('stop', slot.scope)
                 end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('Guard##grd%d', slot.slotNum)) then
+                if UI.petStateButton(string.format('Guard##grd%d', slot.slotNum), slot.petId, 'stance', 'GUARD') then
                     sendPetCmd('guard', slot.scope)
                 end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('Sit##sit%d', slot.slotNum)) then
+                if UI.petStateButton(string.format('Sit##sit%d', slot.slotNum), slot.petId, 'stance', 'SIT') then
                     sendPetCmd('sit', slot.scope)
                 end
                 ImGui.SameLine()
@@ -12848,39 +12928,39 @@ function UI.drawPetControlTab()
                 ImGui.SameLine()
                 ImGui.Text('Taunt')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##tntOn%d', slot.slotNum)) then sendPetCmd('taunt on', slot.scope) end
+                if UI.petStateButton(string.format('ON##tntOn%d', slot.slotNum), slot.petId, 'taunt', true) then sendPetCmd('taunt on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##tntOff%d', slot.slotNum)) then sendPetCmd('taunt off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##tntOff%d', slot.slotNum), slot.petId, 'taunt', false) then sendPetCmd('taunt off', slot.scope) end
                 ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
                 ImGui.Text('Hold')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##hldOn%d', slot.slotNum)) then sendPetCmd('hold on', slot.scope) end
+                if UI.petStateButton(string.format('ON##hldOn%d', slot.slotNum), slot.petId, 'hold', true) then sendPetCmd('hold on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##hldOff%d', slot.slotNum)) then sendPetCmd('hold off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##hldOff%d', slot.slotNum), slot.petId, 'hold', false) then sendPetCmd('hold off', slot.scope) end
                 ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
                 ImGui.Text('GHold')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##ghldOn%d', slot.slotNum)) then sendPetCmd('ghold on', slot.scope) end
+                if UI.petStateButton(string.format('ON##ghldOn%d', slot.slotNum), slot.petId, 'ghold', true) then sendPetCmd('ghold on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##ghldOff%d', slot.slotNum)) then sendPetCmd('ghold off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##ghldOff%d', slot.slotNum), slot.petId, 'ghold', false) then sendPetCmd('ghold off', slot.scope) end
 
                 ImGui.Text('SpellHold')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##sphOn%d', slot.slotNum)) then sendPetCmd('spellhold on', slot.scope) end
+                if UI.petStateButton(string.format('ON##sphOn%d', slot.slotNum), slot.petId, 'spellhold', true) then sendPetCmd('spellhold on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##sphOff%d', slot.slotNum)) then sendPetCmd('spellhold off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##sphOff%d', slot.slotNum), slot.petId, 'spellhold', false) then sendPetCmd('spellhold off', slot.scope) end
                 ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
                 ImGui.Text('Focus')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##fcsOn%d', slot.slotNum)) then sendPetCmd('focus on', slot.scope) end
+                if UI.petStateButton(string.format('ON##fcsOn%d', slot.slotNum), slot.petId, 'focus', true) then sendPetCmd('focus on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##fcsOff%d', slot.slotNum)) then sendPetCmd('focus off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##fcsOff%d', slot.slotNum), slot.petId, 'focus', false) then sendPetCmd('focus off', slot.scope) end
                 ImGui.SameLine(); ImGui.TextDisabled('|'); ImGui.SameLine()
                 ImGui.Text('Assist')
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('ON##astOn%d', slot.slotNum)) then sendPetCmd('assist on', slot.scope) end
+                if UI.petStateButton(string.format('ON##astOn%d', slot.slotNum), slot.petId, 'assist', true) then sendPetCmd('assist on', slot.scope) end
                 ImGui.SameLine()
-                if ImGui.SmallButton(string.format('OFF##astOff%d', slot.slotNum)) then sendPetCmd('assist off', slot.scope) end
+                if UI.petStateButton(string.format('OFF##astOff%d', slot.slotNum), slot.petId, 'assist', false) then sendPetCmd('assist off', slot.scope) end
             else
                 accent(MUTED, string.format('No active pet detected for %s (%s).', slot.cls, slot.isPetCls and 'Pet-capable class' or 'Non-pet class'))
                 if slot.isPetCls then
@@ -16173,6 +16253,20 @@ function runtime.isHealAction(name, targetToken, entry)
     return res
 end
 
+-- Edited By: NeroMorte - Shared ownership/range gates for every action and chase path.
+function runtime.petCampActive()
+    return runtime.petCamp and runtime.petCamp:enabled() or false
+end
+function runtime.petCampActionAllowed(name, entry, id)
+    if not runtime.petCampActive() then return true end
+    if runtime.petCamp.probe then return false end
+    if runtime.isDetrimentalAction(name, entry and entry.target, entry) then
+        local targetId = isHostileTarget(id) and id or (mq.TLO.Target.ID() or 0)
+        return runtime.petCamp:ownerAllowed(targetId) and runtime.isTargetInRange(name, targetId)
+    end
+    return id == mq.TLO.Me.ID() or (id and id > 0 and runtime.isTargetInRange(name, id))
+end
+
 function runtime.isTargetInRange(name, targetId)
     if not targetId or targetId == 0 then return false end
     local myId = mq.TLO.Me.ID() or 0
@@ -17679,6 +17773,8 @@ mq.event('TriunePetExists1', '#*#cannot have more than one pet#*#', function() o
 mq.event('TriunePetExists2', '#*#already have a pet#*#', function() onPetSummonRefused() end)
 
 function runtime.castGem(i, g, id)
+    -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
+    if not runtime.petCampActionAllowed(g and g.spell, g, id) then return false end
     local isFD = isFeignDeathAbility(g and g.spell)
     if not isFD and (isSitting() or isDucking()) then
         mq.cmd('/stand')
@@ -17844,6 +17940,8 @@ function runtime.castGem(i, g, id)
 end
 
 function runtime.fireAA(name, a, id)
+    -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
+    if not runtime.petCampActionAllowed(name, a, id) then return false end
     if not name or name == '' then return false end
     if type(name) == 'string' then name = name:match('^%s*(.-)%s*$') end
     if not name or name == '' then return false end
@@ -18195,6 +18293,8 @@ runtime.isSkillReady = function(name)
 end
 
 runtime.fireDisc = function(name, a, id)
+    -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
+    if not runtime.petCampActionAllowed(name, a, id) then return false end
     if isSitting() or isDucking() then
         mq.cmd('/stand')
     end
@@ -18257,6 +18357,8 @@ runtime.fireDisc = function(name, a, id)
 end
 
 runtime.fireSkill = function(name, a, id)
+    -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
+    if not runtime.petCampActionAllowed(name, a, id or mq.TLO.Target.ID()) then return false end
     if not name or name == '' then return false end
     local isFD = isFeignDeathAbility(name)
     if not isFD and (isSitting() or isDucking()) then
@@ -18324,6 +18426,8 @@ runtime.fireSkill = function(name, a, id)
 end
 
 runtime.useClickie = function(c, id)
+    -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
+    if not runtime.petCampActionAllowed(c and ((c.spell and c.spell ~= '') and c.spell or c.name), c, id) then return false end
     if not c or not c.name or c.name == '' then return false end
     local effName = (c.spell and c.spell ~= '') and c.spell or c.name
     if castTracker.isLockedOut(effName, id, c.kind) then return false end
@@ -19242,6 +19346,8 @@ function runtime.getBehindLoc(targetId, dist)
 end
 
 function runtime.positionBehindTarget(targetId, targetDist)
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     if not targetId or targetId <= 0 then return false end
     local dist = targetDist or runtime.desiredRange(targetId)
     local stickDist = math.max(4, math.floor(dist))
@@ -19312,6 +19418,8 @@ end
 -- so we can step off the hole. moveToward remaps /nav as soon as a path exists
 -- again. Existing PURSUIT_STALL_TIMEOUT still abandons if we never get closer.
 function runtime.tryOffMeshRecovery(id, targetDist)
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     if not id or id <= 0 then return false end
     if pursuit.meshRecoverId ~= id then
         pursuit.meshRecoverId = id
@@ -19348,6 +19456,8 @@ function runtime.tryOffMeshRecovery(id, targetDist)
 end
 
 function runtime.moveToward(id, dist, followOnly)
+    -- Edited By: NeroMorte - Range checks stay useful, but this mode never chases.
+    if runtime.petCampActive() then return id and id > 0 and distToId(id) <= (dist or desiredRange(id)) and hasLoS(id) end
     local NAV_CONST = pursuit.NAV_CONST
     if not id or id <= 0 then return false end
     local d = distToId(id)
@@ -19567,6 +19677,8 @@ end
 -- ============================================================================
 
 local function repositionCloser()
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     if not isCombat() then return end
     -- Manual mode with Stick off: the player owns movement.
     if ctrl.mode == 'Manual' and ctrl.manual_stick == false then return end
@@ -19618,6 +19730,8 @@ local function repositionCloser()
 end
 
 local function handleCantHitFromHere()
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     if not isCombat() then return end
     -- Manual mode with Stick off: the player owns movement (and their target).
     if ctrl.mode == 'Manual' and ctrl.manual_stick == false then return end
@@ -19725,8 +19839,13 @@ mq.event('TriuneAttackModeChanged', 'Attack mode changed to: #1#', function(_, m
     if not mode then return end
     if mode:find('Ranged') then
         runtime.serverAttackMode = 'Ranged'
+        -- Edited By: NeroMorte - Never issue a far-pet melee trigger in confirmed ranged mode.
+        runtime.petCampMeleeConfirmed = false
     elseif mode:find('Melee') then
         runtime.serverAttackMode = 'Melee'
+        -- Edited By: NeroMorte - Authoritative melee acknowledgement for far-pet triggers.
+        runtime.petCampMeleeConfirmed = true
+        runtime.petCampMeleeWaiting = false
     else
         return
     end
@@ -19748,6 +19867,8 @@ runtime.ATTACKMODE_MAX_ATTEMPTS = 3
 -- still waiting on the server. Callers must already have checked that tid
 -- is a valid hostile in range and that we're not mid-cast.
 function runtime.engageRangedAttack(tid)
+    -- Edited By: NeroMorte - Automatic attacks share the stationary ownership gate.
+    if runtime.petCampActive() and not runtime.petCamp:ownerAllowed(mq.TLO.Target.ID() or 0) then return end
     if runtime.serverAttackMode ~= 'Ranged' then
         if (os.clock() - (runtime.lastAttackModeCmdAt or 0)) < 1.0 then return false end
         if (runtime.attackModeAttempts or 0) >= runtime.ATTACKMODE_MAX_ATTEMPTS then
@@ -19854,6 +19975,8 @@ end
 -- flips serverAttackMode once the /say actually went out, so the retry is
 -- natural. Returns true once auto-attack is (or already was) on in melee mode.
 function runtime.meleeAttackOn()
+    -- Edited By: NeroMorte - Automatic attacks share the stationary ownership gate.
+    if runtime.petCampActive() and not runtime.petCamp:ownerAllowed(mq.TLO.Target.ID() or 0) then return end
     if runtime.serverAttackMode == 'Ranged' then
         runtime.revertAttackModeToMelee()
         return false
@@ -19985,6 +20108,11 @@ end
 
 -- Same idea for a fixed camp location (used returning from a pull).
 function runtime.moveTowardLoc(x, y, z, dist)
+    -- Edited By: NeroMorte - Camp return is the only permitted navigation destination.
+    if runtime.petCampActive() then
+        local camp = ctrl.camp_loc
+        if not camp or math.abs(x - camp.x) > 0.1 or math.abs(y - camp.y) > 0.1 or math.abs(z - camp.z) > 0.1 then return false end
+    end
     dist = dist or 15
     if distToLoc(x, y, z) <= dist then
         stopMoving()
@@ -20331,6 +20459,8 @@ function runtime.performUnstuck()
 end
 
 function runtime.checkStuck()
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     local now = os.clock()
     if (now - stuckState.checkAt) < 1.0 then return end
     stuckState.checkAt = now
@@ -20800,6 +20930,8 @@ end
 -- the caller skips the mode logic (which would otherwise start its own
 -- movement, or stopMoving() ours, every tick).
 function runtime.checkMeshIsolation()
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     local iso = pursuit.meshIso
     local C = pursuit.MESH_ISO
     local now = os.clock()
@@ -20866,6 +20998,8 @@ function runtime.checkMeshIsolation()
 end
 
 function runtime.checkCombatStall()
+    -- Edited By: NeroMorte - Never reposition toward a mob while holding the pet camp.
+    if runtime.petCampActive() then return false end
     if (ctrl.mode == 'Assist' and ctrl.submode == 'Backline')
         or (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState ~= 'FIGHTING') then
         return
@@ -21216,7 +21350,7 @@ end
 -- "targetable radius N" filter, which silently returned zero candidates and left
 -- Hunter standing still. NearestSpawn(i, ...) returning a falsy spawn () is what
 -- actually marks "no more candidates."
-function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
+function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, excluded)
     local isPulling    = (ctrl.mode == 'Puller')
     local isCampMode   = isPulling and (ctrl.submode == 'Camp')
     local minLv        = minLevel or (isCampMode and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1))
@@ -21230,7 +21364,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
     local function outsideAnchor(sy, sx)
         if anchorRadius <= 0 or not anchorLoc then return false end
         -- When Waypoint Patrol is active, pulling/hunting scans dynamically around the character's patrol location
-        if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
+        if not runtime.petCampActive() and ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
             return false
         end
         local ay = anchorLoc.y or anchorLoc[1] or 0
@@ -21273,7 +21407,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
         -- plus its radius: tighten the query so the 100-candidate cap below is
         -- spent on mobs we may actually take, not on the ones ringing us
         -- outside the circle.
-        if huntAnchor then
+        if huntAnchor and not isCampMode then
             local md = runtime.anchorDist(mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0) or 0
             radius = math.min(radius, math.ceil(md + huntRadius))
         end
@@ -21283,7 +21417,8 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
             if not s() then break end
 
             local sid = s.ID() or 0
-            if sid > 0 and not runtime.isBoxClaimedTarget(sid, claimed) then
+            -- Edited By: NeroMorte - Do not gather the same mob twice or select an existing XTarget.
+            if sid > 0 and not (excluded and excluded[sid]) and not runtime.isBoxClaimedTarget(sid, claimed) then
                 local sname = s.CleanName()
                 local dead = false
                 local stype = ''
@@ -22578,7 +22713,8 @@ local function combatTick()
         runtime.nextHazardDecayAt = os.time() + 60
     end
     runtime.checkGemMemSync()
-    if (ctrl.mode == 'Manual' and ctrl.manual_auto_xtarget ~= false) or ctrl.mode == 'Puller' then
+    -- Edited By: NeroMorte - The batch controller owns targets while gathering.
+    if not runtime.petCampActive() and ((ctrl.mode == 'Manual' and ctrl.manual_auto_xtarget ~= false) or ctrl.mode == 'Puller') then
         checkAggroSwitch()
     end
 
@@ -22604,7 +22740,7 @@ local function combatTick()
         runtime.lastXtPruneAt = os.clock()
         runtime.pruneXtOverrides()
     end
-    local forceId = runtime.forcedTargetId()
+    local forceId = not runtime.petCampActive() and runtime.forcedTargetId() or nil
     if forceId and (mq.TLO.Target.ID() or 0) ~= forceId and setTarget(forceId) then
         stopMoving()
         pursuit.id = 0
@@ -22670,7 +22806,11 @@ local function combatTick()
     -- so the approach timeout below must not mark the target unreachable.
     local manualHold = false
 
-    if ctrl.mode == 'Manual' then
+    -- Edited By: NeroMorte - Opt-in pet camp replaces acquisition/movement, not the action loadout.
+    if runtime.petCampActive() then
+        haveNPC, engage = runtime.petCamp:combatTick()
+        manualHold = true
+    elseif ctrl.mode == 'Manual' then
         if haveNPC and isUnreachable(mq.TLO.Target.ID()) then
             haveNPC = false
             clearTarget()
@@ -23227,7 +23367,11 @@ local function combatTick()
     local tid = mq.TLO.Target.ID() or 0
     local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
     local autoAttackOk = false
-    if haveNPC then
+    -- Edited By: NeroMorte - Gathering is never permission for the player to attack.
+    if runtime.petCampActive() then
+        autoAttackOk = haveNPC and engage and runtime.petCamp:ownerAllowed(tid)
+        isPullStandBack = false
+    elseif haveNPC then
         if isHostileTarget(tid) then
             if ctrl.mode == 'Manual' then
                 -- In Manual mode, engage autoattack ONLY if actively engaged, mob is on XTarget, or already in combat
@@ -23305,13 +23449,14 @@ local function combatTick()
                 -- Mob moved, was pushed, or is out of striking/ranged reach: re-close distance.
                 -- Ranged/Spell wait for the current cast to finish first -- starting a
                 -- nav mid-cast just interrupts it for a few units of drift.
-                if ctrl.mode ~= 'Manual' and (style == 'Melee' or not isCasting()) then
+                if not runtime.petCampActive() and ctrl.mode ~= 'Manual' and (style == 'Melee' or not isCasting()) then
                     moveToward(tid, desiredRange(tid))
                 end
             end
         else
             -- Not engaging any NPC or dragging mob to camp: turn off auto-attack/autofire if not in manual combat
-            if mq.TLO.Me.Combat() and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
+            -- Edited By: NeroMorte - Keep only the controlled far-pet trigger alive during dispatch.
+            if mq.TLO.Me.Combat() and not runtime.petCampDispatchActive() and not (ctrl.mode == 'Manual' and (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')) then
                 mq.cmd('/attack off')
             end
             if mq.TLO.Me.AutoFire() then
@@ -23357,6 +23502,8 @@ local function combatTick()
     -- If pet_hold_enabled is active and the character has pet classes, we issue:
     --   "#petcmd hold all" while out of combat / waiting for assist threshold to enable hold,
     --   "#petcmd attack all" once in combat and HP threshold is met.
+    -- Edited By: NeroMorte - Only the camp controller commands pets in stationary mode.
+    if not runtime.petCampActive() then
     local assistThreshold = ctrl.pet_assist_at or 100
     local canCommandPets = hasActivePet()
     local petHoldEnabled = (ctrl.pet_hold_enabled ~= false) and canCommandPets
@@ -23398,6 +23545,8 @@ local function combatTick()
     if petHoldEnabled and (not (haveNPC and engage) or isPullingToCamp) and not isHuntPetApproach then
         if not petState.petHoldActive then
             mq.cmd('/say #petcmd hold all')
+            -- Edited By: NeroMorte - Invalidate cached holds after the server toggle request.
+            if runtime.petCamp then runtime.petCamp:noteCommand('hold', 'all') end
             petState.petHoldActive = true
         end
     end
@@ -23425,6 +23574,8 @@ local function combatTick()
                 end
             elseif petHoldEnabled and not petState.petHoldActive then
                 mq.cmd('/say #petcmd hold all')
+            -- Edited By: NeroMorte - Invalidate cached holds after the server toggle request.
+            if runtime.petCamp then runtime.petCamp:noteCommand('hold', 'all') end
                 petState.petHoldActive = true
                 petState.holdIssuedForId = tid
             end
@@ -23436,6 +23587,8 @@ local function combatTick()
             setManualHunterPetHold(true)
         end
     end
+
+    end -- Edited By: NeroMorte - End original pet command path.
 
     -- Auto-turn off Burn Mode when extended target list becomes clear
     if ctrl.burn and not xtarActive then
@@ -23454,7 +23607,8 @@ local function combatTick()
     local ENGINE_TARGETS_MODE = {
         ['Puller'] = true,
     }
-    local combatReady = (not haveNPC or engage)
+    -- Edited By: NeroMorte - Allow in-range support while pets work; dispatch gates offensive actions.
+    local combatReady = runtime.petCampActive() or (not haveNPC or engage)
     if haveNPC and engage and not ENGINE_TARGETS_MODE[ctrl.mode] then
         tid = mq.TLO.Target.ID() or 0
         if not isHostileTarget(tid) then
@@ -24716,8 +24870,195 @@ local function ensureLuaTurbo()
     end
 end
 
+-- Edited By: NeroMorte - Bridge the shared controller to real MQ readings; GUI and combat use one cache.
+-- Edited By: NeroMorte - Owner attack is briefly leased to far-pet dispatch, never a chase permission.
+function runtime.endPetCampDispatch()
+    if runtime.petCampPulse then mq.cmd('/attack off') end
+    runtime.petCampPulse = nil
+end
+function runtime.checkPetCampDispatch()
+    local pulse = runtime.petCampPulse
+    if not pulse then return end
+    local now = os.clock()
+    if not runtime.petCampActive() or not ctrl.running or not isSpawnAlive(pulse.id)
+        or (mq.TLO.Target.ID() or 0) ~= pulse.id or now - pulse.at >= 10
+        or distToId(pulse.id) <= (maxMeleeDistance(pulse.id) + 3) then
+        runtime.endPetCampDispatch(); return
+    end
+    if pulse.waitMelee and not runtime.petCampMeleeConfirmed then
+        runtime.revertAttackModeToMelee(); return
+    end
+    if not pulse.started and now - pulse.at >= 0.35 and not isCastingOrStarting() then
+        mq.cmd('/attack off')
+        mq.cmd('/attack on')
+        pulse.started = true
+    end
+end
+function runtime.petCampDispatchActive()
+    return runtime.petCampPulse and runtime.petCampPulse.started == true
+end
+function runtime.beginPetCampDispatch(id)
+    if not runtime.petCampActive() or runtime.petCamp.phase == 'FIGHT' then return end
+    if distToId(id) <= (maxMeleeDistance(id) + 3) then return end
+    runtime.endPetCampDispatch()
+    local waitMelee = runtime.serverAttackMode == 'Ranged' or runtime.petCampMeleeWaiting == true
+    if waitMelee then
+        runtime.petCampMeleeWaiting = true
+        runtime.petCampMeleeConfirmed = false
+        runtime.revertAttackModeToMelee()
+    end
+    if mq.TLO.Me.AutoFire() then mq.cmd('/autofire off') end
+    runtime.petCampPulse = { id = id, at = os.clock(), waitMelee = waitMelee, started = false }
+end
+
+function runtime.initPetCamp()
+    runtime.petCamp = require('TAC_support_modules.pet_camp_controller').new({
+        config = function() return ctrl end,
+        now = os.clock,
+        generation = function() return tostring(mq.TLO.Me.ID()) .. ':' .. tostring(mq.TLO.Zone.ID()) .. ':' .. tostring(myName) end,
+        pets = function()
+            local result = {}
+            local slots = getMultiPetList()
+            for _, slot in ipairs(slots) do
+                if slot.petId and slot.petId > 0 then
+                    result[#result + 1] = { id = slot.petId, cls = slot.cls, scope = slot.scope, name = spawnCleanName(slot.petId) }
+                end
+            end
+            return result
+        end,
+        alive = isSpawnAlive,
+        hostile = isHostileTarget,
+        readPet = function()
+            local id, state = 0, {}
+            pcall(function() id = mq.TLO.Pet.ID() or 0 end)
+            for key, member in pairs({ taunt = 'Taunt', hold = 'Hold', ghold = 'GHold', spellhold = 'SpellHold', focus = 'Focus', stop = 'Stop', combat = 'Combat' }) do
+                pcall(function()
+                    local v = mq.TLO.Pet[member]()
+                    if v == true or v == false then state[key] = v end
+                end)
+            end
+            pcall(function()
+                local v = mq.TLO.Pet.Stance()
+                if v and tostring(v) ~= 'NULL' then
+                    state.stance = tostring(v):upper()
+                    if state.stance == 'SITTING' then state.stance = 'SIT' end
+                end
+            end)
+            -- Pet.Assist is a spawn assist-target member, not a pet stance. Leave it unknown.
+            return id, state
+        end,
+        target = function() return mq.TLO.Target.ID() or 0 end,
+        targetPet = function(id) return runtime.setTarget(id) end,
+        restore = function(id)
+            if id and id > 0 and isSpawnAlive(id) then runtime.setTarget(id) else mq.cmd('/target clear') end
+        end,
+        safeProbe = function()
+            return mq.TLO.MacroQuest.GameState() == 'INGAME' and not mq.TLO.Me.Dead()
+                and not mq.TLO.Me.Feigning() and not mq.TLO.Me.Moving() and not isCastingOrStarting()
+                and not mq.TLO.Me.Combat() and not runtime.anyXtarAlive(true)
+                and not (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat())
+                and (not runtime.petCamp or (runtime.petCamp.phase == 'IDLE' and not runtime.petCamp.tag))
+        end,
+        command = sendPetCmd,
+        -- Target ID can update before server assist does; retain the old proven settle beat.
+        setTarget = function(id)
+            local settled = runtime.petCampSettle
+            if not settled or settled.id ~= id or (mq.TLO.Target.ID() or 0) ~= id then
+                if not runtime.setTarget(id) then return false end
+                runtime.petCampSettle = { id = id, at = os.clock() }
+            end
+            return true
+        end,
+        targetSettled = function(id)
+            local settled = runtime.petCampSettle
+            return settled and settled.id == id and (mq.TLO.Target.ID() or 0) == id and os.clock() - settled.at >= 0.35
+        end,
+        beginDispatch = runtime.beginPetCampDispatch,
+        endDispatch = runtime.endPetCampDispatch,
+        checkDispatch = runtime.checkPetCampDispatch,
+        ensureCamp = function()
+            if not ctrl.camp_loc then
+                ctrl.camp_loc = { x = mq.TLO.Me.X() or 0, y = mq.TLO.Me.Y() or 0, z = mq.TLO.Me.Z() or 0 }
+                runtime.updateEqCampMap()
+            end
+        end,
+        campDistance = function(id)
+            local c = ctrl.camp_loc
+            local s = mq.TLO.Spawn(id)
+            if not c or not s() then return math.huge end
+            return math.sqrt(((s.X() or 0) - c.x)^2 + ((s.Y() or 0) - c.y)^2)
+        end,
+        atCamp = function()
+            local c = ctrl.camp_loc
+            return c and distToLoc(c.x, c.y, c.z) <= 15
+        end,
+        pullerHome = function(id)
+            if id > 0 then return distToId(id) <= 15 end
+            for pid in pairs(runtime.petCamp.cache) do if isSpawnAlive(pid) and distToId(pid) > 15 then return false end end
+            return true
+        end,
+        holdCamp = function()
+            local c = ctrl.camp_loc
+            if c and distToLoc(c.x, c.y, c.z) > 15 then runtime.moveTowardLoc(c.x, c.y, c.z, 15)
+            elseif isMoveActive() then stopMoving() end
+        end,
+        inPullRadius = function(id)
+            local s = mq.TLO.Spawn(id)
+            return s() and runtime.petCamp.api.campDistance(id) <= (ctrl.camp_radius or 100)
+                and math.abs((s.Z() or 0) - (ctrl.camp_loc.z or 0)) <= (ctrl.camp_z or 75)
+        end,
+        hostileXT = function()
+            local ids = {}
+            for i = 1, (mq.TLO.Me.XTargetSlots() or 13) do
+                local xt = mq.TLO.Me.XTarget(i)
+                local id = xt.ID() or 0
+                if id > 0 and isSpawnAlive(id) and isHostileTarget(id) then ids[#ids + 1] = id end
+            end
+            return ids
+        end,
+        directThreat = function(id)
+            if not id or id <= 0 or not isSpawnAlive(id) or not isHostileTarget(id) then return false end
+            local targetId = 0
+            pcall(function() targetId = mq.TLO.Spawn(id).TargetOfTarget.ID() or 0 end)
+            return targetId > 0 and targetId == (mq.TLO.Me.ID() or 0)
+        end,
+        engagedByUs = function(id, pets)
+            -- Actual mob target only: cached pet attack commands and shared group XTargets are not proof.
+            local targetId = 0
+            pcall(function() targetId = mq.TLO.Spawn(id).TargetOfTarget.ID() or 0 end)
+            return targetId > 0 and (targetId == (mq.TLO.Me.ID() or 0) or pets[targetId] ~= nil)
+        end,
+        releasePets = function()
+            -- Release only holds issued by this mode, not the user's other stance preferences.
+            if runtime.petCamp and runtime.petCamp.held then
+                for scope in pairs(runtime.petCamp.held) do sendPetCmd('hold off', scope) end
+                runtime.petCamp.held = nil
+            end
+            if runtime.petCamp and runtime.petCamp.disabledAssist then
+                for scope in pairs(runtime.petCamp.disabledAssist) do sendPetCmd('assist on', scope) end
+                runtime.petCamp.disabledAssist = nil
+            end
+        end,
+        resting = function()
+            return runtime.combatHold() or runtime.medBreakActive or runtime.checkPullHpRest()
+        end,
+        betweenPulls = function()
+            return runtime.pluginManager and not isCastingOrStarting() and not mq.TLO.Me.Combat()
+                and runtime.pluginManager.onBetweenPulls() or false
+        end,
+        find = function(excluded)
+            return runtime.findRoamTarget(ctrl.camp_radius or 100, ctrl.camp_z or 75, ctrl.pull_min_level, ctrl.pull_max_level, excluded)
+        end,
+    })
+    mq.event('NeroMortePetStateTell', "#1# tells you, #2#", function(_, name, text)
+        runtime.petCamp:petTell(name, text)
+    end)
+end
+
 local function runMainLoop()
     ensureLuaTurbo()
+    -- Edited By: NeroMorte - One controller per Triune session; no persisted pet flags.
+    runtime.initPetCamp()
     while open do
         tlog.tick()
         -- per-pass cache key for memoized resolvers (maTargetId, maPcId,
@@ -24786,6 +25127,8 @@ local function runMainLoop()
         end
         -- Edited By: NeroMorte - Refresh native-map camp overlays only when their state changes.
         runtime.updateEqCampMap()
+        -- Edited By: NeroMorte - Maintain authoritative pet snapshots without interrupting a fight.
+        runtime.petCamp:tickStates()
         if runtime.pluginManager and runtime.pluginManager.tick then
             local pmT0 = os.clock()
             runtime.pluginManager.tick()
@@ -24809,7 +25152,7 @@ local function runMainLoop()
                 memmed = true
             end
         end
-        if ctrl.running and not memmed and (os.clock() - runtime.lastTick) > 0.4 then
+        if ctrl.running and not runtime.petCamp.probe and not memmed and (os.clock() - runtime.lastTick) > 0.4 then
             local ctT0 = os.clock()
             local ok, err = pcall(combatTick)
             local ctMs = (os.clock() - ctT0) * 1000
