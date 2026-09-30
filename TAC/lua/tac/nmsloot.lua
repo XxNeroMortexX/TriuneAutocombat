@@ -1057,6 +1057,17 @@ local function drawStatusLine(colors)
     end
 end
 
+local function drawZoneClaimControls(idSuffix)
+    if ImGui.CollapsingHeader('Automatic Claim##nmsZoneClaim' .. idSuffix) then
+        local zoneClaim = core and core.zoneclaim
+        if zoneClaim and zoneClaim.drawControls then
+            zoneClaim.drawControls(idSuffix)
+        else
+            ImGui.TextDisabled('Enable the Zone Claim plugin to configure automatic handoff.')
+        end
+    end
+end
+
 local function drawBoxTable(colors)
     local GOOD, WARN, MUTED, ARC = colors.GOOD, colors.WARN, colors.MUTED, colors.ARC
     local bn = boxnet()
@@ -1446,6 +1457,16 @@ local function drawCompactWindow()
         if ImGui.SmallButton(echoLabel .. '##nmsCEcho') then sendNms({ sub = 'echo', on = state.echo ~= true }, nil) end
         if ImGui.IsItemHovered() then core.setTooltip('Toggle loot echo (#nms echo on|off).') end
         ImGui.SameLine()
+        if ImGui.SmallButton('Set##nmsCSetZone') then
+            local zoneClaim = core and core.zoneclaim
+            if zoneClaim and zoneClaim.setCurrentZone then
+                zoneClaim.setCurrentZone()
+            else
+                print('\ag[Triune NMS]\ax Enable the Zone Claim plugin to set the looting zone.')
+            end
+        end
+        if ImGui.IsItemHovered() then core.setTooltip('Set the active-looting zone to this character\'s current zone or DZ instance.') end
+        ImGui.SameLine()
         if ImGui.SmallButton('Full##nmsCFull') then cfg.compact = false; core.saveLoadout(true) end
         if ImGui.IsItemHovered() then core.setTooltip('Open the full NMS Loot window.') end
     end
@@ -1510,6 +1531,8 @@ local function drawWindow()
     ImGui.Separator()
     ImGui.Dummy(0, core.px(2))
     drawStatusLine(colors)
+    ImGui.Dummy(0, core.px(4))
+    drawZoneClaimControls('Full')
     ImGui.Dummy(0, core.px(4))
     drawBoxTable(colors)
     ImGui.Dummy(0, core.px(4))
