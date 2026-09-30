@@ -193,7 +193,8 @@ function Controller:command(verb, scope)
 end
 
 function Controller:recall()
-    if self.api.endDispatch then self.api.endDispatch() end
+    -- Edited By: NeroMorte - Disable owner auto-assist trigger before recalling any pet.
+    if self.api.endDispatch then self.api.endDispatch(true) end
     if self.phase ~= 'RETURN' and self.phase ~= 'FIGHT' then
         self:command('back', self.puller and self.puller.scope or 'all')
         self:command('follow', self.puller and self.puller.scope or 'all')

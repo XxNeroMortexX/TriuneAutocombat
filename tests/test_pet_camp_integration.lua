@@ -93,4 +93,5 @@ assert(not dispatchRuntime.petCampDispatchActive() and #commandLog == 3)
 dispatchRuntime.serverAttackMode = 'Melee'; dispatchRuntime.petCampMeleeConfirmed = true
 dispatchRuntime.checkPetCampDispatch(); assert(dispatchRuntime.petCampDispatchActive() and commandLog[#commandLog] == '/attack on')
 targetId = 101; dispatchRuntime.checkPetCampDispatch(); assert(not dispatchRuntime.petCampPulse and commandLog[#commandLog] == '/attack off')
+dispatchRuntime.endPetCampDispatch(true); assert(commandLog[#commandLog] == '/attack off') -- Even without a tracked pulse.
 print('PASS: actual action gates, all five dispatchers, no-chase movement guard, original command isolation and balanced pet-button styles')

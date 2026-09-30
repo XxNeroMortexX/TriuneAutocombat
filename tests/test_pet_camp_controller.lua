@@ -27,7 +27,7 @@ local function fixture()
         setTarget = function(id) f.target = id; return true end,
         targetSettled = function() return f.settled end,
         beginDispatch = function(id) f.dispatches[#f.dispatches + 1] = id end,
-        endDispatch = function() f.dispatchEnded = (f.dispatchEnded or 0) + 1 end,
+        endDispatch = function(force) f.forcedStop = force; f.dispatchEnded = (f.dispatchEnded or 0) + 1 end,
         command = function(verb, scope) f.commands[#f.commands + 1] = verb .. ' ' .. scope; ctrl:noteCommand(verb, scope) end,
         releasePets = function()
             if ctrl.held then
@@ -106,7 +106,7 @@ assert(have and engage and c.phase == 'FIGHT' and c.tag == nil)
 assert(f.commands[#f.commands] == 'attack all' and c.held == nil)
 local foundRecall = false
 for _, cmd in ipairs(f.commands) do if cmd == 'back nec' then foundRecall = true end end
-assert(foundRecall)
+assert(foundRecall and f.forcedStop == true)
 -- No new batch until old pull and hostile XTargets are gone.
 f.mobs[100].dead = true; f.xt = { 102 }; f.mobs[102].engaged = true
 f.now = 3; c:combatTick(); assert(c.phase == 'FIGHT' and c.tag == nil)

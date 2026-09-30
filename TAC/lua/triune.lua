@@ -24872,8 +24872,10 @@ end
 
 -- Edited By: NeroMorte - Bridge the shared controller to real MQ readings; GUI and combat use one cache.
 -- Edited By: NeroMorte - Owner attack is briefly leased to far-pet dispatch, never a chase permission.
-function runtime.endPetCampDispatch()
-    if runtime.petCampPulse then mq.cmd('/attack off') end
+function runtime.endPetCampDispatch(force)
+    -- Edited By: NeroMorte - Recall always disables owner attack before back/follow, even without a lease.
+    if force or runtime.petCampPulse then mq.cmd('/attack off') end
+    if force and mq.TLO.Me.AutoFire() then mq.cmd('/autofire off') end
     runtime.petCampPulse = nil
 end
 function runtime.checkPetCampDispatch()
