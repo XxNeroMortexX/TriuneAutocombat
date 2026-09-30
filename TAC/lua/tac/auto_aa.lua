@@ -89,7 +89,8 @@ resetState()
 -- cap spender, command output). nil is the only "unset" value:
 -- a user-picked 100 is a real threshold, not a default to second-guess.
 AA.DEFAULT_THRESHOLD = 25
-AA.MIN_THRESHOLD = 5
+-- Edited By: NeroMorte - Restore the minimum bank threshold to one AA point.
+AA.MIN_THRESHOLD = 1
 AA.TRAIN_FAIL_BACKOFF = 300.0     -- seconds before an AA whose purchase did not land is retried
 AA.SCAN_MIN_INTERVAL = 10.0       -- unforced scans are skipped inside this window
 
@@ -2756,13 +2757,16 @@ function AA.drawWindow()
     ImGui.SameLine()
     ImGui.SetNextItemWidth(core.px(90))
     local curThresh = AA.threshold()
-    local newThresh = ImGui.SliderInt('##autoAaThresh', curThresh, 5, 100, 'Bank: %d')
+    -- Edited By: NeroMorte - Allow a bank of 1 through the slider and Ctrl+click input.
+    local newThresh = ImGui.SliderInt('##autoAaThresh', curThresh, 1, 100, 'Bank: %d')
+    newThresh = math.max(AA.MIN_THRESHOLD, newThresh)
     if newThresh ~= curThresh then
         ctrl.auto_spend_aa_threshold = newThresh
     end
     if ImGui.IsItemDeactivatedAfterEdit() then core.saveLoadout(true) end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', string.format('Bank threshold: %d AA points (min: 5).\nAuto-spending begins once your unspent points reach this number:\nonly checked priorities are bought while any is outstanding; the cap spender runs once they are all maxed.\nSpend Now ignores it.', curThresh))
+        -- Edited By: NeroMorte - Document the restored AA bank minimum and exact entry.
+        ImGui.SetTooltip('%s', string.format('Bank threshold: %d AA points (min: 1). Ctrl+click to type an exact value.\nAuto-spending begins once your unspent points reach this number:\nonly checked priorities are bought while any is outstanding; the cap spender runs once they are all maxed.\nSpend Now ignores it.', curThresh))
     end
 
     ImGui.SameLine()
@@ -3323,7 +3327,8 @@ function AA.onCommand(cmd, args)
             core.saveLoadout(true)
             print(string.format('\ag[Triune]\ax Auto-Spend AA Trigger Threshold set to %d AA.', ctrl.auto_spend_aa_threshold))
         else
-            print(string.format('\ag[Triune]\ax Current Auto-Spend AA Threshold: %d AA. (usage: /ac aathreshold [25-100])', AA.threshold()))
+            -- Edited By: NeroMorte - Match threshold command help to its accepted range.
+            print(string.format('\ag[Triune]\ax Current Auto-Spend AA Threshold: %d AA. (usage: /ac aathreshold [1-500])', AA.threshold()))
         end
     elseif cmd == 'aacost' or cmd == 'spendcost' then
         local val = tonumber(args[2])
@@ -3488,7 +3493,8 @@ plugin.help = {
     '  \ag/ac autofw | summonfw [on|off]\ax - Toggle automatic fireworks summoning',
     '  \ag/ac spendnow | spendaa\ax - Instantly purchase 1 rank of fireworks AA',
     '  \ag/ac summonnow\ax - Instantly activate fireworks summon AA',
-    '  \ag/ac aathreshold [25-100]\ax - Set AA auto-spend trigger threshold',
+    -- Edited By: NeroMorte - Document the supported threshold command range.
+    '  \ag/ac aathreshold [1-500]\ax - Set AA auto-spend trigger threshold',
     '  \ag/ac aacost [1-50]\ax - Set AA point cost per rank',
     '  \ag/ac aaid [id]\ax - Set AA ability ID to purchase/activate (default 17788)',
     '  \ag/ac aaname [name]\ax - Set the cap-spender AA ability name',
