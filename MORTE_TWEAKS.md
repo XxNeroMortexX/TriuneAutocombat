@@ -28,3 +28,9 @@ Changes after that tag are listed here. Test status is recorded separately from 
 
 - Restores the old NeroMorte gem-casting fix using both actual spell Beneficial and TargetType metadata. Beneficial Self spells preserve the current selected target even when the configured recipient is self or pet. They do not lock the cast tracker onto that recipient or queue target restoration. Gennro's existing self-heal exception and targeting for other spells remain intact. Changed blocks are marked `Edited By: NeroMorte`.
 - Validation: Lua syntax and isolated execution of the actual castGem function passed for hostile/friendly/no current target, self/pet recipients, bard songs, aborted movement casts, targeted buffs, missing metadata, and existing self-heals. The user confirmed this fix worked in game and approved merging to main. AA and clickie dispatch are unchanged.
+
+## Native EverQuest camp map — test branch
+
+- Adds default-on Show Camp on EQ Map in Control. MQ2Map draws a green X and radius outline at the saved camp, refreshing when camp/radius changes. Triune's own map remains independent. No shaded fill is attempted because maploc exposes an outline only.
+- Every Clear Camp control removes the map marker and suppresses automatic redraw until Set Here or START, even if Gennro's puller loop recreates the gameplay camp. Gameplay camp initialization is unchanged. Removes only the marker location rather than clearing all maplocs; does not change MQ2Map filters. Zone/character changes and normal window closure clear the marker. Forced Lua termination may bypass normal cleanup.
+- Validation: Lua syntax and isolated marker/radius, suppression/re-enable, MQ2Map reload, missing/invalid camp, and scoped-removal checks passed. Existing Self spell and range/AA-bank checks still pass. In-game testing is pending. Edited blocks are marked Edited By: NeroMorte.
