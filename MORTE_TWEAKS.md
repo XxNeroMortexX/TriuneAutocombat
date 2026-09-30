@@ -18,8 +18,8 @@ Changes after that tag are listed here. Test status is recorded separately from 
 - Settings save with the character's existing Triune loadout. Original Auto-Accept behavior and author credits remain intact; modified blocks are marked `Edited By: NeroMorte`.
 - Validation: `texlua tests/test_auto_accept_tells.lua` checks parsing, command-injection rejection, disabled toggles, independent sender permissions, guild verification, cooldown, known leadership restrictions, configuration saves, and event cleanup. The user reported the first tell-command version working in game. The extended isolated checks also cover no-argument defaults, addressed guild messages, private no-DZ replies, and cross-channel cooldown. The user reported the updated tell/guild version working in game and approved merging to main. Settings persistence across a full restart has not been separately confirmed.
 
-## Range controls and AA bank — test branch
+## Range controls and AA bank — published after slider testing
 
 - Camp Radius, Pull Radius, Search Radius, and Engagement Distance retain their existing positive minimums and Ctrl+click input. Their drag scales start at 10,000 and expand to higher saved or typed values, removing the old gameplay upper caps. Actual spell and weapon reach still governs ranged pulling.
 - Auto AA Bank accepts 1 in the slider, saved-settings cleanup, and purchase threshold helper. Existing defaults remain unchanged. Each modified code block is marked `Edited By: NeroMorte`.
-- Validation: Lua syntax and isolated checks passed for large typed/saved ranges, native slider drag bounds, existing positive minimums, and bank 1 through load, UI, purchase helper, and command. In-game testing is pending.
+- Validation: Lua syntax and isolated checks passed for large typed/saved ranges, native slider drag bounds, existing positive minimums, and bank 1 through load, UI, purchase helper, and command. The user confirmed Ctrl+click accepts higher values and the expanded slider drag ranges work in game. AA Bank persistence across a full restart has not been separately confirmed.
