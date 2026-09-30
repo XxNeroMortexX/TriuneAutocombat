@@ -17665,7 +17665,14 @@ function runtime.castGem(i, g, id)
     local orig = mq.TLO.Target.ID() or 0
     local wasAttacking = mq.TLO.Me.Combat()
     local hostileTarget = (orig > 0 and isHostileTarget and isHostileTarget(orig)) == true
-    local keepHostile = castThroughHostileTarget(selfCast, hostileTarget, isHeal)
+    -- Edited By: NeroMorte - True beneficial Self spells need no selected recipient.
+    -- Preserve Gennro's hostile-target self-heal handling for all other spells.
+    local autoSelfTarget = false
+    pcall(function()
+        autoSelfTarget = sp.Beneficial() == true
+            and tostring(sp.TargetType() or ''):lower() == 'self'
+    end)
+    local keepHostile = autoSelfTarget or castThroughHostileTarget(selfCast, hostileTarget, isHeal)
     local needsTarget = (orig ~= id) and not keepHostile
     if needsTarget and not runtime.setTarget(id) then return false end
 
@@ -17682,6 +17689,7 @@ function runtime.castGem(i, g, id)
     castTracker.activeSpell    = g.spell
     castTracker.activeTargetId = id
     castTracker.activeKind     = g.kind
+    -- Edited By: NeroMorte - Do not force a target while a true Self spell is casting.
     if keepHostile then
         castTracker.targetRequired = false
     else
@@ -17755,6 +17763,7 @@ function runtime.castGem(i, g, id)
             since = os.clock(), deadline = os.clock() + (sp.Beneficial() and 4.0 or ((castMs + 300) / 1000)),
         }
     end
+    -- Edited By: NeroMorte - True Self casts never switched target, so need no restoration.
     if orig ~= id and orig > 0 and not keepHostile then
         if g.cls ~= 'Brd' then
             -- Spell has a cast time: keep target on ally until cast finishes, then restore combat target!
