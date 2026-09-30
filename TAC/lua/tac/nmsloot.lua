@@ -1057,13 +1057,13 @@ local function drawStatusLine(colors)
     end
 end
 
-local function drawZoneClaimControls(idSuffix)
-    if ImGui.CollapsingHeader('Automatic Claim##nmsZoneClaim' .. idSuffix) then
-        local zoneClaim = core and core.zoneclaim
-        if zoneClaim and zoneClaim.drawControls then
-            zoneClaim.drawControls(idSuffix)
+local function drawNmsLooterHandoffControls(idSuffix)
+    if ImGui.CollapsingHeader('NMS Looter Handoff##nmsLooterHandoff' .. idSuffix) then
+        local handoff = core and core.nms_looter_handoff or core and core.zoneclaim
+        if handoff and handoff.drawControls then
+            handoff.drawControls(idSuffix)
         else
-            ImGui.TextDisabled('Enable the Zone Claim plugin to configure automatic handoff.')
+            ImGui.TextDisabled('Enable the NMS Looter Handoff plugin to configure automatic handoff.')
         end
     end
 end
@@ -1458,11 +1458,11 @@ local function drawCompactWindow()
         if ImGui.IsItemHovered() then core.setTooltip('Toggle loot echo (#nms echo on|off).') end
         ImGui.SameLine()
         if ImGui.SmallButton('Set##nmsCSetZone') then
-            local zoneClaim = core and core.zoneclaim
-            if zoneClaim and zoneClaim.setCurrentZone then
-                zoneClaim.setCurrentZone()
+            local handoff = core and core.nms_looter_handoff or core and core.zoneclaim
+            if handoff and handoff.setCurrentZone then
+                handoff.setCurrentZone()
             else
-                print('\ag[Triune NMS]\ax Enable the Zone Claim plugin to set the looting zone.')
+                print('\ag[Triune NMS]\ax Enable the NMS Looter Handoff plugin to set the looting zone.')
             end
         end
         if ImGui.IsItemHovered() then core.setTooltip('Set the active-looting zone to this character\'s current zone or DZ instance.') end
@@ -1532,7 +1532,7 @@ local function drawWindow()
     ImGui.Dummy(0, core.px(2))
     drawStatusLine(colors)
     ImGui.Dummy(0, core.px(4))
-    drawZoneClaimControls('Full')
+    drawNmsLooterHandoffControls('Full')
     ImGui.Dummy(0, core.px(4))
     drawBoxTable(colors)
     ImGui.Dummy(0, core.px(4))

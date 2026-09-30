@@ -7418,6 +7418,7 @@ function runtime.initPluginManager()
             'gamedb.lua',
             'parcels.lua',
             'nmsloot.lua',
+            'nms_looter_handoff.lua',
         }
         for _, f in ipairs(known) do
             if not fileSet[f:lower()] then
