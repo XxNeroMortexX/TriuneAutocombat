@@ -27,7 +27,7 @@ local ui = { PushID = function() end, PopID = function() end, Separator = functi
     SetNextItemWidth = function() end, IsItemHovered = function() return false end,
     Button = function() return false end,
     Checkbox = function(label, value)
-        if label == 'Allow group invite tells' then return not value end
+        if label == 'Allow group invite commands' then return not value end
         return value
     end,
     Combo = function() return 3 end }
@@ -37,13 +37,17 @@ plugin.onInit(core)
 local event = assert(events.TacSocialTellCommand)
 assert(event.pattern == "#1# tells you, '#2#'")
 assert(c.tell_group_invite == false and c.tell_dzadd == false and c.tell_social_permission == 'listed')
-local function tell(line, expected)
+local function receive(handler, line, expected)
     now = now + 2500
     local before = #commands
-    event.handler(line)
+    handler(line)
     assert(#commands == before + (expected and 1 or 0), 'Unexpected dispatch: ' .. line)
     if expected then assert(commands[#commands] == expected, commands[#commands]) end
 end
+local function tell(line, expected) receive(event.handler, line, expected) end
+local guildEvent = assert(events.TacSocialGuildCommand)
+assert(guildEvent.pattern == "#1# tells the guild, '#2#'")
+local function guild(line, expected) receive(guildEvent.handler, line, expected) end
 -- Default-off behavior and independent action switches.
 tell("Alice tells you, 'invite me'")
 c.tell_group_invite = true
@@ -63,7 +67,7 @@ for _, line in ipairs({ "Alice tells you, 'please invite me'", "Alice tells you,
     "Alice says, 'Alice tells you, 'invite me''", "You told Alice, 'invite me'",
     "Alice tells you, 'invite Bob; /quit'", "Alice tells you, 'invite ${Me.Name}'",
     "Alice tells you, 'invite /quit'", "Alice tells you, 'dzadd Bob 2'",
-    "Alice tells you, 'invite Bob' trailing", "Alice tells you, 'invite '" }) do tell(line) end
+    "Alice tells you, 'invite Bob' trailing", "Alice tells you, 'dzadd me now'" }) do tell(line) end
 -- One bounded global cooldown suppresses duplicate and alternating commands.
 tell("Alice tells you, 'invite me'", '/invite Alice')
 local before = #commands
@@ -89,18 +93,56 @@ groupLeader, groupCount = 'Bot', 5; tell("Alice tells you, 'invite me'")
 groupCount, memberNames = 1, { 'Alice' }; tell("Alice tells you, 'invite me'")
 memberNames = { 'Buddy' }; tell("Alice tells you, 'invite me'", '/invite Alice')
 dzLeader = 'Other'; tell("Alice tells you, 'dzadd me'")
-dzLeader, dzName = 'Bot', ''; tell("Alice tells you, 'dzadd me'")
+dzLeader, dzName = 'Bot', ''; tell("Alice tells you, 'dzadd me'", "/tell Alice I'm not in a DZ to invite you.")
 dzName = 'Test expedition'; tell("Alice tells you, 'dzadd me'", '/dzadd Alice')
 -- Unsupported optional fields defer the final permissions check to the game.
 mq.TLO.Group = nil; tell("Alice tells you, 'invite me'", '/invite Alice')
+-- No-argument tells default to the sender, including whitespace-only suffixes.
+tell("Alice tells you, 'invite'", '/invite Alice')
+tell("Alice tells you, ' invite  '", '/invite Alice')
+tell("Alice tells you, 'dzadd'", '/dzadd Alice')
+-- Guild commands must address this exact bot first, ignoring case.
+guild("Alice tells the guild, 'bOt invite'", '/invite Alice')
+guild("Alice tells the guild, 'Bot dzadd me'", '/dzadd Alice')
+guild("Alice tells the guild, 'Bot invite Mortefreddo'", '/invite Mortefreddo')
+guild("Alice tells the guild, 'Bot dzadd Mortefreddo'", '/dzadd Mortefreddo')
+for _, line in ipairs({ "Alice tells the guild, 'Otherbot invite'",
+    "Alice tells the guild, 'Botty invite'", "Alice tells the guild, 'invite Bot'",
+    "Alice tells the guild, 'please Bot dzadd me'", "You say to your guild, 'Bot invite me'",
+    "Alice says, 'Alice tells the guild, 'Bot invite me''",
+    "Alice tells the guild, 'Bot invite Bob; /quit'",
+    "Alice tells the guild, 'Bot dzadd ${Me.Name}'" }) do guild(line) end
+guild("Stranger tells the guild, 'Bot invite'")
+c.tell_dzadd = false; guild("Alice tells the guild, 'Bot dzadd'")
+c.tell_dzadd = true
+-- Server-delivered guild messages authorize same-guild policy across zones.
+c.tell_social_permission = 'guild'
+mq.TLO.Spawn = function() return nil end
+guild("Remoteplayer tells the guild, 'Bot dzadd'", '/dzadd Remoteplayer')
+tell("Remoteplayer tells you, 'dzadd'")
+-- Shared cooldown suppresses a second channel's request/reply.
+guild("Remoteplayer tells the guild, 'Bot invite'", '/invite Remoteplayer')
+before = #commands
+event.handler("Alice tells you, 'invite'")
+assert(#commands == before)
+c.tell_social_permission = 'listed'
+dzName = nil
+guild("Alice tells the guild, 'Bot dzadd'", "/tell Alice I'm not in a DZ to invite you.")
+before = #commands
+guildEvent.handler("Alice tells the guild, 'Bot dzadd'")
+assert(#commands == before)
+tell("Stranger tells you, 'dzadd'")
+dzName = 'NULL'; tell("Alice tells you, 'dzadd'", "/tell Alice I'm not in a DZ to invite you.")
+-- Unreadable DZ state cannot trigger a dzadd or a false no-DZ assertion.
+mq.TLO.DynamicZone = nil; tell("Alice tells you, 'dzadd'")
 -- Plugin Configure exposes the toggles and saves each edited setting.
 local priorToggle = c.tell_group_invite
 plugin.onDrawSettings()
 assert(c.tell_group_invite ~= priorToggle and c.tell_social_permission == 'anyone' and saves == 2)
 plugin.onDestroy()
-assert(removed.TacSocialTellCommand and next(events) == nil)
+assert(removed.TacSocialTellCommand and removed.TacSocialGuildCommand and next(events) == nil)
 -- Re-initialization preserves saved values instead of forcing them off.
 plugin.onInit(core)
 assert(c.tell_dzadd and c.tell_social_permission == 'anyone')
 plugin.onDestroy()
-print('PASS: tell parsing, authorization, cooldown, leadership, settings, event cleanup, and saved values')
+print('PASS: tell/guild parsing, sender defaults, no-DZ replies, authorization, shared cooldown, leadership, settings, and cleanup')

@@ -20,7 +20,7 @@ local plugin = {
     id                 = 'auto_accept',
     name               = 'Auto-Accept Invites',
     -- Edited By: NeroMorte - Optional tell-driven group and DZ commands.
-    version            = '1.2.0',
+    version            = '1.3.0',
     author             = 'Triune',
     description        = 'Automatically accepts group, trade, and expedition/DZ invites from whitelisted, group, or guild players.',
     defaultEnabled     = true,
@@ -277,21 +277,36 @@ end
 -- ----------------------------------------------------------------------------
 -- Accept actions (shared by chat events and the window poll)
 -- ----------------------------------------------------------------------------
--- Edited By: NeroMorte - Strict tell parsing; only these two verbs and a single name are accepted.
-local function parseTellCommand(line)
-    if type(line) ~= 'string' then return nil end
-    local sender, message = line:match("^([A-Za-z]+) tells you, '(.*)'$")
-    if not sender or #sender > 64 then return nil end
+-- Edited By: NeroMorte - Omitted targets and 'me' both refer to the command sender.
+local function parseSocialMessage(sender, message)
     local verb, target = message:match('^%s*([A-Za-z]+)%s+([A-Za-z]+)%s*$')
-    if not verb or #target > 64 then return nil end
+    if not verb then verb = message:match('^%s*([A-Za-z]+)%s*$') end
+    if not verb or (target and #target > 64) then return nil end
     verb = verb:lower()
     if verb ~= 'invite' and verb ~= 'dzadd' then return nil end
-    if target:lower() == 'me' then target = sender end
+    if not target or target:lower() == 'me' then target = sender end
     return sender, verb, target
 end
 
+-- Edited By: NeroMorte - Parse incoming tells or guild commands addressed to this character first.
+local function parseSocialCommand(line, channel)
+    if type(line) ~= 'string' then return nil end
+    local pattern = channel == 'guild' and "^([A-Za-z]+) tells the guild, '(.*)'$" or
+        "^([A-Za-z]+) tells you, '(.*)'$"
+    local sender, message = line:match(pattern)
+    if not sender or #sender > 64 then return nil end
+    if channel == 'guild' then
+        local bot, rest = message:match('^%s*([A-Za-z]+)%s+(.+)$')
+        local me = nil
+        pcall(function() me = core.mq.TLO.Me.CleanName() end)
+        if not bot or not me or bot:lower() ~= me:lower() then return nil end
+        message = rest
+    end
+    return parseSocialMessage(sender, message)
+end
+
 -- Edited By: NeroMorte - Tell permission is independent of incoming-invite permission.
-local function isTellAllowed(sender)
+local function isTellAllowed(sender, channel)
     local c = ctrl()
     if not c then return false end
     local policy = c.tell_social_permission or 'listed'
@@ -305,6 +320,8 @@ local function isTellAllowed(sender)
         return false
     end
     if policy ~= 'guild' then return false end
+    -- Edited By: NeroMorte - A genuine guild-channel message verifies guild membership across zones.
+    if channel == 'guild' then return true end
     local mq = core and core.mq
     local sameGuild = false
     pcall(function()
@@ -322,6 +339,12 @@ end
 local function tellLeadershipAllows(verb, target)
     local mq = core.mq
     local allowed, reason = true, nil
+    -- Edited By: NeroMorte - Never issue dzadd without a confirmed current expedition.
+    if verb == 'dzadd' then
+        local ok, name = pcall(function() return mq.TLO.DynamicZone.Name() end)
+        if not ok then return false, 'unable to verify current expedition' end
+        if not name or name == '' or name == 'NULL' then return false, 'no current expedition' end
+    end
     pcall(function()
         local me = mq.TLO.Me.CleanName()
         if me and target:lower() == me:lower() then
@@ -369,14 +392,15 @@ local function tellLeadershipAllows(verb, target)
 end
 
 -- Edited By: NeroMorte - Event-driven dispatch with independent toggles and a two-second cooldown.
-local function onTellCommand(line)
-    local sender, verb, target = parseTellCommand(line)
+local function onSocialCommand(line, channel)
+    -- Edited By: NeroMorte - Tells and addressed guild messages share controls and cooldown.
+    local sender, verb, target = parseSocialCommand(line, channel)
     local c = ctrl()
     local mq = core and core.mq
     if not sender or not c or not mq then return false end
     if (verb == 'invite' and c.tell_group_invite ~= true) or
         (verb == 'dzadd' and c.tell_dzadd ~= true) then return false end
-    if not isTellAllowed(sender) then return false end
+    if not isTellAllowed(sender, channel) then return false end
     local me = nil
     pcall(function() me = mq.TLO.Me.CleanName() end)
     if me and sender:lower() == me:lower() then return false end
@@ -388,11 +412,15 @@ local function onTellCommand(line)
     lastTellCommandAt = now
     local allowed, reason = tellLeadershipAllows(verb, target)
     if not allowed then
+        -- Edited By: NeroMorte - Reply privately to an authorized DZ request when no DZ exists.
+        if reason == 'no current expedition' then
+            mq.cmd('/tell ' .. sender .. " I'm not in a DZ to invite you.")
+        end
         print(string.format('[Triune Auto-Accept] Tell command from %s skipped: %s.', sender, reason))
         return false
     end
     mq.cmd('/' .. verb .. ' ' .. target)
-    print(string.format('[Triune Auto-Accept] Requested /%s %s for tell sender %s.', verb, target, sender))
+    print(string.format('[Triune Auto-Accept] Requested /%s %s for %s sender %s.', verb, target, channel or 'tell', sender))
     return true
 end
 
@@ -624,7 +652,9 @@ function plugin.onInit(coreApi)
     reg('TacAutoDZInvite2', '#1# invites you to join an expedition#*#', onDzInvite('expedition'))
     reg('TacAutoDZInvite3', '#1# has invited you to join a Dynamic Zone#*#', onDzInvite('Dynamic Zone'))
     -- Edited By: NeroMorte - Incoming tells only; no polling or outgoing-tell handlers.
-    reg('TacSocialTellCommand', "#1# tells you, '#2#'", onTellCommand)
+    reg('TacSocialTellCommand', "#1# tells you, '#2#'", function(line) onSocialCommand(line, 'tell') end)
+    -- Edited By: NeroMorte - Only guild messages beginning with this bot's name can dispatch commands.
+    reg('TacSocialGuildCommand', "#1# tells the guild, '#2#'", function(line) onSocialCommand(line, 'guild') end)
 end
 
 function plugin.onDestroy()
@@ -664,11 +694,12 @@ local function drawTellSettings(id)
     if not c or not ImGui then return end
     ImGui.PushID(id)
     ImGui.Separator()
-    ImGui.Text('Tell Commands')
-    checkbox('Allow group invite tells', 'tell_group_invite',
-        'invite me invites the sender; invite Mortefreddo invites the named character.')
-    checkbox('Allow DZ add tells', 'tell_dzadd',
-        'dzadd me adds the sender; dzadd Mortefreddo adds the named character to your expedition.')
+    -- Edited By: NeroMorte - Explain the shared tell/guild syntax and sender-default target.
+    ImGui.Text('Tell & Addressed Guild Commands')
+    checkbox('Allow group invite commands', 'tell_group_invite',
+        'Tell: invite or invite me invites the sender; invite Mortefreddo invites that character. Guild: put this bot name first.')
+    checkbox('Allow DZ add commands', 'tell_dzadd',
+        'Tell: dzadd or dzadd me adds the sender; dzadd Mortefreddo adds that character. Guild: put this bot name first.')
     local keys = { 'listed', 'guild', 'anyone' }
     local current = 1
     for i, key in ipairs(keys) do
@@ -676,12 +707,12 @@ local function drawTellSettings(id)
     end
     ImGui.SetNextItemWidth(core.px(240))
     local selected = ImGui.Combo('Who can send commands', current,
-        { 'Whitelisted names only', 'Same guild (in this zone)', 'Anyone' })
+        { 'Whitelisted names only', 'Same guild', 'Anyone' })
     if selected ~= current and keys[selected] then
         c.tell_social_permission = keys[selected]
         saveLoadout()
     end
-    ImGui.TextWrapped('Commands ignore case. Whitelisted names use the player list below/in the Auto-Accept window; player IDs do not authorize tells. Guild permission requires a verified same-guild player in this zone. An authorized sender can name another player. Commands share a 2-second cooldown.')
+    ImGui.TextWrapped('Tell examples: invite, invite me, dzadd, dzadd Mortefreddo. Guild examples: BotName invite, BotName dzadd me. The bot name MUST be the first word in guild commands. Commands ignore case. Permissions apply to both channels; whitelist uses names in the Auto-Accept player list, not IDs. Same-guild tells require a verified player in this zone; guild messages work across zones. An authorized sender can name another player. Shared cooldown: 2 seconds. Without a DZ, the bot replies privately to the sender.')
     ImGui.PopID()
 end
 
