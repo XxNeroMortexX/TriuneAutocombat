@@ -11525,7 +11525,8 @@ function UI.distanceSlider(label, value, minimum, dragMaximum)
     local current = math.max(minimum, math.floor(tonumber(value) or minimum))
     -- Native integer sliders require their drag bounds to fit half the signed-int range.
     -- This bounds the drag scale only; Ctrl+click input remains unclamped above it.
-    local scaleMaximum = math.max(dragMaximum, math.min(current, 1073741823))
+    -- Edited By: NeroMorte - Give every distance control a 10,000-unit drag range immediately.
+    local scaleMaximum = math.max(10000, dragMaximum, math.min(current, 1073741823))
     local edited = ImGui.SliderInt(label, current, minimum, scaleMaximum, '%d', 0)
     edited = math.max(minimum, math.floor(tonumber(edited) or current))
     return edited, edited ~= value

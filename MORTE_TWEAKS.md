@@ -20,6 +20,6 @@ Changes after that tag are listed here. Test status is recorded separately from 
 
 ## Range controls and AA bank — test branch
 
-- Camp Radius, Pull Radius, Search Radius, and Engagement Distance retain their existing positive minimums and Ctrl+click input. Their drag scales expand to saved or typed values, removing the old gameplay upper caps. Actual spell and weapon reach still governs ranged pulling.
+- Camp Radius, Pull Radius, Search Radius, and Engagement Distance retain their existing positive minimums and Ctrl+click input. Their drag scales start at 10,000 and expand to higher saved or typed values, removing the old gameplay upper caps. Actual spell and weapon reach still governs ranged pulling.
 - Auto AA Bank accepts 1 in the slider, saved-settings cleanup, and purchase threshold helper. Existing defaults remain unchanged. Each modified code block is marked `Edited By: NeroMorte`.
 - Validation: Lua syntax and isolated checks passed for large typed/saved ranges, native slider drag bounds, existing positive minimums, and bank 1 through load, UI, purchase helper, and command. In-game testing is pending.

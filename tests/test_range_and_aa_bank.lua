@@ -13,6 +13,9 @@ local helper = assert(source:match('(function UI%.distanceSlider.-\nend)\n\nfunc
 assert(load(helper, 'distanceSlider', 't', env))()
 for _, setting in ipairs({ { 10, 500 }, { 15, 250 }, { 50, 2000 } }) do
     local minimum, scale = setting[1], setting[2]
+    edited = nil
+    env.UI.distanceSlider('test', scale, minimum, scale)
+    assert(received.maximum == 10000 and received.minimum == minimum)
     edited = 60000
     local result, changed = env.UI.distanceSlider('test', scale, minimum, scale)
     assert(result == 60000 and changed and received.flags == 0)
