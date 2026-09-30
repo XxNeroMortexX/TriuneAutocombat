@@ -22,7 +22,8 @@ New-Item -ItemType Directory -Path $Backup -Force | Out-Null
 $Archive = Join-Path $Backup 'test-source.zip'
 $Candidate = Join-Path $Backup 'candidate'
 $Files = @('TAC/lua/TAC_support_modules/pet_camp_controller.lua', 'TAC/lua/triune.lua')
-git -C $Dev archive --format=zip "--output=$Archive" $Revision -- @Files
+# Preserve canonical blob bytes even when the Windows checkout uses core.autocrlf=true.
+git -c core.autocrlf=false -c core.eol=lf -C $Dev archive --format=zip "--output=$Archive" $Revision -- @Files
 if ($LASTEXITCODE -ne 0) { throw 'Could not extract the exact test files; live files were not changed.' }
 Expand-Archive -LiteralPath $Archive -DestinationPath $Candidate
 $Plan = @()
