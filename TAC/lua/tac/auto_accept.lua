@@ -19,7 +19,8 @@
 local plugin = {
     id                 = 'auto_accept',
     name               = 'Auto-Accept Invites',
-    version            = '1.1.0',
+    -- Edited By: NeroMorte - Optional tell-driven group and DZ commands.
+    version            = '1.3.0',
     author             = 'Triune',
     description        = 'Automatically accepts group, trade, and expedition/DZ invites from whitelisted, group, or guild players.',
     defaultEnabled     = true,
@@ -37,6 +38,10 @@ local registeredEvents = {}
 local lastGroupAcceptAt = nil
 local lastTradeAcceptAt = nil
 local lastDzAcceptAt = nil
+
+-- Edited By: NeroMorte - One bounded cooldown shared by incoming tell commands.
+local lastTellCommandAt = nil
+local lastTellCharacter = nil
 
 -- Settings-page scratch state
 local inputName = ''
@@ -272,6 +277,153 @@ end
 -- ----------------------------------------------------------------------------
 -- Accept actions (shared by chat events and the window poll)
 -- ----------------------------------------------------------------------------
+-- Edited By: NeroMorte - Omitted targets and 'me' both refer to the command sender.
+local function parseSocialMessage(sender, message)
+    local verb, target = message:match('^%s*([A-Za-z]+)%s+([A-Za-z]+)%s*$')
+    if not verb then verb = message:match('^%s*([A-Za-z]+)%s*$') end
+    if not verb or (target and #target > 64) then return nil end
+    verb = verb:lower()
+    if verb ~= 'invite' and verb ~= 'dzadd' then return nil end
+    if not target or target:lower() == 'me' then target = sender end
+    return sender, verb, target
+end
+
+-- Edited By: NeroMorte - Parse incoming tells or guild commands addressed to this character first.
+local function parseSocialCommand(line, channel)
+    if type(line) ~= 'string' then return nil end
+    local pattern = channel == 'guild' and "^([A-Za-z]+) tells the guild, '(.*)'$" or
+        "^([A-Za-z]+) tells you, '(.*)'$"
+    local sender, message = line:match(pattern)
+    if not sender or #sender > 64 then return nil end
+    if channel == 'guild' then
+        local bot, rest = message:match('^%s*([A-Za-z]+)%s+(.+)$')
+        local me = nil
+        pcall(function() me = core.mq.TLO.Me.CleanName() end)
+        if not bot or not me or bot:lower() ~= me:lower() then return nil end
+        message = rest
+    end
+    return parseSocialMessage(sender, message)
+end
+
+-- Edited By: NeroMorte - Tell permission is independent of incoming-invite permission.
+local function isTellAllowed(sender, channel)
+    local c = ctrl()
+    if not c then return false end
+    local policy = c.tell_social_permission or 'listed'
+    if policy == 'anyone' then return true end
+    -- Use names only: saved spawn IDs can belong to a different character later.
+    if policy == 'listed' then
+        for _, entry in ipairs(ensureList() or {}) do
+            local name = getPlayerInfo(entry)
+            if name:lower() == sender:lower() then return true end
+        end
+        return false
+    end
+    if policy ~= 'guild' then return false end
+    -- Edited By: NeroMorte - A genuine guild-channel message verifies guild membership across zones.
+    if channel == 'guild' then return true end
+    local mq = core and core.mq
+    local sameGuild = false
+    pcall(function()
+        local sp = mq.TLO.Spawn('pc =' .. sender)
+        if not sp or not sp() or sp.Type() ~= 'PC' or
+            sp.CleanName():lower() ~= sender:lower() then return end
+        local mine, theirs = mq.TLO.Me.Guild(), sp.Guild()
+        sameGuild = mine and mine ~= '' and mine ~= 'NULL' and theirs and
+            theirs:lower() == mine:lower() or false
+    end)
+    return sameGuild
+end
+
+-- Edited By: NeroMorte - Check known leadership/full-group state without requiring a target change.
+local function tellLeadershipAllows(verb, target)
+    local mq = core.mq
+    local allowed, reason = true, nil
+    -- Edited By: NeroMorte - Never issue dzadd without a confirmed current expedition.
+    if verb == 'dzadd' then
+        local ok, name = pcall(function() return mq.TLO.DynamicZone.Name() end)
+        if not ok then return false, 'unable to verify current expedition' end
+        if not name or name == '' or name == 'NULL' then return false, 'no current expedition' end
+    end
+    pcall(function()
+        local me = mq.TLO.Me.CleanName()
+        if me and target:lower() == me:lower() then
+            allowed, reason = false, 'cannot invite yourself'
+            return
+        end
+        if verb == 'invite' then
+            local group = mq.TLO.Group
+            local members = tonumber(group.Members()) or 0
+            if members > 0 then
+                local leader = group.Leader.Name()
+                if leader and leader ~= '' and leader ~= 'NULL' and me and
+                    leader:lower() ~= me:lower() then
+                    allowed, reason = false, 'not the group leader'
+                    return
+                end
+                if members >= 5 then
+                    allowed, reason = false, 'group is full'
+                    return
+                end
+                for i = 1, members do
+                    local name = group.Member(i).Name()
+                    if name and name:lower() == target:lower() then
+                        allowed, reason = false, 'already in the group'
+                        return
+                    end
+                end
+            end
+        else
+            local dz = mq.TLO.DynamicZone
+            local name = dz.Name()
+            if name == '' or name == 'NULL' then
+                allowed, reason = false, 'no current expedition'
+                return
+            end
+            local leader = dz.Leader.Name()
+            if leader and leader ~= '' and leader ~= 'NULL' and me and
+                leader:lower() ~= me:lower() then
+                allowed, reason = false, 'not the expedition leader'
+            end
+        end
+    end)
+    -- Unavailable client fields leave final permission enforcement to the game.
+    return allowed, reason
+end
+
+-- Edited By: NeroMorte - Event-driven dispatch with independent toggles and a two-second cooldown.
+local function onSocialCommand(line, channel)
+    -- Edited By: NeroMorte - Tells and addressed guild messages share controls and cooldown.
+    local sender, verb, target = parseSocialCommand(line, channel)
+    local c = ctrl()
+    local mq = core and core.mq
+    if not sender or not c or not mq then return false end
+    if (verb == 'invite' and c.tell_group_invite ~= true) or
+        (verb == 'dzadd' and c.tell_dzadd ~= true) then return false end
+    if not isTellAllowed(sender, channel) then return false end
+    local me = nil
+    pcall(function() me = mq.TLO.Me.CleanName() end)
+    if me and sender:lower() == me:lower() then return false end
+    if lastTellCharacter ~= me then
+        lastTellCharacter, lastTellCommandAt = me, nil
+    end
+    local now = mq.gettime and mq.gettime() / 1000 or os.clock()
+    if lastTellCommandAt and now - lastTellCommandAt < 2 then return false end
+    lastTellCommandAt = now
+    local allowed, reason = tellLeadershipAllows(verb, target)
+    if not allowed then
+        -- Edited By: NeroMorte - Reply privately to an authorized DZ request when no DZ exists.
+        if reason == 'no current expedition' then
+            mq.cmd('/tell ' .. sender .. " I'm not in a DZ to invite you.")
+        end
+        print(string.format('[Triune Auto-Accept] Tell command from %s skipped: %s.', sender, reason))
+        return false
+    end
+    mq.cmd('/' .. verb .. ' ' .. target)
+    print(string.format('[Triune Auto-Accept] Requested /%s %s for %s sender %s.', verb, target, channel or 'tell', sender))
+    return true
+end
+
 local function acceptGroupInvite(inviter, inviterId)
     local now = os.clock()
     if lastGroupAcceptAt and (now - lastGroupAcceptAt) <= 2.0 then return end
@@ -451,8 +603,15 @@ end
 -- ----------------------------------------------------------------------------
 function plugin.onInit(coreApi)
     core = coreApi
+    -- Edited By: NeroMorte - Reset tell cooldown and initialize saved optional controls.
+    lastTellCommandAt, lastTellCharacter = nil, nil
     local c = ctrl()
     if c then
+        if c.tell_group_invite == nil then c.tell_group_invite = false end
+        if c.tell_dzadd == nil then c.tell_dzadd = false end
+        if c.tell_social_permission ~= 'anyone' and c.tell_social_permission ~= 'guild' then
+            c.tell_social_permission = 'listed'
+        end
         if c.auto_group == nil then c.auto_group = false end
         if c.auto_trade == nil then c.auto_trade = false end
         if c.auto_dzadd == nil then c.auto_dzadd = false end
@@ -492,6 +651,10 @@ function plugin.onInit(coreApi)
     reg('TacAutoDZInvite1', '#1# has invited you to join #*# expedition#*#', onDzInvite('expedition'))
     reg('TacAutoDZInvite2', '#1# invites you to join an expedition#*#', onDzInvite('expedition'))
     reg('TacAutoDZInvite3', '#1# has invited you to join a Dynamic Zone#*#', onDzInvite('Dynamic Zone'))
+    -- Edited By: NeroMorte - Incoming tells only; no polling or outgoing-tell handlers.
+    reg('TacSocialTellCommand', "#1# tells you, '#2#'", function(line) onSocialCommand(line, 'tell') end)
+    -- Edited By: NeroMorte - Only guild messages beginning with this bot's name can dispatch commands.
+    reg('TacSocialGuildCommand', "#1# tells the guild, '#2#'", function(line) onSocialCommand(line, 'guild') end)
 end
 
 function plugin.onDestroy()
@@ -502,6 +665,8 @@ function plugin.onDestroy()
         end
     end
     registeredEvents = {}
+    -- Edited By: NeroMorte - Release tell state along with the plugin-owned event.
+    lastTellCommandAt, lastTellCharacter = nil, nil
 end
 
 -- ----------------------------------------------------------------------------
@@ -520,6 +685,35 @@ local function checkbox(label, key, tooltip)
     if tooltip and ImGui.IsItemHovered() then
         ImGui.SetTooltip('%s', tooltip)
     end
+end
+
+-- Edited By: NeroMorte - Shared controls in the Auto-Accept window and plugin configuration.
+local function drawTellSettings(id)
+    local c = ctrl()
+    local ImGui = core and core.ImGui
+    if not c or not ImGui then return end
+    ImGui.PushID(id)
+    ImGui.Separator()
+    -- Edited By: NeroMorte - Explain the shared tell/guild syntax and sender-default target.
+    ImGui.Text('Tell & Addressed Guild Commands')
+    checkbox('Allow group invite commands', 'tell_group_invite',
+        'Tell: invite or invite me invites the sender; invite Mortefreddo invites that character. Guild: put this bot name first.')
+    checkbox('Allow DZ add commands', 'tell_dzadd',
+        'Tell: dzadd or dzadd me adds the sender; dzadd Mortefreddo adds that character. Guild: put this bot name first.')
+    local keys = { 'listed', 'guild', 'anyone' }
+    local current = 1
+    for i, key in ipairs(keys) do
+        if c.tell_social_permission == key then current = i end
+    end
+    ImGui.SetNextItemWidth(core.px(240))
+    local selected = ImGui.Combo('Who can send commands', current,
+        { 'Whitelisted names only', 'Same guild', 'Anyone' })
+    if selected ~= current and keys[selected] then
+        c.tell_social_permission = keys[selected]
+        saveLoadout()
+    end
+    ImGui.TextWrapped('Tell examples: invite, invite me, dzadd, dzadd Mortefreddo. Guild examples: BotName invite, BotName dzadd me. The bot name MUST be the first word in guild commands. Commands ignore case. Permissions apply to both channels; whitelist uses names in the Auto-Accept player list, not IDs. Same-guild tells require a verified player in this zone; guild messages work across zones. An authorized sender can name another player. Shared cooldown: 2 seconds. Without a DZ, the bot replies privately to the sender.')
+    ImGui.PopID()
 end
 
 local function currentPcTarget()
@@ -558,6 +752,9 @@ local function drawPanel()
         'Automatically clicks trade accept when incoming trade partner has clicked their trade button and is authorized.')
     checkbox('Auto-Accept Dynamic Zone / Expedition Invites (DZAdd)##aaDz', 'auto_dzadd',
         'Automatically accepts expedition (/dzaccept), dynamic zone, and task addition invites from authorized players.')
+
+    -- Edited By: NeroMorte - Expose the optional tell commands in the full window.
+    drawTellSettings('aaTellWindow')
 
     ImGui.Separator()
 
@@ -742,6 +939,8 @@ function plugin.onDrawSettings()
     checkbox('Auto-Accept Group Invites##aaGrpQ', 'auto_group', 'Automatically joins group when invited by an authorized player.')
     checkbox('Auto-Accept Trades##aaTrdQ', 'auto_trade', 'Automatically clicks trade accept when incoming trade partner has clicked their trade button and is authorized.')
     checkbox('Auto-Accept Dynamic Zone / Expedition Invites (DZAdd)##aaDzQ', 'auto_dzadd', 'Automatically accepts expedition (/dzaccept), dynamic zone, and task addition invites from authorized players.')
+    -- Edited By: NeroMorte - Also expose tell controls under Plugins -> Configure.
+    drawTellSettings('aaTellConfig')
 end
 
 -- /ac autoaccept | acceptwin toggles the window
