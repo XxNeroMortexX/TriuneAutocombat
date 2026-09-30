@@ -10153,9 +10153,8 @@ function runtime.eqCampMapLoaded()
     return loaded
 end
 
--- Edited By: NeroMorte - Clear only Triune's camp marker, with optional redraw suppression.
-function runtime.clearEqCampMap(suppress)
-    if suppress then runtime.eqCampMapSuppressed = true end
+-- Edited By: NeroMorte - Clear only Triune's native camp marker; redraw follows actual camp state.
+function runtime.clearEqCampMap()
     local previous = runtime.eqCampMapMarker
     if previous and runtime.eqCampMapLoaded() then
         -- Remove only the location drawn for this camp, never all of the user's maplocs.
@@ -10173,8 +10172,7 @@ function runtime.updateEqCampMap()
     local camp = ctrl.camp_loc
     local zone = mq.TLO.Zone.ShortName() or ''
     local character = mq.TLO.Me.CleanName() or ''
-    if ctrl.show_eq_camp_radius == false or runtime.eqCampMapSuppressed
-        or not camp or zone == '' or character == '' then
+    if ctrl.show_eq_camp_radius == false or not camp or zone == '' or character == '' then
         runtime.clearEqCampMap()
         return
     end
@@ -10193,8 +10191,6 @@ function runtime.updateEqCampMap()
 end
 
 function UI.startEngine()
-    -- Edited By: NeroMorte - START re-enables the native-map camp marker after Clear Camp.
-    runtime.eqCampMapSuppressed = false
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
         runtime.setNearestWaypoint()
     end
@@ -11601,7 +11597,7 @@ function UI.drawControlTab()
         runtime.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Show the camp X and radius circle on EverQuest\'s map using MQ2Map.\nClear Camp hides it until Set Here or START. Triune\'s own map is independent.')
+        ImGui.SetTooltip('Show the camp X and radius circle on EverQuest\'s map using MQ2Map.\nClear Camp removes it; a new camp redraws it automatically. Triune\'s own map is independent.')
     end
 
     -- Manual Mode Contextual Controls
@@ -11616,19 +11612,15 @@ function UI.drawControlTab()
 
         if ImGui.Button('Set Here##manualCampSet') then
             local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-            if mx and my and mz then
-                -- Edited By: NeroMorte - Explicit camp placement re-enables its native-map marker.
-                runtime.eqCampMapSuppressed = false
-                ctrl.camp_loc = { x = mx, y = my, z = mz }
-            end
+            if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
         end
         if ImGui.IsItemHovered() then
             ImGui.SetTooltip('Set the current location as the Camp anchor point. Character will return here when idle.')
         end
         ImGui.SameLine()
         if ImGui.Button('Clear Camp##manualCampClear') then
-            -- Edited By: NeroMorte - Clear the native-map marker and suppress automatic redraw.
-            runtime.clearEqCampMap(true)
+            -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+            runtime.clearEqCampMap()
             ctrl.camp_loc = nil
         end
         if ImGui.IsItemHovered() then
@@ -11934,19 +11926,15 @@ function UI.drawControlTab()
 
             if ImGui.Button('Set Here##pullerCampSet') then
                 local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-                if mx and my and mz then
-                    -- Edited By: NeroMorte - Explicit camp placement re-enables its native-map marker.
-                    runtime.eqCampMapSuppressed = false
-                    ctrl.camp_loc = { x = mx, y = my, z = mz }
-                end
+                if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Set the current location as the Puller Camp anchor point. Puller returns here after pulling.')
             end
             ImGui.SameLine()
             if ImGui.Button('Clear Camp##pullerCampClear') then
-                -- Edited By: NeroMorte - Clear the native-map marker and suppress automatic redraw.
-                runtime.clearEqCampMap(true)
+                -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+                runtime.clearEqCampMap()
                 ctrl.camp_loc = nil; runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
             end
             if ImGui.IsItemHovered() then
@@ -12603,19 +12591,15 @@ function UI.drawControlTab()
 
             if ImGui.Button('Set Here##assistCampSet') then
                 local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
-                if mx and my and mz then
-                    -- Edited By: NeroMorte - Explicit camp placement re-enables its native-map marker.
-                    runtime.eqCampMapSuppressed = false
-                    ctrl.camp_loc = { x = mx, y = my, z = mz }
-                end
+                if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Set the current location as the Assist Camp anchor point. Character will return here when idle.')
             end
             ImGui.SameLine()
             if ImGui.Button('Clear Camp##assistCampClear') then
-                -- Edited By: NeroMorte - Clear the native-map marker and suppress automatic redraw.
-                runtime.clearEqCampMap(true)
+                -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+                runtime.clearEqCampMap()
                 ctrl.camp_loc = nil
             end
             if ImGui.IsItemHovered() then
@@ -14910,8 +14894,6 @@ function UI.drawMiniCamp()
     if ImGui.SmallButton('Set Here##miniCampSet') then
         local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
         if mx and my and mz then
-            -- Edited By: NeroMorte - Explicit camp placement re-enables its native-map marker.
-            runtime.eqCampMapSuppressed = false
             ctrl.camp_loc = { x = mx, y = my, z = mz }
             runtime.saveLoadout(true)
         end
@@ -14920,8 +14902,8 @@ function UI.drawMiniCamp()
     if ctrl.camp_loc then
         ImGui.SameLine()
         if ImGui.SmallButton('Clear##miniCampClear') then
-            -- Edited By: NeroMorte - Clear the native-map marker and suppress automatic redraw.
-            runtime.clearEqCampMap(true)
+            -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+            runtime.clearEqCampMap()
             ctrl.camp_loc = nil
             if ctrl.mode == 'Puller' then
                 runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
@@ -21982,7 +21964,6 @@ end
 runtime.onZoned = function()
     -- Edited By: NeroMorte - Remove the previous zone camp marker before camp reset.
     runtime.clearEqCampMap()
-    runtime.eqCampMapSuppressed = false
     local now = os.clock()
     if (now - (runtime.lastZonedAt or 0)) < 2.0 then return end
     runtime.lastZonedAt = now
@@ -24752,9 +24733,8 @@ local function runMainLoop()
         runtime.doeventsMs = (os.clock() - evT0) * 1000
         local nm = mq.TLO.Me.CleanName()
         if nm and nm ~= '' and nm ~= myName then
-            -- Edited By: NeroMorte - Do not carry a previous character's map marker/suppression.
+            -- Edited By: NeroMorte - Remove the previous character's camp marker.
             runtime.clearEqCampMap()
-            runtime.eqCampMapSuppressed = false
             myName = nm
             runtime.loadAll()
             runtime.onCharacterChanged()

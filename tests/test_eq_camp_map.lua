@@ -24,14 +24,15 @@ ctrl.camp_radius = 10000
 runtime.updateEqCampMap()
 assert(#commands == 3 and commands[2] == '/squelch /maploc remove -100 200 3')
 assert(commands[3]:find('radius 10000', 1, true))
--- Clear stays hidden even if the puller automatically recreates its camp.
-runtime.clearEqCampMap(true)
+-- Clear disappears while no camp exists (e.g. waiting for feign/stand transition).
+runtime.clearEqCampMap()
+ctrl.camp_loc = nil
 assert(#commands == 4 and runtime.eqCampMapMarker == nil)
-ctrl.camp_loc = { x = 300, y = 400, z = 0 }
 runtime.updateEqCampMap(); assert(#commands == 4)
--- Set Here or START re-enables the marker.
-runtime.eqCampMapSuppressed = false
+-- The puller recreates camp on standing; redraw without Pause/START.
+ctrl.camp_loc = { x = 300, y = 400, z = 0 }
 runtime.updateEqCampMap(); assert(#commands == 5)
+assert(commands[5]:find('/maploc 400 300 0', 1, true))
 ctrl.show_eq_camp_radius = false
 runtime.updateEqCampMap(); assert(#commands == 6)
 runtime.updateEqCampMap(); assert(#commands == 6)
@@ -49,12 +50,11 @@ ctrl.camp_loc = { x = 1, y = 2, z = 3 }
 runtime.updateEqCampMap(); assert(#commands == 11)
 ctrl.camp_loc = { x = 'bad', y = 2, z = 3 }
 runtime.updateEqCampMap(); assert(#commands == 12)
--- Every clear control is wired; START and Set Here re-enable the display.
-local _, count = source:gsub('runtime%.clearEqCampMap%(true%)', '')
-assert(count == 4)
-assert(source:match('function UI%.startEngine%(%)%s+%-%-[^\n]+\n%s+runtime%.eqCampMapSuppressed = false'))
+-- All four Clear controls remove their marker immediately.
+local _, count = source:gsub('Remove the native%-map marker immediately when camp is cleared%.', '')
+assert(count == 4 and not source:find('eqCampMapSuppressed', 1, true))
 for _, command in ipairs(commands) do
     assert(command ~= '/squelch /maploc remove' and command ~= '/maploc remove')
     assert(not command:find('/mapfilter', 1, true))
 end
-print('PASS: native camp marker, radius refresh, Clear suppression, re-enable, MQ2Map reload, and scoped removal')
+print('PASS: native camp marker, radius refresh, Clear and automatic camp recreation, MQ2Map reload, and scoped removal')
