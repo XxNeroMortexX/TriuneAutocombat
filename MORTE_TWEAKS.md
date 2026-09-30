@@ -23,3 +23,8 @@ Changes after that tag are listed here. Test status is recorded separately from 
 - Camp Radius, Pull Radius, Search Radius, and Engagement Distance retain their existing positive minimums and Ctrl+click input. Their drag scales start at 10,000 and expand to higher saved or typed values, removing the old gameplay upper caps. Actual spell and weapon reach still governs ranged pulling.
 - Auto AA Bank accepts 1 in the slider, saved-settings cleanup, and purchase threshold helper. Existing defaults remain unchanged. Each modified code block is marked `Edited By: NeroMorte`.
 - Validation: Lua syntax and isolated checks passed for large typed/saved ranges, native slider drag bounds, existing positive minimums, and bank 1 through load, UI, purchase helper, and command. The user confirmed Ctrl+click accepts higher values and the expanded slider drag ranges work in game. AA Bank persistence across a full restart has not been separately confirmed.
+
+## True Self spell targeting — test branch
+
+- Restores the old NeroMorte gem-casting fix using both actual spell Beneficial and TargetType metadata. Beneficial Self spells preserve the current selected target even when the configured recipient is self or pet. They do not lock the cast tracker onto that recipient or queue target restoration. Gennro's existing self-heal exception and targeting for other spells remain intact. Changed blocks are marked `Edited By: NeroMorte`.
+- Validation: Lua syntax and isolated execution of the actual castGem function passed for hostile/friendly/no current target, self/pet recipients, bard songs, aborted movement casts, targeted buffs, missing metadata, and existing self-heals. In-game testing is pending. AA and clickie dispatch are unchanged.
