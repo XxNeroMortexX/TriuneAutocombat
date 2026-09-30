@@ -10143,6 +10143,53 @@ end
 -- not run fullStop() a second time, and leaves the pet hold to fullStop
 -- (the separate hold-off that used to be issued here was overwritten by
 -- fullStop's hold a frame later).
+-- Edited By: NeroMorte - Restore camp overlays on the native EverQuest map through MQ2Map.
+function runtime.eqCampMapLoaded()
+    local loaded = false
+    pcall(function()
+        local plugin = mq.TLO.Plugin('mq2map')
+        loaded = plugin and plugin() and plugin.IsLoaded and plugin.IsLoaded() == true
+    end)
+    return loaded
+end
+
+-- Edited By: NeroMorte - Clear only Triune's native camp marker; redraw follows actual camp state.
+function runtime.clearEqCampMap()
+    local previous = runtime.eqCampMapMarker
+    if previous and runtime.eqCampMapLoaded() then
+        -- Remove only the location drawn for this camp, never all of the user's maplocs.
+        mq.cmd('/squelch /maploc remove ' .. previous.loc)
+        runtime.eqCampMapMarker = nil
+    end
+end
+
+-- Edited By: NeroMorte - Keep the native camp X/radius synchronized without repeated commands.
+function runtime.updateEqCampMap()
+    if not runtime.eqCampMapLoaded() then
+        runtime.eqCampMapNeedsRefresh = true
+        return
+    end
+    local camp = ctrl.camp_loc
+    local zone = mq.TLO.Zone.ShortName() or ''
+    local character = mq.TLO.Me.CleanName() or ''
+    if ctrl.show_eq_camp_radius == false or not camp or zone == '' or character == '' then
+        runtime.clearEqCampMap()
+        return
+    end
+    local x, y, z = tonumber(camp.x), tonumber(camp.y), tonumber(camp.z)
+    if not x or not y or not z then runtime.clearEqCampMap(); return end
+    -- MQ2Map identifies maplocs by coordinates truncated to whole units (Y X Z).
+    local loc = string.format('%d %d %d', math.modf(y), math.modf(x), math.modf(z))
+    local radius = math.max(1, math.floor(tonumber(ctrl.camp_radius) or 100))
+    local key = character .. '|' .. zone .. '|' .. loc .. '|' .. radius
+    local previous = runtime.eqCampMapMarker
+    if previous and previous.key == key and not runtime.eqCampMapNeedsRefresh then return end
+    runtime.clearEqCampMap()
+    mq.cmd(string.format('/squelch /maploc %s size 50 width 2 radius %d rcolor 0 255 0 color 0 255 0 label Triune Camp', loc, radius))
+    runtime.eqCampMapMarker = { loc = loc, key = key }
+    runtime.eqCampMapNeedsRefresh = false
+end
+
 function UI.startEngine()
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
         runtime.setNearestWaypoint()
@@ -11543,6 +11590,16 @@ function UI.drawControlTab()
     end
     accent(MUTED, MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
 
+    -- Edited By: NeroMorte - Independently control the native EverQuest map camp overlay.
+    local eqCampShown = ImGui.Checkbox('Show Camp on EQ Map##eqCampMap', ctrl.show_eq_camp_radius ~= false)
+    if eqCampShown ~= (ctrl.show_eq_camp_radius ~= false) then
+        ctrl.show_eq_camp_radius = eqCampShown
+        runtime.saveLoadout(true)
+    end
+    if ImGui.IsItemHovered() then
+        ImGui.SetTooltip('Show the camp X and radius circle on EverQuest\'s map using MQ2Map.\nClear Camp removes it; a new camp redraws it automatically. Triune\'s own map is independent.')
+    end
+
     -- Manual Mode Contextual Controls
     if ctrl.mode == 'Manual' then
         accent(GOLD, 'Camp Location (optional)')
@@ -11562,6 +11619,8 @@ function UI.drawControlTab()
         end
         ImGui.SameLine()
         if ImGui.Button('Clear Camp##manualCampClear') then
+            -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+            runtime.clearEqCampMap()
             ctrl.camp_loc = nil
         end
         if ImGui.IsItemHovered() then
@@ -11874,6 +11933,8 @@ function UI.drawControlTab()
             end
             ImGui.SameLine()
             if ImGui.Button('Clear Camp##pullerCampClear') then
+                -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+                runtime.clearEqCampMap()
                 ctrl.camp_loc = nil; runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
             end
             if ImGui.IsItemHovered() then
@@ -12537,6 +12598,8 @@ function UI.drawControlTab()
             end
             ImGui.SameLine()
             if ImGui.Button('Clear Camp##assistCampClear') then
+                -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+                runtime.clearEqCampMap()
                 ctrl.camp_loc = nil
             end
             if ImGui.IsItemHovered() then
@@ -14839,6 +14902,8 @@ function UI.drawMiniCamp()
     if ctrl.camp_loc then
         ImGui.SameLine()
         if ImGui.SmallButton('Clear##miniCampClear') then
+            -- Edited By: NeroMorte - Remove the native-map marker immediately when camp is cleared.
+            runtime.clearEqCampMap()
             ctrl.camp_loc = nil
             if ctrl.mode == 'Puller' then
                 runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
@@ -21897,6 +21962,8 @@ runtime.fullStop = function()
 end
 
 runtime.onZoned = function()
+    -- Edited By: NeroMorte - Remove the previous zone camp marker before camp reset.
+    runtime.clearEqCampMap()
     local now = os.clock()
     if (now - (runtime.lastZonedAt or 0)) < 2.0 then return end
     runtime.lastZonedAt = now
@@ -24666,6 +24733,8 @@ local function runMainLoop()
         runtime.doeventsMs = (os.clock() - evT0) * 1000
         local nm = mq.TLO.Me.CleanName()
         if nm and nm ~= '' and nm ~= myName then
+            -- Edited By: NeroMorte - Remove the previous character's camp marker.
+            runtime.clearEqCampMap()
             myName = nm
             runtime.loadAll()
             runtime.onCharacterChanged()
@@ -24715,6 +24784,8 @@ local function runMainLoop()
                 runtime.applyFov()
             end
         end
+        -- Edited By: NeroMorte - Refresh native-map camp overlays only when their state changes.
+        runtime.updateEqCampMap()
         if runtime.pluginManager and runtime.pluginManager.tick then
             local pmT0 = os.clock()
             runtime.pluginManager.tick()
@@ -24824,10 +24895,14 @@ function runtime.onMainLoopError(err)
     tlog.error('crash', 'main loop error:\n%s', runtime.lastCrash)
     pcall(runtime.dumpDiagnostics, true)
     tlog.close('crash')
+    -- Edited By: NeroMorte - Remove the camp marker on an uncaught main-loop error.
+    pcall(runtime.clearEqCampMap)
     if runtime.fullStop then pcall(runtime.fullStop) end
     return runtime.lastCrash
 end
 if not xpcall(runMainLoop, runtime.onMainLoopError) then error(runtime.lastCrash, 0) end
 if runtime.fullStop then pcall(runtime.fullStop) end -- attack / nav / stick were left running on window close
+-- Edited By: NeroMorte - Remove the native-map camp marker on normal window closure.
+runtime.clearEqCampMap()
 runtime.saveLoadout(true, true)
 tlog.close('script exit')
