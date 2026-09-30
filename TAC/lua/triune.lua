@@ -279,8 +279,9 @@ local function sanitizeModeConfig(c)
     if c.auto_spend_aa == nil then c.auto_spend_aa = false end
     if c.auto_spend_aa_threshold == nil then
         c.auto_spend_aa_threshold = 100
-    elseif tonumber(c.auto_spend_aa_threshold) and tonumber(c.auto_spend_aa_threshold) < 5 then
-        c.auto_spend_aa_threshold = 5
+    -- Edited By: NeroMorte - Preserve an AA bank of 1 when loading saved settings.
+    elseif tonumber(c.auto_spend_aa_threshold) and tonumber(c.auto_spend_aa_threshold) < 1 then
+        c.auto_spend_aa_threshold = 1
     end
     if c.auto_spend_aa_id == nil then c.auto_spend_aa_id = 17788 end
     if c.auto_spend_aa_buy_id == nil then c.auto_spend_aa_buy_id = 0 end
@@ -11519,6 +11520,18 @@ function runtime.removeCustomAssist(targetNameOrId)
 end
 
 -- UI: control tab
+-- Edited By: NeroMorte - Expand distance sliders to saved/typed values without a gameplay upper cap.
+function UI.distanceSlider(label, value, minimum, dragMaximum)
+    local current = math.max(minimum, math.floor(tonumber(value) or minimum))
+    -- Native integer sliders require their drag bounds to fit half the signed-int range.
+    -- This bounds the drag scale only; Ctrl+click input remains unclamped above it.
+    -- Edited By: NeroMorte - Give every distance control a 10,000-unit drag range immediately.
+    local scaleMaximum = math.max(10000, dragMaximum, math.min(current, 1073741823))
+    local edited = ImGui.SliderInt(label, current, minimum, scaleMaximum, '%d', 0)
+    edited = math.max(minimum, math.floor(tonumber(edited) or current))
+    return edited, edited ~= value
+end
+
 function UI.drawControlTab()
     if not ImGui.BeginTabItem('Control') then return end
     accent(GOLD, 'Combat Mode')
@@ -11557,13 +11570,14 @@ function UI.drawControlTab()
 
         if ctrl.camp_loc then
             ImGui.SetNextItemWidth(UI.px(180))
-            local manualCampR, manualCampRChanged = ImGui.SliderInt('Camp Radius##manualRadius', ctrl.camp_radius or 100, 10, 500)
+            -- Edited By: NeroMorte - Accept camp radii above the original 500-unit drag scale.
+            local manualCampR, manualCampRChanged = UI.distanceSlider('Camp Radius##manualRadius', ctrl.camp_radius or 100, 10, 500)
             if manualCampRChanged then
                 ctrl.camp_radius = manualCampR
                 runtime.saveLoadout(true)
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Maximum distance in units from camp center to engage enemies.')
+                ImGui.SetTooltip('Maximum distance in units from camp center to engage enemies.\nCtrl+click to type a larger radius; no gameplay upper cap.')
             end
         end
 
@@ -11694,12 +11708,15 @@ function UI.drawControlTab()
 
         if (ctrl.pull_style or 'Melee') ~= 'Melee' then
             ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.pull_engage_dist = ImGui.SliderInt('Engagement Distance##pullEngageDist', ctrl.pull_engage_dist or 100,
-                15, 250)
+            -- Edited By: NeroMorte - Accept and save engagement distances above the original drag scale.
+            local engageDist, engageChanged = UI.distanceSlider('Engagement Distance##pullEngageDist', ctrl.pull_engage_dist or 100, 15, 250)
+            ctrl.pull_engage_dist = engageDist
+            if engageChanged then runtime.saveLoadout(true) end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
                     'Distance (units) to stop at before sending in pets, casting the pull spell, or firing the bow.\n'
-                    .. 'Automatically shortened to the pull spell\'s range or the bow + ammo range when that is less.')
+                    .. 'Automatically shortened to the pull spell\'s range or the bow + ammo range when that is less.\n'
+                    .. 'Ctrl+click to type a larger distance; no gameplay upper cap on this setting.')
             end
 
             ctrl.pull_stand_back = ImGui.Checkbox('Stand Back (Let Pet Tank / Stay Ranged)##pullStandBack',
@@ -11724,10 +11741,15 @@ function UI.drawControlTab()
         if ctrl.submode == 'Hunt' then
             accent(ARC, 'Puller (Hunt)')
             ImGui.SetNextItemWidth(UI.px(180))
-            local huntR, huntRChanged = ImGui.SliderInt('Search Radius', ctrl.hunter_radius or 1500, 50, 2000)
+            -- Edited By: NeroMorte - Accept search radii above the original 2000-unit drag scale.
+            local huntR, huntRChanged = UI.distanceSlider('Search Radius', ctrl.hunter_radius or 1500, 50, 2000)
             if huntRChanged then
                 ctrl.hunter_radius = huntR
                 runtime.saveLoadout(true)
+            end
+            -- Edited By: NeroMorte - Explain unrestricted Ctrl+click search-radius entry.
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip('Search distance in units. Ctrl+click to type a larger radius; no gameplay upper cap.')
             end
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
@@ -11859,13 +11881,14 @@ function UI.drawControlTab()
             end
 
             ImGui.SetNextItemWidth(UI.px(180))
-            local pullRad, pullRadChanged = ImGui.SliderInt('Pull Radius', ctrl.camp_radius or 100, 10, 500)
+            -- Edited By: NeroMorte - Accept pull radii above the original 500-unit drag scale.
+            local pullRad, pullRadChanged = UI.distanceSlider('Pull Radius', ctrl.camp_radius or 100, 10, 500)
             if pullRadChanged then
                 ctrl.camp_radius = pullRad
                 runtime.saveLoadout(true)
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Maximum horizontal distance in units from camp to search for pullable NPCs.')
+                ImGui.SetTooltip('Maximum horizontal distance in units from camp to search for pullable NPCs.\nCtrl+click to type a larger radius; no gameplay upper cap.')
             end
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.camp_z = ImGui.SliderInt('Pull Height Diff (Z)', ctrl.camp_z or 75, 10, 300)
