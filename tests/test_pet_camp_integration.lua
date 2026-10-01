@@ -123,3 +123,13 @@ local canFinish = assert(load('return function(id) '..boundary..' end', 'actualP
 assert(canFinish(100)); campDist = 200; assert(not canFinish(100))
 victim = 280; assert(canFinish(100)); petDist = 200; assert(not canFinish(100))
 print('PASS: actual pet melee-boundary and owned-pet-at-camp defense adapter')
+
+-- Execute the actual delay input with MQ ImGui's value,changed return pair.
+local input = assert(source:match("(local recallDelay = ImGui%.InputInt.-ctrl%.pet_camp_recall_delay = math%.max%(0, recallDelay%))"))
+for _, case in ipairs({ { 5, false, 5 }, { 12, true, 12 }, { 0, true, 0 }, { -2, true, 0 } }) do
+    local config = { pet_camp_recall_delay = 5 }
+    local inputEnv = setmetatable({ ctrl = config, ImGui = { InputInt = function() return case[1], case[2] end } }, { __index = _G })
+    assert(load(input, 'actualRecallDelayInput', 't', inputEnv))()
+    assert(config.pet_camp_recall_delay == case[3])
+end
+print('PASS: recall InputInt value/changed pair never passes a boolean to math.max')

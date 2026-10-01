@@ -11802,7 +11802,9 @@ function UI.drawControlTab()
                 if ctrl.pet_camp_pull_back then
                     -- Edited By: NeroMorte - Recall delay is editable beside the pull-back controls and saved with ctrl.
                     ImGui.SetNextItemWidth(UI.px(180))
-                    ctrl.pet_camp_recall_delay = math.max(0, ImGui.InputInt('Pet Recall Delay (seconds)##petCampRecallDelay', ctrl.pet_camp_recall_delay or 5))
+                    -- Edited By: NeroMorte - InputInt also returns a changed boolean; clamp only the numeric result.
+                    local recallDelay = ImGui.InputInt('Pet Recall Delay (seconds)##petCampRecallDelay', ctrl.pet_camp_recall_delay or 5)
+                    ctrl.pet_camp_recall_delay = math.max(0, recallDelay)
                     if ImGui.IsItemHovered() then ImGui.SetTooltip('Wait after the pulling pet reaches camp before releasing pets. Default 5 seconds; 0 disables the delay. A mob entering Player Assist Radius or directly threatening you ends the wait early.') end
                     ImGui.SetNextItemWidth(UI.px(180))
                     ctrl.pet_camp_batch_size = ImGui.SliderInt('Mobs per Pull##petCampBatch', ctrl.pet_camp_batch_size or 1, 1, 100)
