@@ -2924,7 +2924,8 @@ end
 -- 36. copyWaypointList (per-zone waypoint routes/presets)
 -- ============================================================================
 print('--- copyWaypointList ---')
-local copyWaypointList = loadFunc(src, 'copyWaypointList', {})
+local copyWaypointList = loadFunc(src, 'copyWaypointList',
+    { wpNormalize = loadFunc(src, 'wpNormalize', { ctrl = {} }) })
 
 do
     local original = { { name = 'A', x = 1, y = 2, z = 3 }, { name = 'B', x = 4, y = 5, z = 6 } }
