@@ -10834,18 +10834,20 @@ do
     local rt = sandbox.runtime
     rt.saveLoadout = env.saveLoadout
 
-    -- 1. Discovery loads every shipped plugin from TAC/lua/tac and enables the defaults
+    -- 1. Discovery loads every shipped plugin and honors each defaultEnabled setting
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
     local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nms_looter_handoff', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
+    local disabledByDefault = { nms_looter_handoff = true }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
         if p then
-            assert_eq(p.enabled, true, 'Suite 88: ' .. id .. ' enabled by default')
-            assert_eq(p.status, 'Active', 'Suite 88: ' .. id .. ' initialised without error (' .. tostring(p.errorMsg) .. ')')
-            assert_eq(ctrl88.plugins[id] and ctrl88.plugins[id].enabled, true, 'Suite 88: ' .. id .. ' enabled flag persisted to ctrl.plugins')
+            local enabledByDefault = not disabledByDefault[id]
+            assert_eq(p.enabled, enabledByDefault, 'Suite 88: ' .. id .. ' default enabled state')
+            assert_eq(p.status, enabledByDefault and 'Active' or 'Disabled', 'Suite 88: ' .. id .. ' status matches default (' .. tostring(p.errorMsg) .. ')')
+            assert_eq(not not (ctrl88.plugins[id] and ctrl88.plugins[id].enabled == true), enabledByDefault, 'Suite 88: ' .. id .. ' persisted enabled state matches default')
         end
     end
     assert_eq(#pm.pluginOrder, #expected, 'Suite 88: exactly the shipped plugins are registered')
