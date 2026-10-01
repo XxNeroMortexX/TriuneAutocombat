@@ -60,3 +60,35 @@ saved.auto_spend_aa_threshold = 5
 assert(load(bankBlock, 'bankSlider', 't', bankEnv))()
 assert(saved.auto_spend_aa_threshold == 1 and saves == 2)
 print('PASS: large distance input, dynamic drag scales, positive minimums, saved ranges, bank 1 load/UI/purchase helper/command')
+
+-- Edited By: NeroMorte - Exercise the automatic evaluator, not only its threshold helper.
+local aaFile = assert(io.open('TAC/lua/tac/auto_aa.lua'))
+local aaSource = aaFile:read('*a'); aaFile:close()
+local automatic = assert(aaSource:match('(function AA%.checkAutoSpendAA.-\nend)'))
+local points, bank, trained = 1, 1, nil
+local aa = {
+    threshold = function() return bank end,
+    automaticNames = function() return { 'One Point AA' } end,
+    isIgnored = function() return false end,
+    purchaseInfo = function(name) return { name = name, rank = 0, maxRank = 1, cost = 1 } end,
+    priorityBlocker = function(info, unspent) if info.cost > unspent then return 'points' end end,
+    notePriorityStatus = function() end,
+    sortPurchaseCandidates = function() end,
+    routineMessage = function() end,
+    startAATrainWorkflow = function(name, _, isAutomatic) assert(isAutomatic); trained = name; return true end,
+}
+local autoEnv = setmetatable({ AA = aa, ctrl = { auto_spend_aa = true },
+    rt = { isCasting = function() return false end },
+    os = { clock = function() return 100 end },
+    mq = { TLO = { Me = { AAPoints = function() return points end, Level = function() return 65 end } } },
+}, { __index = _G })
+assert(load(automatic, 'actualAutomaticBankGate', 't', autoEnv))()
+for amount = 1, 4 do
+    points = amount; aa.lastAutoSpendAAAt = nil; aa.lastPrioEvalAt = nil; trained = nil
+    assert(aa.checkAutoSpendAA(false) and trained == 'One Point AA')
+end
+bank = 5; points = 1; aa.lastAutoSpendAAAt = nil; aa.lastPrioEvalAt = nil; trained = nil
+assert(not aa.checkAutoSpendAA(false) and trained == nil)
+points = 0; aa.lastAutoSpendAAAt = nil; aa.lastPrioEvalAt = nil
+assert(not aa.checkAutoSpendAA(false))
+print('PASS: actual automatic AA evaluator accepts 1-4 points, honors a higher bank, and rejects an empty bank')

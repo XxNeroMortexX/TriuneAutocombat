@@ -2220,8 +2220,8 @@ function AA.checkAutoSpendAA(allowStop)
         local raw = mq.TLO.Me.AAPoints()
         unspent = tonumber(raw or 0) or 0
     end)
-    -- Enforce minimum of 5 AA points before evaluating auto-spending to eliminate constant pauses
-    if unspent < 5 then return false end
+    -- Edited By: NeroMorte - Allow bank 1 through the early gate; candidate cost and configured bank still apply.
+    if unspent < 1 then return false end
 
     -- Clear train attempt cooldowns if unspent points changed (e.g. gained points or purchased)
     if AA.lastObservedAutoSpendPts and unspent ~= AA.lastObservedAutoSpendPts then

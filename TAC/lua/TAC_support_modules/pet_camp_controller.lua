@@ -63,7 +63,7 @@ function Controller:noteCommand(verb, scope)
     if verb == 'stop' then field = 'stop' end
     if verb == 'hold' or verb == 'ghold' or verb == 'spellhold' or verb == 'taunt' or verb == 'focus' then field = verb end
     if not field then return end
-    for id, p in pairs(self.cache) do
+    for _, p in pairs(self.cache) do
         if scope == 'all' or scope == p.scope then
             p.state[field] = nil
             p.commandAt = self.api.now()
@@ -77,7 +77,7 @@ end
 function Controller:petTell(name, text)
     name = tostring(name or ''):lower()
     text = tostring(text or ''):gsub("^%s*'", ''):gsub("'%s*$", ''):lower()
-    for id, p in pairs(self.cache) do
+    for _, p in pairs(self.cache) do
         if p.name:lower() == name then
             if text == 'no longer taunting attackers, master.' then p.state.taunt = false
             elseif text == 'taunting attackers as ordered, master.' then p.state.taunt = true

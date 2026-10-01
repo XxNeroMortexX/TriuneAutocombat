@@ -45,6 +45,9 @@ NeroMorte's cumulative September 30 update, based on Gennro TAC 3.1. The MQ2WebU
 
 ### Quieter output and fixes
 
+- **CI validation cleanup:** update isolated runtime mocks and regression expectations for intentional fork behavior; run all ten Lua test files in CI. Remove unused legacy updater table renderers, name unused pet-cache keys explicitly, and scope the DLL payload buffer without changing handoff validation. Local checks pass: 6,470 core assertions, dedicated feature suites, LuaJIT/Lua 5.1 syntax, theme consistency, and Luacheck with zero warnings/errors.
+- **AA bank 1 automatic spending:** correct the remaining early five-point cutoff so automatic evaluation also works at 1–4 points. Configured bank, AA cost, combat/casting restrictions, and cadence checks still apply; an executable regression covers the actual evaluator.
+
 - Routine `Issued: #petcmd` messages are now Debug-only.
 - **Suppress Auto AA purchase/skip messages** in Settings → General optionally silences routine AA messages. It defaults unchecked; errors and explicitly requested status remain visible.
 - Fixed the Control-window crash caused by passing ImGui InputInt's changed flag into `math.max`.

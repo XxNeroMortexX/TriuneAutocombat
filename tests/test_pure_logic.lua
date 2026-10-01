@@ -159,6 +159,11 @@ local function loadFunc(src, funcName, env)
             sandbox.invLogic[k] = v
         end
     end
+    -- Edited By: NeroMorte - Legacy function tests run outside stationary pet mode.
+    -- Fill defaults after an explicit runtime is supplied; keep any test-specific overrides.
+    -- The dedicated pet suites exercise the active controller and action restrictions.
+    sandbox.runtime.petCampActive = sandbox.runtime.petCampActive or function() return false end
+    sandbox.runtime.petCampActionAllowed = sandbox.runtime.petCampActionAllowed or function() return true end
     setfenv(chunk, sandbox)
 
     local ok, fn = pcall(chunk)
@@ -7752,8 +7757,8 @@ do
     assert_true(triuneContent:find("COMMON_AAS") == nil, 'Suite 64: triune.lua purged hardcoded COMMON_AAS')
     assert_true(AA_CONTENT:find("AA.isSpecialTabAA") ~= nil, 'Suite 64: auto_aa.lua defines isSpecialTabAA')
     assert_true(AA_CONTENT:find("function AA.startAATrainWorkflow") ~= nil, 'Suite 64: auto_aa.lua defines the AA window trainer')
-    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(target.name, allowStop)", 1, true) ~= nil, 'Suite 64: prioritized auto-spend goes straight to the window trainer')
-    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
+    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(target.name, allowStop, true)", 1, true) ~= nil, 'Suite 64: prioritized auto-spend goes straight to the window trainer')
+    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop, true)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
     assert_true(AA_CONTENT:find("if unspent < AA.threshold() then return false end", 1, true) ~= nil, 'Suite 64: prioritized auto-spend waits for the Bank threshold')
 end
 
@@ -8843,7 +8848,7 @@ do
     local triuneContent = readFile('TAC/lua/triune.lua')
     assert_true(AA_CONTENT:find("function AA%.checkAutoSpendAA%(allowStop%)") ~= nil,
         'Suite 73: triune.lua defines AA.checkAutoSpendAA(allowStop)')
-    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop%)") ~= nil,
+    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop, automatic%)") ~= nil,
         'Suite 73: triune.lua defines AA.startAATrainWorkflow(targetName, allowStop)')
     assert_true(triuneContent:find("Let plugins %(e%.g%. Auto AA purchases%) use the gap between pulls") ~= nil,
         'Suite 73: triune.lua offers the gap between pulls to plugins')
@@ -9464,7 +9469,7 @@ do
     end
     assert_true(xtContent:find("'F##xtForce_'", 1, true) ~= nil and xtContent:find("'I##xtIgnore_'", 1, true) ~= nil,
         'Suite 78: each XTarget row draws Force and Ignore toggle buttons')
-    assert_true(triuneContent:find('local forceId = runtime.forcedTargetId()', 1, true) ~= nil,
+    assert_true(triuneContent:find('local forceId = not runtime.petCampActive() and runtime.forcedTargetId() or nil', 1, true) ~= nil,
         'Suite 78: combatTick applies the forced XTarget ahead of mode selection')
     assert_true(triuneContent:find('if runtime.forcedTargetId() then return false end', 1, true) ~= nil,
         'Suite 78: checkAggroSwitch never switches away from a forced XTarget')
@@ -10080,7 +10085,7 @@ do
     end
     -- After a bow tag, a Melee stance must revert the server attack mode before
     -- its own /attack on, or it fires the bow at weapon reach.
-    assert_true(triuneContent:find("function runtime.meleeAttackOn()\n    if runtime.serverAttackMode == 'Ranged' then\n        runtime.revertAttackModeToMelee()\n        return false", 1, true) ~= nil,
+    assert_true(triuneContent:find("function runtime.meleeAttackOn()\n    -- Edited By: NeroMorte - Automatic attacks share the stationary ownership gate.\n    if runtime.petCampActive() and not runtime.petCamp:ownerAllowed(mq.TLO.Target.ID() or 0) then return end\n    if runtime.serverAttackMode == 'Ranged' then\n        runtime.revertAttackModeToMelee()\n        return false", 1, true) ~= nil,
         'Suite 83: meleeAttackOn reverts a lingering Ranged attack mode first')
     local _, rawMeleeAttackOn = triuneContent:gsub("if not mq%.TLO%.Me%.Combat%(%) then mq%.cmd%('/attack on'%) end", '')
     assert_eq(rawMeleeAttackOn, 2, 'Suite 83: raw melee /attack on only inside meleeAttackOn and ensureRangedAutoAttack')
@@ -10102,7 +10107,7 @@ do
         'Suite 83: Hunt engage gate uses the shared styleReach')
     assert_true(triuneContent:find("elseif ctrl.combat_style == 'Ranged' then\n                            if not isCasting() then runtime.engageRangedAttack(id) end", 1, true) ~= nil,
         'Suite 83: Hunt Melee pull routes a Ranged style through engageRangedAttack, not /attack on')
-    assert_true(triuneContent:find("if ctrl.mode ~= 'Manual' and (style == 'Melee' or not isCasting()) then\n                    moveToward(tid, desiredRange(tid))", 1, true) ~= nil,
+    assert_true(triuneContent:find("if not runtime.petCampActive() and ctrl.mode ~= 'Manual' and (style == 'Melee' or not isCasting()) then\n                    moveToward(tid, desiredRange(tid))", 1, true) ~= nil,
         'Suite 83: Ranged/Spell re-close waits for the current cast to finish')
     assert_true(triuneContent:find("or 100) or 40\n", 1, true) == nil,
         'Suite 83: no hard-coded 40 ranged pull distance remains')
@@ -10162,25 +10167,26 @@ do
 end
 
 -- ============================================================================
--- Suite 84: Auto AA Minimum 5 AA Bank Slider & Auto-Purchase Reliability
+-- Edited By: NeroMorte - Keep regression expectations aligned with intentional fork features.
+-- Suite 84: Auto AA Minimum 1 AA Bank Slider & Auto-Purchase Reliability
 -- ============================================================================
-print('--- Suite 84: Auto AA Minimum 5 AA Bank Slider & Auto-Purchase Reliability ---')
+print('--- Suite 84: Auto AA Minimum 1 AA Bank Slider & Auto-Purchase Reliability ---')
 do
     local triuneContent = readFile('TAC/lua/triune.lua')
 
-    -- 1. Verify bank slider in UI enforces a minimum of 5 AA
-    assert_true(AA_CONTENT:find("SliderInt('##autoAaThresh', curThresh, 5, 100, 'Bank: %d')", 1, true) ~= nil,
-        'Suite 84: Bank slider enforces 5 minimum AA points in UI')
-    assert_true(AA_CONTENT:find("Bank threshold: %d AA points (min: 5)", 1, true) ~= nil,
-        'Suite 84: Bank slider tooltip indicates 5 minimum AA points')
+    -- 1. Verify bank slider in UI enforces a minimum of 1 AA
+    assert_true(AA_CONTENT:find("SliderInt('##autoAaThresh', curThresh, 1, 100, 'Bank: %d')", 1, true) ~= nil,
+        'Suite 84: Bank slider enforces 1 minimum AA points in UI')
+    assert_true(AA_CONTENT:find("Bank threshold: %d AA points (min: 1)", 1, true) ~= nil,
+        'Suite 84: Bank slider tooltip indicates 1 minimum AA points')
 
-    -- 2. Verify sanitizeCtrl clamps auto_spend_aa_threshold to at least 5
-    assert_true(triuneContent:find("tonumber(c.auto_spend_aa_threshold) < 5 then", 1, true) ~= nil,
-        'Suite 84: sanitizeCtrl clamps auto_spend_aa_threshold to minimum of 5')
+    -- 2. Verify sanitizeCtrl clamps auto_spend_aa_threshold to at least 1
+    assert_true(triuneContent:find("tonumber(c.auto_spend_aa_threshold) < 1 then", 1, true) ~= nil,
+        'Suite 84: sanitizeCtrl clamps auto_spend_aa_threshold to minimum of 1')
 
-    -- 3. Verify checkAutoSpendAA halts early if unspent < 5 to avoid micro-pauses
-    assert_true(AA_CONTENT:find("if unspent < 5 then return false end", 1, true) ~= nil,
-        'Suite 84: checkAutoSpendAA skips evaluation when unspent < 5')
+    -- 3. Verify checkAutoSpendAA skips an empty AA bank
+    assert_true(AA_CONTENT:find("if unspent < 1 then return false end", 1, true) ~= nil,
+        'Suite 84: checkAutoSpendAA skips evaluation when unspent < 1')
 
     -- 4. Verify findAAInWindowLists prioritizes preferredTab and does not overmatch substrings
     assert_true(AA_CONTENT:find("function AA.findAAInWindowLists(targetName, preferredTab)", 1, true) ~= nil,
@@ -10207,7 +10213,7 @@ do
     local triuneContent = readFile('TAC/lua/triune.lua')
 
     -- 1. Verify post-purchase auto-summon and cooldown checks
-    assert_true(AA_CONTENT:find("AA.scheduleFireworksSummon(fwId, task.name)", 1, true) ~= nil,
+    assert_true(AA_CONTENT:find("AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)", 1, true) ~= nil,
         'Suite 85: processAATrainWorkflow schedules a deferred fireworks summon after purchasing the AA')
     assert_true(AA_CONTENT:find("AltAbilityTimer('Summon Firework')", 1, true) ~= nil,
         'Suite 85: checkAutoSummonFireworks checks timer via Summon Firework')
@@ -10807,14 +10813,14 @@ do
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
-    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
+    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager', 'nms_looter_handoff' }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
         if p then
-            assert_eq(p.enabled, true, 'Suite 88: ' .. id .. ' enabled by default')
-            assert_eq(p.status, 'Active', 'Suite 88: ' .. id .. ' initialised without error (' .. tostring(p.errorMsg) .. ')')
-            assert_eq(ctrl88.plugins[id] and ctrl88.plugins[id].enabled, true, 'Suite 88: ' .. id .. ' enabled flag persisted to ctrl.plugins')
+            assert_eq(p.enabled, id ~= 'nms_looter_handoff', 'Suite 88: ' .. id .. ' enabled by default')
+            assert_eq(p.status, id == 'nms_looter_handoff' and 'Disabled' or 'Active', 'Suite 88: ' .. id .. ' initialised without error (' .. tostring(p.errorMsg) .. ')')
+            assert_eq(ctrl88.plugins[id] and ctrl88.plugins[id].enabled == true or false, id ~= 'nms_looter_handoff', 'Suite 88: ' .. id .. ' enabled flag persisted to ctrl.plugins')
         end
     end
     assert_eq(#pm.pluginOrder, #expected, 'Suite 88: exactly the shipped plugins are registered')
@@ -11463,22 +11469,22 @@ do
         assert_eq(pm.getWindow('floating_damage'), nil, 'Suite 89: floating_damage (overlay) declares no window')
         assert_eq(pm.getWindow('auto_accept') and pm.getWindow('auto_accept').flag, 'show_auto_accept', 'Suite 89: auto_accept declares its popout window')
         W.all = pm.windowPlugins(false)
-        assert_eq(#W.all, 22, 'Suite 89: twenty shipped plugins own a window, plus the unit frames Target popout and the NMS Loot compact window')
+        assert_eq(#W.all, 23, 'Suite 89: twenty-one shipped plugins own a window, plus the unit frames Target popout and the NMS Loot compact window')
         assert_eq(W.all[1].id, 'spellbook', 'Suite 89: header order starts with the Spellbook (as before)')
         assert_eq(W.all[2].id, 'map', 'Suite 89: Map follows Spellbook in header order')
         assert_eq(W.all[#W.all].id, 'buffbot', 'Suite 89: Buffbot sorts last')
         W.hdr = pm.windowPlugins(true)
-        assert_eq(#W.hdr, 18, 'Suite 89: header buttons default to the old header set + Auto AA + Auto-Accept + Box Net + Buttons + Chat + Database + NMS Loot (buffbot off)')
+        assert_eq(#W.hdr, 19, 'Suite 89: header buttons default to the old header set + Auto AA + Auto-Accept + Box Net + Buttons + Chat + Database + NMS Loot (buffbot off)')
         assert_eq(pm.headerButtonEnabled('buffbot'), false, 'Suite 89: buffbot header button off by default')
         assert_eq(pm.headerButtonEnabled('hud_group'), true, 'Suite 89: hud_group header button on by default')
         assert_eq(pm.headerButtonEnabled('floating_damage'), false, 'Suite 89: no header button for plugins without a window')
         pm.setHeaderButton('buffbot', true)
         assert_eq(W.ctrl.plugins.buffbot.headerButton, true, 'Suite 89: header button preference persisted to ctrl.plugins')
-        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: enabling the preference adds the button')
+        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: enabling the preference adds the button')
         assert_true(W.saves >= 1, 'Suite 89: header button preference triggers a loadout save')
         pm.setHeaderButton('hud_group', false)
         assert_eq(pm.headerButtonEnabled('hud_group'), false, 'Suite 89: saved preference overrides the plugin default')
-        assert_eq(#pm.windowPlugins(true), 18, 'Suite 89: disabling the preference removes the button')
+        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: disabling the preference removes the button')
 
         -- extra windows (plugin.windows) are addressed as '<plugin>:<key>'
         local tw = pm.getWindow('hud_unitframes:target_window')
@@ -11493,9 +11499,9 @@ do
         assert_eq(W.ctrl.plugins.hud_unitframes.windowHeader.target_window, true, 'Suite 89: extra window header choice is kept under ctrl.plugins[plugin].windowHeader[key]')
         assert_eq(W.ctrl.plugins['hud_unitframes:target_window'], nil, 'Suite 89: no composite ctrl.plugins entry is created for an extra window')
         assert_eq(pm.headerButtonEnabled('hud_unitframes:target_window'), true, 'Suite 89: the saved choice turns the extra window header button on')
-        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: the extra window header button counts like any other')
+        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: the extra window header button counts like any other')
         pm.setHeaderButton('hud_unitframes:target_window', false)
-        assert_eq(#pm.windowPlugins(true), 18, 'Suite 89: and can be turned off again')
+        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: and can be turned off again')
         assert_eq(pm.isWindowOpen('hud_unitframes:target_window'), false, 'Suite 89: Target popout closed initially')
         pm.toggleWindow('hud_unitframes:target_window')
         assert_eq(W.ctrl.show_target_window, true, 'Suite 89: toggleWindow opens an extra window via its ctrl flag')
@@ -11521,7 +11527,7 @@ do
 
         -- header renderer: one button per enabled header plugin, clicks toggle
         mockImGui.Button = function(label) return W.clickLabel ~= nil and label:find(W.clickLabel, 1, true) ~= nil end
-        assert_eq(pm.drawHeaderButtons(), 18, 'Suite 89: drawHeaderButtons draws one button per header plugin')
+        assert_eq(pm.drawHeaderButtons(), 19, 'Suite 89: drawHeaderButtons draws one button per header plugin')
         W.clickLabel = 'Map##hdrPlg_map'
         pm.drawHeaderButtons()
         assert_eq(W.ctrl.show_map, true, 'Suite 89: clicking the header button opens the plugin window')
@@ -11555,10 +11561,10 @@ do
         pm.HEADER_BUTTONS_PER_ROW = 8
         mockImGui.SameLine = nil
         pm.disablePlugin('map')
-        assert_eq(pm.drawHeaderButtons(), 17, 'Suite 89: disabled plugins get no header button')
+        assert_eq(pm.drawHeaderButtons(), 18, 'Suite 89: disabled plugins get no header button')
         pm.enablePlugin('map')
         pm.plugins.map.status = 'Error'
-        assert_eq(pm.drawHeaderButtons(), 17, 'Suite 89: errored plugins get no header button')
+        assert_eq(pm.drawHeaderButtons(), 18, 'Suite 89: errored plugins get no header button')
         pm.plugins.map.status = 'Active'
 
         -- collectSettings persists the effective header preference for window plugins
@@ -11643,6 +11649,7 @@ do
         event = noop, unevent = noop, cmd = function(c) cmds[#cmds + 1] = c end,
         cmdf = function(f, ...) cmds[#cmds + 1] = string.format(f, ...) end,
         TLO = {
+            Cursor = { ID = function() return 0 end },
             Me = {
                 Dead = function() return false end, Combat = function() return false end, Moving = function() return false end,
                 AltAbility = function() return setmetatable({ Rank = function() return ownedRank end }, { __call = function() return true end }) end,
@@ -11652,7 +11659,7 @@ do
         },
     }
     local core = {
-        ctrl = { auto_summon_fireworks = true, auto_spend_aa_id = 17788, plugins = {} }, mq = mq,
+        ctrl = { auto_summon_fireworks = true, auto_fireworks_cursor_action = 'leave', auto_spend_aa_id = 17788, plugins = {} }, mq = mq,
         ImGui = setmetatable({}, { __index = function() return noop end }),
         runtime = { isCasting = function() return false end, cachedAAData = {} },
         DATA = {}, colors = {}, accent = noop, saveLoadout = noop, VERSION = '3.1',
@@ -11695,7 +11702,7 @@ do
 
     -- Post-purchase summon is deferred, not fired on the Train click
     assert_true(aaSrc:find("Auto-summoning fireworks after purchasing", 1, true) == nil, 'Suite 90: no immediate /alt act after clicking Train')
-    assert_true(aaSrc:find('AA.scheduleFireworksSummon(fwId, task.name)', 1, true) ~= nil, 'Suite 90: Train click schedules the summon instead')
+    assert_true(aaSrc:find('AA.scheduleFireworksSummon(tonumber(ctrl.auto_spend_aa_id or task.aaId or 17788) or 17788, task.name)', 1, true) ~= nil, 'Suite 90: Train click schedules the summon instead')
     cmds = {}
     ownedRank = 0
     ready = false
@@ -11990,8 +11997,8 @@ do
     petState.myPets = { Nec = 100, Mag = 100 }
     local slots, extra = F.getMultiPetList()
     assert_eq(slots[1].petId, 100, 'Suite 92: slot 1 shows the pet')
-    assert_eq(slots[2].petId, 101, 'Suite 92: slot 2 gets the other living pet instead of a duplicate')
-    assert_eq(#extra, 0, 'Suite 92: no extras when both pets are in slots')
+    assert_eq(slots[2].petId, nil, 'Suite 92: slot 2 does not guess a class for an ambiguous pet')
+    assert_eq(extra[1], 101, 'Suite 92: ambiguous pet remains visible in Additional Pets')
     world.spawns[101].name = 'Gebann' -- same name under a second ID (stale/duplicate spawn)
     petState.myPets = { Nec = 100, Mag = 101 }
     slots = F.getMultiPetList()
@@ -12078,8 +12085,10 @@ do
     -- H. Server refuses the summon: reassign the least-certain pet and back off
     resetWorld({ 'Nec', 'Mag', 'War' })
     addPet(100, 'Xobarb', { race = 'Unknown' })
-    F.reconcilePets() -- guessed onto Nec (first pet class)
-    assert_eq(petState.myPets.Nec, 100, 'Suite 92: unknown pet guessed onto the first pet class')
+    F.reconcilePets()
+    -- Edited By: NeroMorte - Ambiguous classes stay unknown; separately test correcting a stale unconfirmed mapping.
+    assert_eq(petState.myPets.Nec, nil, 'Suite 92: unknown pet is not guessed onto the first pet class')
+    petState.myPets.Nec = 100 -- simulate an old, unconfirmed saved association
     F.beginPetSummon('Mag', 'Elemental Servant')
     F.onPetSummonRefused()
     assert_eq(petState.myPets.Mag, 100, 'Suite 92: refused summon moves the guessed pet to the casting class')
@@ -12314,7 +12323,7 @@ do
     initPM()
     local pm = rt.pluginManager
     S.shipped = #pm.pluginOrder
-    assert_eq(S.shipped, 22, 'Suite 92: all shipped plugins still load under the load-time guards')
+    assert_eq(S.shipped, 24, 'Suite 92: all shipped plugins still load under the load-time guards')
 
     -- Soft plugin dependencies (`uses`): normalised at registration, reverse-listed, state-tracked
     assert_eq(#pm.normalizeUses(nil), 0, 'Suite 92: no uses -> empty list')
@@ -12329,7 +12338,7 @@ do
     assert_eq(S.ids(pm.plugins.hud_spellgems.uses), 'gamedb,spellbook', 'Suite 92: hud_spellgems declares it uses gamedb and spellbook')
     assert_eq(#pm.plugins.boxnet.uses, 0, 'Suite 92: boxnet uses nothing')
     assert_eq(S.ids(pm.plugins.inventory.uses), 'boxnet,gamedb', 'Suite 92: inventory declares it uses boxnet and gamedb')
-    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nmsloot', 'Suite 92: usedBy(boxnet) lists the five consumers in load order')
+    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nms_looter_handoff,nmsloot', 'Suite 92: usedBy(boxnet) lists the six consumers in load order')
     assert_eq(S.ids(pm.usedBy('spellbook')), 'hud_spellgems', 'Suite 92: usedBy(spellbook) lists the gem bar')
     assert_eq(#pm.usedBy('cursor'), 0, 'Suite 92: cursor is used by nobody')
     assert_eq(pm.useState('boxnet'), 'active', 'Suite 92: an enabled plugin is an active dependency')
@@ -14591,7 +14600,7 @@ end)()
 
     -- 5. Wiring in the core
     assert_true(src:find('local claimed = runtime.boxnetClaimedTargets()', 1, true) ~= nil, 'Suite 98: findRoamTarget builds the claim set once per scan')
-    assert_true(src:find('if sid > 0 and not runtime.isBoxClaimedTarget(sid, claimed) then', 1, true) ~= nil, 'Suite 98: findRoamTarget skips claimed spawns')
+    assert_true(src:find('if sid > 0 and not (excluded and excluded[sid]) and not runtime.isBoxClaimedTarget(sid, claimed) then', 1, true) ~= nil, 'Suite 98: findRoamTarget skips claimed spawns')
     assert_true(src:find("local yieldTo = runtime.boxnetYieldTarget(runtime.pullTargetId)", 1, true) ~= nil, 'Suite 98: Puller (Camp) checks for a yield while heading to the mob')
     assert_true(src:find("runtime.boxnetYieldNow(runtime.pullTargetId, yieldTo, 'Puller')", 1, true) ~= nil, 'Suite 98: Puller (Camp) lets go and returns to IDLE')
     assert_true(src:find("runtime.boxnetYieldNow(tid, yieldTo, 'Puller (Hunt)')", 1, true) ~= nil, 'Suite 98: Puller (Hunt) lets go while travelling')
@@ -19893,7 +19902,7 @@ do
         local W = makeWorld({ points = 27, rank = 5 })
         assert_eq(run(W), true, 'Suite 111: maxed priority does not hold the cap spender')
         assert_eq(W.AA.pendingAATrain and W.AA.pendingAATrain.name, 'Alternately Advanced Fireworks', 'Suite 111: fireworks bought with no priority waiting')
-        assert_eq(W.AA.prioStatus['Combat Agility'].why, 'trained', 'Suite 111: maxed priority reported as trained')
+        assert_eq(W.AA.prioStatus['Combat Agility'].why, 'target', 'Suite 111: maxed priority reported as its rank target reached')
     end
 
     -- 5. Blocked priorities are still outstanding: the cap spender stays off

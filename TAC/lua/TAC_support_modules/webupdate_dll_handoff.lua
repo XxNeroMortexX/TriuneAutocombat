@@ -240,11 +240,13 @@ end
 if exists(temporary) or exists(sidecar) then
     fail('DLL handoff has unresolved temporary files.')
 end
-local prepared = readFile(payload)
-if not prepared or #prepared ~= tonumber(fields.ExpectedSize) then
-    fail('Verified DLL payload size changed after staging.')
+-- Created By: NeroMorte - Scope the payload check so its buffer is released before replacement.
+do
+    local prepared = readFile(payload)
+    if not prepared or #prepared ~= tonumber(fields.ExpectedSize) then
+        fail('Verified DLL payload size changed after staging.')
+    end
 end
-prepared = nil
 if hadOld and not equalFiles(live, original) then
     fail('Installed DLL changed after backend verification.')
 end
