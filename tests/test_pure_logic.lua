@@ -4560,6 +4560,36 @@ do
 
     assert_true(conditionMet ~= nil, 'conditionMet loaded successfully')
 
+    local function fakeGroupMember(id)
+        return setmetatable({
+            ID = function() return id end,
+            Dead = function() return false end,
+            Present = function() return true end,
+            OtherZone = function() return false end,
+            Offline = function() return false end,
+        }, { __call = function() return true end })
+    end
+    local groupMembers = { [0] = fakeGroupMember(1001), [1] = fakeGroupMember(2002), [2] = fakeGroupMember(3003) }
+    local anyGroupRuntime = {
+        conditionMet = function(_, _, _, id) return id == 3003 or id == 1001 end,
+        isTargetInRange = function(_, id) return id ~= 2002 end,
+    }
+    local groupPriorityTargetId = loadFunc(src, 'anyGroupMemberId', {
+        mq = { TLO = { Me = { ID = function() return 1001 end }, Group = {
+            Members = function() return 2 end,
+            Member = function(i) return groupMembers[i] end,
+        } } },
+        runtime = anyGroupRuntime,
+        isSpawnAlive = function() return true end,
+    })
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'HP <=', 50, 'Heal', 'Clr'), 3003,
+        'Group, then Me selects a matching group member before self')
+    assert_eq(groupPriorityTargetId('F: Me, then Group', 'HP <=', 50, 'Heal', 'Clr'), 1001,
+        'Me, then Group selects self before a matching group member')
+    anyGroupRuntime.isTargetInRange = function() return true end
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'my HP <=', 20, 'Heal', 'Clr'), 1001,
+        'Group priority targets self for my-HP conditions')
+
     -- Scenario A: Player at 100% HP, Target Mob at 15% HP, Feign Death slider at 20%
     playerHp = 100
     targetHp = 15
