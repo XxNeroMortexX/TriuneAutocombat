@@ -10838,7 +10838,7 @@ do
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
-    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
+    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nms_looter_handoff', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
@@ -12345,7 +12345,7 @@ do
     initPM()
     local pm = rt.pluginManager
     S.shipped = #pm.pluginOrder
-    assert_eq(S.shipped, 22, 'Suite 92: all shipped plugins still load under the load-time guards')
+    assert_eq(S.shipped, 23, 'Suite 92: all shipped plugins still load under the load-time guards')
 
     -- Soft plugin dependencies (`uses`): normalised at registration, reverse-listed, state-tracked
     assert_eq(#pm.normalizeUses(nil), 0, 'Suite 92: no uses -> empty list')
@@ -12360,7 +12360,7 @@ do
     assert_eq(S.ids(pm.plugins.hud_spellgems.uses), 'gamedb,spellbook', 'Suite 92: hud_spellgems declares it uses gamedb and spellbook')
     assert_eq(#pm.plugins.boxnet.uses, 0, 'Suite 92: boxnet uses nothing')
     assert_eq(S.ids(pm.plugins.inventory.uses), 'boxnet,gamedb', 'Suite 92: inventory declares it uses boxnet and gamedb')
-    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nmsloot', 'Suite 92: usedBy(boxnet) lists the five consumers in load order')
+    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nms_looter_handoff,nmsloot', 'Suite 92: usedBy(boxnet) lists all consumers in load order')
     assert_eq(S.ids(pm.usedBy('spellbook')), 'hud_spellgems', 'Suite 92: usedBy(spellbook) lists the gem bar')
     assert_eq(#pm.usedBy('cursor'), 0, 'Suite 92: cursor is used by nobody')
     assert_eq(pm.useState('boxnet'), 'active', 'Suite 92: an enabled plugin is an active dependency')
