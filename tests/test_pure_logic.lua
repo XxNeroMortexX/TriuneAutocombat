@@ -14956,7 +14956,7 @@ end)()
         pullState = 'IDLE', pullTargetId = 0, medBreakActive = false, pullHpRest = false, wasRunning = false,
         saveLoadout = function() S.saves = S.saves + 1 end,
         fullStop = function() S.fullStops = (S.fullStops or 0) + 1 end,
-        setNearestWaypoint = function() end, isCombat = function() return false end,
+        setNearestWaypoint = function() end, wpAcquired = function() end, isCombat = function() return false end,
         getMaTargetInfo = function() return S.maInfo end,
         pluginManager = { drawHeaderButtons = function(n) S.hdrBtnArg = n return S.hdrBtnCount or 3 end },
         initPluginManager = function() end,
