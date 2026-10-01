@@ -4580,6 +4580,7 @@ do
             Member = function(i) return groupMembers[i] end,
         } } },
         runtime = anyGroupRuntime,
+        baseTok = function(token) return token:gsub('^[FE]:%s*', '') end,
         isSpawnAlive = function() return true end,
     })
     assert_eq(groupPriorityTargetId('F: Group, then Me', 'HP <=', 50, 'Heal', 'Clr'), 3003,
