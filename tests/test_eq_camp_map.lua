@@ -58,3 +58,16 @@ for _, command in ipairs(commands) do
     assert(not command:find('/mapfilter', 1, true))
 end
 print('PASS: native camp marker, radius refresh, Clear and automatic camp recreation, MQ2Map reload, and scoped removal')
+-- Execute the actual GUI-triggered redraw: coalesce rapid frames, force precise final radius on release.
+local now = 1
+env.os = { clock = function() return now end }
+ctrl.camp_loc = { x = 1, y = 2, z = 3 }; ctrl.camp_radius = 100
+runtime.refreshEqCampMapFromUI(false)
+local drawn = #commands
+now = 1.02; ctrl.camp_radius = 101; runtime.refreshEqCampMapFromUI(false)
+assert(#commands == drawn)
+now = 1.12; ctrl.camp_radius = 102; runtime.refreshEqCampMapFromUI(false)
+assert(#commands == drawn + 2 and commands[#commands]:find('radius 102', 1, true))
+now = 1.13; ctrl.camp_radius = 103; runtime.refreshEqCampMapFromUI(true)
+assert(#commands == drawn + 4 and commands[#commands]:find('radius 103', 1, true))
+print('PASS: GUI map redraw coalesces drag frames and forces exact final radius')

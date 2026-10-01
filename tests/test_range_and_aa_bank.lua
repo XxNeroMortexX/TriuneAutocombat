@@ -1,3 +1,4 @@
+package.path = 'TAC/lua/?.lua;' .. package.path
 -- Execute the actual UI helper and loadout sanitizer without launching MacroQuest.
 local f = assert(io.open('TAC/lua/triune.lua', 'r'))
 local source = f:read('*a'); f:close()

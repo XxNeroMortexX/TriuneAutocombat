@@ -48,6 +48,13 @@ local registeredEvents = {}
 -- All state and helpers hang off this table (keeps the chunk under the 200-local limit).
 local AA = {}
 
+-- Edited By: NeroMorte - Only routine purchase/skip chatter honors the saved quiet setting.
+-- Failures and explicitly requested status keep their original print path.
+function AA.routineMessage(message)
+    if not (ctrl and ctrl.auto_aa_suppress_messages == true) then print(message) end
+end
+
+
 -- Edited By: NeroMorte - AA test state and verified repeatable purchase counts.
 local function resetState()
     AA.lastAutoSpendAAAt = 0
@@ -1044,7 +1051,7 @@ function AA.notePriorityStatus(info, why, unspent)
     AA.prioStatus[info.name] = { why = why, cost = info.cost, rank = info.rank, maxRank = info.maxRank, canTrain = info.canTrain, at = os.clock() }
     if ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[info.name] and
         why and why ~= 'points' and why ~= 'spacing' and why ~= 'backoff' and (not prev or prev.why ~= why) then
-        print(string.format('\ay[Triune]\ax Prioritized AA "%s" (Rank %d/%d, Cost %d, Unspent %d) skipped: %s.',
+        AA.routineMessage(string.format('\ay[Triune]\ax Prioritized AA "%s" (Rank %d/%d, Cost %d, Unspent %d) skipped: %s.',
             info.name, info.rank, info.maxRank, info.cost, unspent, AA.BLOCKER_TEXT[why] or why))
     end
 end
@@ -1746,7 +1753,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
         nextStepAt = os.clock() + 0.5,
         retries = 0
     }
-    print(string.format('\ag[Triune]\ax Initiating AA Window train sequence for "%s" (ID: %d, Tab: %d)...', targetName, aaId, prefTab))
+    AA.routineMessage(string.format('\ag[Triune]\ax Initiating AA Window train sequence for "%s" (ID: %d, Tab: %d)...', targetName, aaId, prefTab))
     return true
 end
 
@@ -2071,7 +2078,7 @@ function AA.processAATrainWorkflow()
             mq.cmdf('/nomodkey /notify %s TrainButton leftmouseup', winName)
         end
 
-        print(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
+        AA.routineMessage(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
         -- Edited By: NeroMorte - Defer repeatable activation until purchase verification succeeds.
         task.step = 'verify'
         task.verifyUntil = now + 2.5
@@ -2117,7 +2124,7 @@ function AA.processAATrainWorkflow()
             -- Edited By: NeroMorte - Queue Consume Experience activation after the verified purchase.
             if ctrl.auto_consume_experience and task.name and task.name:lower() == 'consume experience' then
                 AA.pendingConsumeExperience = { at = now + 3.0, tries = 0 }
-                print('\ag[Triune]\ax Consume Experience purchased; activation queued after the AA becomes ready.')
+                AA.routineMessage('\ag[Triune]\ax Consume Experience purchased; activation queued after the AA becomes ready.')
             end
             AA.trainBackoff[task.name] = nil
             AA.trainFailLogged[task.name] = nil
@@ -2134,9 +2141,9 @@ function AA.processAATrainWorkflow()
             if AA.skipLogged ~= key then
                 AA.skipLogged = key
                 if task.skipped == 'trained' then
-                    print(string.format('\ay[Triune]\ax AA window shows "%s" already at max rank; nothing to buy.', task.name))
+                    AA.routineMessage(string.format('\ay[Triune]\ax AA window shows "%s" already at max rank; nothing to buy.', task.name))
                 else
-                    print(string.format('\ay[Triune]\ax AA window prices "%s" at %d AA (have %d); waiting for points.',
+                    AA.routineMessage(string.format('\ay[Triune]\ax AA window prices "%s" at %d AA (have %d); waiting for points.',
                         task.name, task.rowCost or 0, task.have or 0))
                 end
             end
@@ -2277,7 +2284,7 @@ function AA.checkAutoSpendAA(allowStop)
             if targetOrder <= 0 then targetOrder = math.huge end
             if firstOrderedBlocked < targetOrder then return false end
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
+            AA.routineMessage(string.format('\ag[Triune]\ax Auto-spending AA on %s "%s" (Rank %d/%d, Cost: %d AA, Unspent: %d AA)...',
                 target.isSpecial and 'Special tab ability' or 'prioritized ability',
                 target.name, target.rank, target.maxRank, target.cost, unspent))
             return AA.startAATrainWorkflow(target.name, allowStop, true)
@@ -2310,7 +2317,7 @@ function AA.checkAutoSpendAA(allowStop)
         local key = outstanding .. ':' .. outstandingWhy
         if AA.capHoldLogged ~= key then
             AA.capHoldLogged = key
-            print(string.format('\ay[Triune]\ax Cap spender on hold: prioritized "%s" is still outstanding (%s); only checked priorities are bought.',
+            AA.routineMessage(string.format('\ay[Triune]\ax Cap spender on hold: prioritized "%s" is still outstanding (%s); only checked priorities are bought.',
                 outstanding, AA.BLOCKER_TEXT[outstandingWhy] or outstandingWhy))
         end
         return false
@@ -2333,7 +2340,7 @@ function AA.checkAutoSpendAA(allowStop)
         -- If user has Fireworks / Special tab ability configured as cap spender, buy it natively:
         if (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) and unspent >= cost then
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
+            AA.routineMessage(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
             return AA.startAATrainWorkflow(effectiveName, allowStop, true)
@@ -2341,7 +2348,7 @@ function AA.checkAutoSpendAA(allowStop)
 
         if cost > 0 and unspent >= cost then
             AA.lastAutoSpendAAAt = now
-            print(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
+            AA.routineMessage(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
             return AA.startAATrainWorkflow(effectiveName, allowStop, true)
@@ -2444,7 +2451,7 @@ function AA.manualSpendAA(targetName)
     end
 
     if unspent < cost then
-        print(string.format('\ay[Triune]\ax Cannot purchase %s: have %d unspent AA, need %d AA.', fallbackName, unspent, cost))
+        AA.routineMessage(string.format('\ay[Triune]\ax Cannot purchase %s: have %d unspent AA, need %d AA.', fallbackName, unspent, cost))
         return false
     end
 
@@ -2493,7 +2500,7 @@ function AA.scheduleFireworksSummon(fwId, reason)
     local delay = AA.fireworksSummonDelay()
     AA.pendingFireworksSummon = { id = tonumber(fwId) or 17788, at = os.clock() + delay, tries = 0, reason = reason }
     AA.lastAutoSummonAt = os.clock() -- keep the periodic auto-summon from racing this one
-    print(string.format('\ag[Triune]\ax Fireworks summon scheduled in %.1fs (/alt act %d) after purchasing "%s".',
+    AA.routineMessage(string.format('\ag[Triune]\ax Fireworks summon scheduled in %.1fs (/alt act %d) after purchasing "%s".',
         delay, AA.pendingFireworksSummon.id, tostring(reason or 'fireworks AA')))
 end
 
@@ -2556,7 +2563,7 @@ function AA.processConsumeExperience()
     if ready then
         AA.pendingConsumeExperience = nil
         mq.cmd('/alt activate 17789')
-        print('\ag[Triune]\ax Activated Consume Experience with a Power Source equipped.')
+        AA.routineMessage('\ag[Triune]\ax Activated Consume Experience with a Power Source equipped.')
         return
     end
     job.tries = job.tries + 1
@@ -2597,7 +2604,7 @@ function AA.processPendingFireworksSummon()
         if AA.activateFireworks(job.id) then
             AA.pendingFireworksSummon = nil
             AA.lastAutoSummonAt = now
-            print(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
+            AA.routineMessage(string.format('\ag[Triune]\ax Summoning fireworks (/alt act %d).', job.id))
             return true
         end
         job.at = now + 1.0
@@ -2650,7 +2657,7 @@ function AA.checkAutoSummonFireworks()
     -- Edited By: NeroMorte - Use the guarded Fireworks activation helper.
     if not AA.activateFireworks(aaId) then return false end
     AA.lastAutoSummonAt = now
-    print(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
+    AA.routineMessage(string.format('\ag[Triune]\ax Auto-summoning fireworks via /alt act %d.', aaId))
     return true
 end
 
@@ -3402,6 +3409,8 @@ function plugin.onInit(coreApi)
     WARN = colors.WARN or { 1.0, 0.72, 0.30, 1 }
     ERR  = colors.ERR  or { 0.95, 0.35, 0.35, 1 }
     resetState()
+    -- Edited By: NeroMorte - Preserve the original verbosity unless the user opts into quiet messages.
+    if ctrl and ctrl.auto_aa_suppress_messages == nil then ctrl.auto_aa_suppress_messages = false end
     if ctrl and ctrl.show_auto_aa == nil then ctrl.show_auto_aa = false end
     if rt and not rt.cachedAAData then rt.cachedAAData = {} end
 
