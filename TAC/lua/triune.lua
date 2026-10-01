@@ -1546,7 +1546,8 @@ local function sendPetCmd(verb, scope)
     if runtime.petCamp then runtime.petCamp:noteCommand(verb, scope) end
     petState.lastPetCmdSent = fullCmd
     petState.lastPetCmdTime = os.clock()
-    print(string.format('\ag[Triune Pet]\ax Issued: \at%s\ax', fullCmd))
+    -- Edited By: NeroMorte - Keep routine pet commands quiet; retain their trace when Debug logging is enabled.
+    if ctrl.debug_mode then print(string.format('\ag[Triune Pet]\ax Issued: \at%s\ax', fullCmd)) end
 end
 
 -- Best guess at which trio class a pet spawn belongs to: a name one of our
@@ -10194,6 +10195,16 @@ function runtime.updateEqCampMap()
     runtime.eqCampMapNeedsRefresh = false
 end
 
+-- Edited By: NeroMorte - GUI radius edits need not wait for a lengthy combat tick to redraw MQ2Map.
+-- Coalesce drag frames, then draw the exact final radius immediately on release.
+function runtime.refreshEqCampMapFromUI(force)
+    local now = os.clock()
+    if force or now - (runtime.lastEqCampMapUIAt or -100) >= 0.1 then
+        runtime.updateEqCampMap()
+        runtime.lastEqCampMapUIAt = now
+    end
+end
+
 function UI.startEngine()
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
         runtime.setNearestWaypoint()
@@ -11637,6 +11648,13 @@ function UI.drawControlTab()
             local manualCampR, manualCampRChanged = UI.distanceSlider('Camp Radius##manualRadius', ctrl.camp_radius or 100, 10, 500)
             if manualCampRChanged then
                 ctrl.camp_radius = manualCampR
+                -- Edited By: NeroMorte - Redraw directly from slider edits, without saving on every drag frame.
+                runtime.refreshEqCampMapFromUI(false)
+                runtime.autoDirty, runtime.autoDirtyAt = true, os.clock()
+            end
+            -- Edited By: NeroMorte - Commit the final Ctrl-click/drag value and draw it precisely.
+            if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
+                runtime.refreshEqCampMapFromUI(true)
                 runtime.saveLoadout(true)
             end
             if ImGui.IsItemHovered() then
@@ -11985,6 +12003,13 @@ function UI.drawControlTab()
             local pullRad, pullRadChanged = UI.distanceSlider('Pull Radius', ctrl.camp_radius or 100, 10, 500)
             if pullRadChanged then
                 ctrl.camp_radius = pullRad
+                -- Edited By: NeroMorte - Redraw directly from slider edits, without saving on every drag frame.
+                runtime.refreshEqCampMapFromUI(false)
+                runtime.autoDirty, runtime.autoDirtyAt = true, os.clock()
+            end
+            -- Edited By: NeroMorte - Commit the final Ctrl-click/drag value and draw it precisely.
+            if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
+                runtime.refreshEqCampMapFromUI(true)
                 runtime.saveLoadout(true)
             end
             if ImGui.IsItemHovered() then
@@ -24991,6 +25016,17 @@ function runtime.initPetCamp()
         atCamp = function()
             local c = ctrl.camp_loc
             return c and distToLoc(c.x, c.y, c.z) <= 15
+        end,
+        -- Edited By: NeroMorte - Pets may defend camp beyond owner assist range, without chasing distant incoming pulls.
+        petsCanFinish = function(id)
+            local s = mq.TLO.Spawn(id)
+            if not s() then return false end
+            local threatenedPet = 0
+            pcall(function() threatenedPet = s.TargetOfTarget.ID() or 0 end)
+            if runtime.petCamp.cache[threatenedPet] and isSpawnAlive(threatenedPet)
+                and runtime.petCamp.api.campDistance(threatenedPet) <= 15 then return true end
+            -- Include the mob's melee reach around the assist boundary for pets, never for owner permission.
+            return runtime.petCamp.api.campDistance(id) <= math.max(15, ctrl.pet_camp_assist_radius or 30) + maxMeleeDistance(id) + 3
         end,
         pullerHome = function(id)
             if id > 0 then return distToId(id) <= 15 end

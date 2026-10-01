@@ -109,3 +109,17 @@ local safeProbe = assert(load('return function() '..safe..' end', 'safeSnapshot'
 assert(safeProbe()); idle = false; assert(not safeProbe()); idle = true
 probeRuntime.petCamp.phase = 'GATHER'; assert(not safeProbe())
 print('PASS: safe automatic snapshots use EverQuest.GameState and defer during fights/pulls')
+-- Execute the actual host pet-defense boundary; it must not grant owner assist or chase a distant ordinary pull.
+local campDist, petDist, victim = 35, 10, 0
+local defenseRuntime = { petCamp = { cache = { [280] = {} }, api = {
+    campDistance = function(id) return id == 280 and petDist or campDist end } } }
+local defenseEnv = setmetatable({ runtime = defenseRuntime, ctrl = { pet_camp_assist_radius = 30 },
+    isSpawnAlive = function() return true end, maxMeleeDistance = function() return 7 end,
+    mq = { TLO = { Spawn = function()
+        return setmetatable({ TargetOfTarget = { ID = function() return victim end } }, { __call = function() return true end })
+    end } } }, { __index = _G })
+local boundary = assert(source:match('petsCanFinish = function%(id%)%s*(.-)\n        end,\n        pullerHome'))
+local canFinish = assert(load('return function(id) '..boundary..' end', 'actualPetDefenseBoundary', 't', defenseEnv))()
+assert(canFinish(100)); campDist = 200; assert(not canFinish(100))
+victim = 280; assert(canFinish(100)); petDist = 200; assert(not canFinish(100))
+print('PASS: actual pet melee-boundary and owned-pet-at-camp defense adapter')

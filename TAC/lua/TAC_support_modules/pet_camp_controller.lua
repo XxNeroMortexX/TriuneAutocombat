@@ -265,13 +265,26 @@ function Controller:combatTick()
     end
     if self.phase == 'FIGHT' or self.phase == 'RETURN' then
         if next(owned) or #xt > 0 then
-            if c.pet_camp_pull_back ~= true then
-                for _, id in ipairs(xt) do
-                    if a.alive(id) then
-                        self:attack(id, 'all')
-                        self.message = 'Pets finishing the remaining XTargets'
-                        return true, self:ownerAllowed(id)
+            -- Created By: NeroMorte - Once recalled pets arrive, they finish the pull even outside owner assist range.
+            -- Never use a gathering pet taking hits as a reason to end GATHER early.
+            local returned = self.phase == 'RETURN' and self.puller and a.pullerHome and a.pullerHome(self.puller.id)
+            if c.pet_camp_pull_back ~= true or self.phase == 'FIGHT' or returned then
+                local remaining
+                for id in pairs(owned) do
+                    if a.alive(id) and a.hostile(id) and a.petsCanFinish(id)
+                        and (not remaining or a.campDistance(id) < a.campDistance(remaining)) then
+                        remaining = id
                     end
+                end
+                if remaining then
+                    if self.phase ~= 'FIGHT' then
+                        if a.endDispatch then a.endDispatch(true) end
+                        a.releasePets(); self.lastAttackAt = -100
+                    end
+                    self.phase = 'FIGHT'
+                    self:attack(remaining, 'all')
+                    self.message = 'Pets finishing the pull; player assists only in range or for self-defense'
+                    return true, self:ownerAllowed(remaining)
                 end
             end
             self.message = 'Waiting for the remaining pull to reach camp'

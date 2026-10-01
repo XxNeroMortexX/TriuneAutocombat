@@ -63,3 +63,15 @@ assert(load(threat, 'actualPetThreat', 't', threatEnv))()
 assert(not threatEnv.runtime.hasDowntimeAggroThreat()); own = false
 assert(threatEnv.runtime.hasDowntimeAggroThreat())
 print('PASS: reversed roster correction, unknown-class safety, learned names, own-pet snapshot threat exclusion')
+-- Keep sending pet commands and invalidating telemetry, but suppress routine chat unless Debug is enabled.
+local chat, sent, invalidated = 0, 0, 0
+local commandEnv = setmetatable({ ctrl = {}, runtime = { petCamp = { noteCommand = function() invalidated = invalidated + 1 end } },
+    petState = {}, print = function() chat = chat + 1 end,
+    mq = { cmdf = function() sent = sent + 1 end } }, { __index = _G })
+local command = assert(source:match('(local function sendPetCmd.-)\n\n%-%- Best guess'))
+assert(load(command..'\nreturn sendPetCmd', 'quietPetCommands', 't', commandEnv))()('attack', 'mag')
+assert(sent == 1 and invalidated == 1 and chat == 0)
+commandEnv.ctrl.debug_mode = true
+assert(load(command..'\nreturn sendPetCmd', 'debugPetCommands', 't', commandEnv))()('back', 'mag')
+assert(sent == 2 and invalidated == 2 and chat == 1)
+print('PASS: pet commands stay functional and quiet except Debug logging')

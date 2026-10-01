@@ -38,6 +38,7 @@ local function fixture()
         ensureCamp = function() end, holdCamp = function() f.returns = (f.returns or 0) + 1 end,
         atCamp = function() return f.atCamp end,
         pullerHome = function() return f.petHome ~= false end,
+        petsCanFinish = function(id) return f.mobs[id] and (f.mobs[id].dist <= f.c.pet_camp_assist_radius + 15 or f.mobs[id].petThreatNear == true) end,
         campDistance = function(id) return f.mobs[id] and f.mobs[id].dist or math.huge end,
         inPullRadius = function(id) return f.mobs[id] and f.mobs[id].dist <= 500 end,
         directThreat = function(id) return f.mobs[id] and f.mobs[id].direct == true or false end,
@@ -206,3 +207,36 @@ f.mobs[100] = { dist = 20, engaged = true }; f.xt = { 100 }; c:combatTick()
 f.mobs[100].dead = true; f.mobs[101] = { dist = 200 }; f.now = 1
 c:combatTick(); assert(c.fightId == 101 and f.target == 101 and c.phase ~= 'RETURN')
 print('PASS: three-pet startup batch, no command/tell snapshot carousel, immediate acquisition past dead XTargets')
+-- A recalled pet home at camp can fight a mob just outside the player's assist radius.
+f, c = fixture(); f.c.pet_camp_batch_size = 1; f.petHome = false
+c:petTell('Morer', "'Taunting attackers as ordered, Master.'")
+f.mobs[100] = { dist = 200 }; c:combatTick()
+f.xt = { 100 }; f.now = 1; c:combatTick(); assert(c.phase == 'RETURN')
+f.mobs[100].dist = 35; f.now = 2
+have, engage = c:combatTick(); assert(not have and not engage and c.phase == 'RETURN')
+f.petHome = true; f.now = 3
+have, engage = c:combatTick()
+assert(have and not engage and c.phase == 'FIGHT' and f.commands[#f.commands] == 'attack all')
+assert(f.forcedStop == true and c.held == nil)
+-- Other returning mobs get pets' help as well, without granting the player permission outside radius.
+f.mobs[100].dead = true; f.mobs[101] = { dist = 40 }; f.xt = { 101 }; f.now = 4
+have, engage = c:combatTick(); assert(have and not engage and f.target == 101)
+f.mobs[101].direct = true; f.now = 5
+have, engage = c:combatTick(); assert(have and engage)
+-- A distant gathering pet being attacked does not force the requested count-three batch to end early.
+f, c = fixture(); f.c.pet_camp_batch_size = 3; f.petHome = false
+c:petTell('Morer', "'Taunting attackers as ordered, Master.'")
+f.mobs[100] = { dist = 200, engaged = true }; f.mobs[101] = { dist = 210 }; f.mobs[102] = { dist = 220 }
+c:combatTick(); f.xt = { 100 }; f.now = 1; c:combatTick()
+assert(c.phase == 'GATHER' and c.tag.id == 101)
+f.xt = { 100, 101 }; f.now = 2; c:combatTick(); assert(c.phase == 'GATHER' and c.tag.id == 102)
+f.xt = { 100, 101, 102 }; f.now = 3; c:combatTick(); assert(c.phase == 'RETURN')
+print('PASS: outside-assist pet cleanup after return, player radius preserved, direct defense, count-three gathering uninterrupted')
+
+-- Far incoming members are not chased after recall; defend camp only once they arrive or threaten a pet at camp.
+f, c = fixture(); c.phase = 'FIGHT'; c.puller = { id = 280, scope = 'nec' }
+f.mobs[100] = { dist = 200 }; f.xt = { 100 }
+have, engage = c:combatTick(); assert(not have and not engage and #f.commands == 0)
+f.mobs[100].petThreatNear = true
+have, engage = c:combatTick(); assert(have and not engage and f.commands[#f.commands] == 'attack all')
+print('PASS: far incoming pull waits; pets can defend a threatened pet at camp')
