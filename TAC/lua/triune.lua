@@ -1418,7 +1418,10 @@ local function prunePetTracking(throttled)
     for _, c in ipairs(myClasses) do
         local pid = petState.myPets[c]
         if pid then
-            if pid <= 0 or seen[pid] or not isSpawnAlive(pid) or not isSpawnMyPet(pid) then
+            -- Edited By: NeroMorte - Discard old slot-order guesses when name/race identifies another owned class.
+            local detected = runtime.detectPetClassFromSpawn and runtime.detectPetClassFromSpawn(mq.TLO.Spawn(pid))
+            local conflicting = detected and detected ~= c and petState.PET_CLASSES[detected]
+            if conflicting or pid <= 0 or seen[pid] or not isSpawnAlive(pid) or not isSpawnMyPet(pid) then
                 petState.myPets[c] = nil
                 changed = true
             else
@@ -1598,7 +1601,10 @@ local function reconcilePets(quiet)
             local detCls = runtime.detectPetClassFromSpawn(s)
             if detCls and petState.PET_CLASSES[detCls] then
                 for _, c in ipairs(petClassList) do
-                    if c == detCls and not petState.myPets[c] then
+                    -- Edited By: NeroMorte - A positively detected class displaces an unidentified slot-order guess.
+                    local previous = petState.myPets[c]
+                    local previousClass = previous and runtime.detectPetClassFromSpawn(mq.TLO.Spawn(previous))
+                    if c == detCls and (not previous or not previousClass) then
                         trackPet(c, pid, false)
                         assigned = assigned + 1
                         break
@@ -1608,17 +1614,18 @@ local function reconcilePets(quiet)
         end
     end
 
-    -- Pass 2: hand the remaining pets to the remaining pet classes in slot order
-    for _, pid in ipairs(untracked) do
-        if not petTrackedCls(pid) then
-            for _, c in ipairs(petClassList) do
-                if not petState.myPets[c] then
-                    trackPet(c, pid, false)
-                    assigned = assigned + 1
-                    break
-                end
-            end
-        end
+    -- Edited By: NeroMorte - Only infer the last class when exactly one pet and one class remain.
+    -- Spawn order is not owner class order; arbitrary assignment sends class-scoped commands to the wrong pet.
+    local remainingPets, remainingClasses = {}, {}
+    for _, pid in ipairs(allLivingPets) do
+        if not petTrackedCls(pid) then remainingPets[#remainingPets + 1] = pid end
+    end
+    for _, c in ipairs(petClassList) do
+        if not petState.myPets[c] then remainingClasses[#remainingClasses + 1] = c end
+    end
+    if #remainingPets == 1 and #remainingClasses == 1 then
+        trackPet(remainingClasses[1], remainingPets[1], false)
+        assigned = assigned + 1
     end
 
     if assigned > 0 and not quiet then
@@ -1634,6 +1641,8 @@ local function getMultiPetList()
     local seenIds = {}
     local seenNames = {}
 
+    -- Edited By: NeroMorte - Resolve all known classes before the GUI/controller requests any slot.
+    reconcilePets(true)
     prunePetTracking(true)
     local allLivingPets = getAllMyPets()
 
@@ -1656,20 +1665,7 @@ local function getMultiPetList()
                 petId = nil
             end
 
-            if isPetCls and not petId then
-                for _, pid in ipairs(allLivingPets) do
-                    if not seenIds[pid] and not petTrackedCls(pid) then
-                        local nm = string.lower(spawnCleanName(pid))
-                        if nm == '' or not seenNames[nm] then
-                            petId = pid
-                            seenIds[pid] = true
-                            if nm ~= '' then seenNames[nm] = true end
-                            trackPet(cls, pid, false)
-                            break
-                        end
-                    end
-                end
-            end
+            -- Edited By: NeroMorte - Unknown pets stay in Additional Pets; never claim an arbitrary class.
 
             table.insert(petSlots, {
                 slotNum = i,
@@ -1786,15 +1782,9 @@ local function updatePetTracking()
     if curPetId > 0 and curPetId ~= petState.lastObservedId then
         if not petTrackedCls(curPetId) then
             local cls = sp and sp.cls or nil
-            if not cls then
-                for _, c in ipairs(myClasses) do
-                    if petState.PET_CLASSES[c] and (not petState.myPets[c] or not isSpawnAlive(petState.myPets[c])) then
-                        cls = c
-                        break
-                    end
-                end
-            end
-            if cls then trackPet(cls, curPetId, false) end
+            -- Edited By: NeroMorte - Selecting a pet updates Me.Pet; it does not prove the first empty class.
+            if not cls then cls = runtime.detectPetClassFromSpawn(mq.TLO.Spawn(curPetId)) end
+            if cls and petState.PET_CLASSES[cls] and not petState.myPets[cls] then trackPet(cls, curPetId, false) end
         end
         petState.lastObservedId = curPetId
     elseif curPetId == 0 then
@@ -22217,7 +22207,8 @@ function runtime.hasDowntimeAggroThreat()
     local isAggroed = false
     pcall(function()
         local t = mq.TLO.Target
-        if t() and (t.ID() or 0) > 0 and not t.Dead() and t.Type() == 'NPC' then
+        -- Edited By: NeroMorte - Own pets can be NPC-typed and show aggro; selecting one is not a hostile threat.
+        if t() and (t.ID() or 0) > 0 and not t.Dead() and t.Type() == 'NPC' and not isSpawnMyPet(t) then
             if (t.PctAggro() or 0) > 0 or (t.SecondaryPctAggro() or 0) > 0 then
                 isAggroed = true
             end
@@ -24966,6 +24957,8 @@ function runtime.initPetCamp()
                 and not (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat())
                 and (not runtime.petCamp or (runtime.petCamp.phase == 'IDLE' and not runtime.petCamp.tag))
         end,
+        -- Edited By: NeroMorte - Log automatic capture completion/failure without adding GUI status lines.
+        trace = function(message) print('\ag[Triune Pet]\ax ' .. message) end,
         command = sendPetCmd,
         -- Target ID can update before server assist does; retain the old proven settle beat.
         setTarget = function(id)
@@ -25136,14 +25129,16 @@ local function runMainLoop()
         runtime.updateEqCampMap()
         -- Edited By: NeroMorte - Maintain authoritative pet snapshots without interrupting a fight.
         runtime.petCamp:tickStates()
-        if runtime.pluginManager and runtime.pluginManager.tick then
+        -- Edited By: NeroMorte - Do not let plugin targeting/casts interrupt the short pet snapshot.
+        if not runtime.petCamp.probe and runtime.pluginManager and runtime.pluginManager.tick then
             local pmT0 = os.clock()
             runtime.pluginManager.tick()
             runtime.pluginTickMs = (os.clock() - pmT0) * 1000
         end
         -- drain one queued spell-mem per pass, out of combat, while stationary, and while not casting
         local memmed = false
-        if next(runtime.pendingMem) ~= nil and not isCasting() and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat()) then
+        -- Edited By: NeroMorte - Queue memorization until the snapshot restores its original target.
+        if not runtime.petCamp.probe and next(runtime.pendingMem) ~= nil and not isCasting() and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not (runtime.hasDowntimeAggroThreat and runtime.hasDowntimeAggroThreat()) then
             local maxG = getNumGems()
             local slot = nil
             for s = 1, maxG do

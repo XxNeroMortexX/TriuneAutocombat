@@ -98,4 +98,4 @@ try {
 Write-Host "PET CAMP TEST READY: $Revision"
 Write-Host "Backup: $Backup"
 Write-Host 'Run /lua run triune in game. Open Pets while safely idle to capture states.'
-Write-Host 'Then use Puller > Camp > Pet: Pets Only - Stay at Camp, Player Assist Radius, and optional Pet Pull Back to Camp.'
+Write-Host 'Then use Puller > Camp > Pet: Pets Pull - Player Stay in Camp, Player Assist Radius, and optional Pet Pull Back to Camp.'

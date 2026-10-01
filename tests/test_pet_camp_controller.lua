@@ -183,3 +183,26 @@ assert(c.fightId == 101 and f.target == 101)
 f.mobs[101].dead = true; f.xt = {}; f.now = 2; c:combatTick()
 assert(c.fightId == 102)
 print('PASS: exact XTarget confirmation, long-distance wait, count-one recall, remaining-fight priority')
+-- Capture all three pets in one startup pass, then routine commands/tells never restart the carousel.
+f, c = fixture(); f.safe = true
+local snapshots = {}
+for step = 1, 30 do
+    f.now = step * 0.2
+    if c.probe then
+        f.window = c.probe.id; f.flags = { taunt = c.probe.id == 280, focus = false }
+        snapshots[c.probe.id] = true
+    end
+    c:tickStates()
+end
+assert(snapshots[278] and snapshots[279] and snapshots[280] and next(c.pending) == nil)
+local probes = #f.probes
+c:noteCommand('hold on', 'mag'); c:noteCommand('assist on', 'all'); c:noteCommand('follow', 'all')
+c:petTell('Varndrim', "'Changing position, Master.'")
+f.now = 20; c:tickStates(); assert(#f.probes == probes and next(c.pending) == nil)
+assert(c:value(280, 'taunt') == true and c:choosePuller().id == 280)
+-- A lingering dead XTarget cannot force a return/wait in the non-returning mode.
+f, c = fixture(); f.c.pet_camp_pull_back = false
+f.mobs[100] = { dist = 20, engaged = true }; f.xt = { 100 }; c:combatTick()
+f.mobs[100].dead = true; f.mobs[101] = { dist = 200 }; f.now = 1
+c:combatTick(); assert(c.fightId == 101 and f.target == 101 and c.phase ~= 'RETURN')
+print('PASS: three-pet startup batch, no command/tell snapshot carousel, immediate acquisition past dead XTargets')

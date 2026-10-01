@@ -65,12 +65,13 @@ function Controller:noteCommand(verb, scope)
         if scope == 'all' or scope == p.scope then
             p.state[field] = nil
             p.commandAt = self.api.now()
-            self.pending[id] = true
+            -- Created By: NeroMorte - Routine hold/assist/back commands must not queue target-switching scans.
+            -- Keep startup/new-pet/manual requests; otherwise refresh unknown buttons manually or from matching live telemetry.
         end
     end
 end
 
--- Edited By: NeroMorte - Only exact, observed messages set flags. Ambiguous position chat requests a snapshot.
+-- Edited By: NeroMorte - Only exact, observed messages set flags. Ambiguous position chat invalidates its field without interrupting pulls.
 function Controller:petTell(name, text)
     name = tostring(name or ''):lower()
     text = tostring(text or ''):gsub("^%s*'", ''):gsub("'%s*$", ''):lower()
@@ -83,7 +84,7 @@ function Controller:petTell(name, text)
                 if text:find('taunt', 1, true) then p.state.taunt = nil end
                 if text:find('hold', 1, true) then p.state.hold, p.state.ghold, p.state.spellhold = nil, nil, nil end
                 if text:find('focus', 1, true) then p.state.focus = nil end
-                self.pending[id] = true
+                -- Created By: NeroMorte - Position tells are frequent during pulling, not a request to target pets again.
             end
             return
         end
@@ -128,9 +129,16 @@ function Controller:tickStates()
     if self.probe then
         local probe = self.probe
         if a.target() ~= probe.id then self.probe = nil; return end
-        if not a.safeProbe() or now - probe.at >= 1.2 or (p and windowId == probe.id and p.readAt and p.readAt >= probe.at + 0.3) then
+        local captured = p and windowId == probe.id and p.readAt and p.readAt >= probe.at + 0.3
+        if not a.safeProbe() or now - probe.at >= 3 or captured then
             if a.target() == probe.id then a.restore(probe.original) end
             self.probe = nil
+            if a.trace then
+                if captured then a.trace(string.format('Captured pet states: [%s] %s (#%d).', p.cls, p.name, probe.id))
+                elseif now - probe.at >= 3 then a.trace(string.format('Pet state capture timed out for #%d; Refresh Pet States retries when safe.', probe.id)) end
+            end
+            -- Created By: NeroMorte - A failed snapshot is not a perpetual between-pull target carousel.
+            if now - probe.at >= 3 then self.pending[probe.id] = nil end
         end
         return
     end
@@ -143,7 +151,7 @@ function Controller:tickStates()
                 p2.probedAt = now
                 self.lastProbeAt = now
                 if a.targetPet(id) then
-                    self.probe = { id = id, original = original, at = now }
+                    self.probe = { id = id, original = original, at = a.now() }
                     self.windowId, self.windowAt = nil, now
                 end
                 break
@@ -231,7 +239,9 @@ function Controller:combatTick()
     self.pullMode = mode
     a.ensureCamp()
     a.holdCamp()
-    local xt = a.hostileXT()
+    local xt = {}
+    -- Created By: NeroMorte - Dead/corpse XTarget entries can linger briefly; do not delay the next live fight.
+    for _, id in ipairs(a.hostileXT()) do if a.alive(id) and a.hostile(id) then xt[#xt + 1] = id end end
     for id in pairs(self.batch) do if not a.alive(id) then self.batch[id] = nil end end
     local owned, near, defense = {}, nil, nil
     for id in pairs(self.batch) do owned[id] = true end

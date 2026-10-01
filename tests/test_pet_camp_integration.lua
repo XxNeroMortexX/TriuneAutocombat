@@ -97,7 +97,7 @@ dispatchRuntime.endPetCampDispatch(true); assert(commandLog[#commandLog] == '/at
 print('PASS: actual action gates, all five dispatchers, no-chase movement guard, original command isolation and balanced pet-button styles')
 
 -- Execute the actual host snapshot predicate with the real TLO placement.
-local safe = assert(source:match('safeProbe = function%(%)%s*(.-)\n        end,\n        command = sendPetCmd'))
+local safe = assert(source:match('safeProbe = function%(%)%s*(.-)\n        end,'))
 local idle = true
 local probeRuntime = { petCamp = { phase = 'IDLE' }, anyXtarAlive = function() return not idle end }
 local probeEnv = setmetatable({ runtime = probeRuntime,
