@@ -18,7 +18,7 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    version = 'Morte.4',
+    version = 'Morte.5',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
@@ -35,7 +35,7 @@ version.morte = {
 ---------------------------------------------------------------------------
 
 version.engine = {
-    expectedVersion = '4.0.0',
+    expectedVersion = '4.1.6',
     minimumVersion = '4.0.0',
 }
 

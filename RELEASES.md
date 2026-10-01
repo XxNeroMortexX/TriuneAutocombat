@@ -4,6 +4,29 @@ Short, human-readable notes for each release. The GitHub release page is built
 from the entry that matches the tag (`v3.0` -> `## 3.0`). The full, detailed
 history of every change stays in [CHANGELOG.md](CHANGELOG.md).
 
+## 3.1-Morte.5
+
+September 30 cumulative NeroMorte update. Gennro's base remains **3.1** and
+MQ2WebUpdate remains **4.1.6**.
+
+- Stationary pet camp combat, separate Player Assist Radius, optional batch
+  pet pulls back to camp, and a saved recall delay (default 5 seconds).
+- Cached pet-button states and corrected pet class dispatch; confirmed XTarget
+  pulls and completed fights before fresh pulls.
+- Optional tell/addressed-guild invite and dzadd commands.
+- Expanded distance sliders and Auto AA Bank minimum 1.
+- True Self-target spells preserve the current target.
+- Native EQ camp X/radius circle, automatic camp refresh, and precise slider redraw.
+- Debug-only pet-command output and optional quiet Auto AA purchase/skip messages.
+- Fixed the Control-window recall-delay input crash.
+
+See the [full September 30 changelog](docs/changelog/2026-09-30-Morte.5.md)
+for behavior and validation details. Update from **main** using the in-game
+updater; development links remain protected. The original Morte.1 installer
+baseline/tag is retained. These notes do not publish a new installer archive.
+
+---
+
 ## 3.1-Morte.1
 
 First installer release for NeroMorte's Triune fork, based on Gennro 3.1 and
