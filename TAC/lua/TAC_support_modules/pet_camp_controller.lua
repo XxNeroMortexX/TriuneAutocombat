@@ -17,6 +17,8 @@ function M.defaults(c)
     c.pet_camp_assist_radius = math.max(1, math.floor(tonumber(c.pet_camp_assist_radius) or 30))
     c.pet_camp_batch_size = math.max(1, math.min(100, math.floor(tonumber(c.pet_camp_batch_size) or 1)))
     c.pet_camp_puller_class = c.pet_camp_puller_class or 'Auto'
+    -- Created By: NeroMorte - Saved recall grace period starts only after the pulling pet reaches camp.
+    c.pet_camp_recall_delay = math.max(0, tonumber(c.pet_camp_recall_delay) or 5)
 end
 
 function Controller:enabled()
@@ -28,7 +30,7 @@ function Controller:resetCombat()
     if self.api.endDispatch then self.api.endDispatch() end
     self.phase, self.batch, self.skipped, self.tag = 'IDLE', {}, {}, nil
     self.puller, self.noNextAt, self.fightId = nil, nil, nil
-    self.lastAttackAt = -100
+    self.lastAttackAt, self.returnHomeAt = -100, nil
 end
 
 -- Edited By: NeroMorte - Spawn/zone identity changes discard telemetry, never reuse a dead pet's flags.
@@ -206,8 +208,12 @@ function Controller:recall()
     if self.phase ~= 'RETURN' and self.phase ~= 'FIGHT' then
         self:command('back', self.puller and self.puller.scope or 'all')
         self:command('follow', self.puller and self.puller.scope or 'all')
+        -- Created By: NeroMorte - Hold during grace so pet auto-retaliation cannot defeat the delay.
+        if self.api.config().pet_camp_pull_back == true and (self.api.config().pet_camp_recall_delay or 5) > 0 then
+            self:command('hold on', 'all')
+        end
     end
-    self.phase, self.tag, self.noNextAt = 'RETURN', nil, nil
+    self.phase, self.tag, self.noNextAt, self.returnHomeAt = 'RETURN', nil, nil, nil
 end
 
 function Controller:attack(id, scope)
@@ -268,6 +274,15 @@ function Controller:combatTick()
             -- Created By: NeroMorte - Once recalled pets arrive, they finish the pull even outside owner assist range.
             -- Never use a gathering pet taking hits as a reason to end GATHER early.
             local returned = self.phase == 'RETURN' and self.puller and a.pullerHome and a.pullerHome(self.puller.id)
+            -- Created By: NeroMorte - Give incoming mobs time to close before releasing pets.
+            -- The earlier assist-radius/direct-player-threat branch bypasses this wait.
+            if self.phase == 'RETURN' then
+                if returned then self.returnHomeAt = self.returnHomeAt or now else self.returnHomeAt = nil end
+                if returned and now - self.returnHomeAt < c.pet_camp_recall_delay then
+                    self.message = string.format('Recall delay: %.1fs remaining', c.pet_camp_recall_delay - (now - self.returnHomeAt))
+                    return false, false
+                end
+            end
             if c.pet_camp_pull_back ~= true or self.phase == 'FIGHT' or returned then
                 local remaining
                 for id in pairs(owned) do

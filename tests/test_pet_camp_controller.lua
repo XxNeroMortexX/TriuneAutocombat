@@ -9,7 +9,7 @@ local function fixture()
             { id = 278, name = 'Varndrim', cls = 'Mag', scope = 'mag' },
             { id = 279, name = 'Poisonsilk', cls = 'Bst', scope = 'bst' } },
         c = { running = true, mode = 'Puller', submode = 'Camp', pull_style = 'Pet', pet_camp_enabled = true,
-            pet_camp_pull_back = true, pet_camp_batch_size = 20, pet_camp_assist_radius = 30, pet_camp_puller_class = 'Auto' } }
+            pet_camp_pull_back = true, pet_camp_batch_size = 20, pet_camp_assist_radius = 30, pet_camp_puller_class = 'Auto', pet_camp_recall_delay = 0 } }
     local ctrl
     local api = {
         config = function() return f.c end, now = function() return f.now end,
@@ -240,3 +240,21 @@ have, engage = c:combatTick(); assert(not have and not engage and #f.commands ==
 f.mobs[100].petThreatNear = true
 have, engage = c:combatTick(); assert(have and not engage and f.commands[#f.commands] == 'attack all')
 print('PASS: far incoming pull waits; pets can defend a threatened pet at camp')
+
+-- Saved five-second default, measured from pet arrival rather than command/dispatch time.
+local settings = {}; module.defaults(settings); assert(settings.pet_camp_recall_delay == 5)
+f, c = fixture(); f.c.pet_camp_recall_delay = 5; f.c.pet_camp_batch_size = 1; f.petHome = false
+c:petTell('Morer', "'Taunting attackers as ordered, Master.'")
+f.mobs[100] = { dist = 35 }; c:combatTick(); f.xt = { 100 }; f.now = 1; c:combatTick()
+assert(c.phase == 'RETURN' and c.held.all == true)
+f.now = 10; c:combatTick(); assert(not c.returnHomeAt)
+f.petHome = true; f.now = 11; c:combatTick(); assert(c.returnHomeAt == 11 and c.phase == 'RETURN')
+f.now = 15.9; c:combatTick(); assert(c.phase == 'RETURN')
+f.now = 16; have, engage = c:combatTick(); assert(c.phase == 'FIGHT' and have and not engage)
+-- Configured early assist/direct defense bypasses grace; being hit far away during gathering still does not.
+for _, direct in ipairs({ false, true }) do
+ f, c = fixture(); f.c.pet_camp_recall_delay = 5; c.phase = 'RETURN'; c.puller = { id = 280, scope = 'nec' }
+ f.mobs[100] = { dist = direct and 100 or 20, direct = direct }; f.xt = { 100 }
+ have, engage = c:combatTick(); assert(c.phase == 'FIGHT' and have and engage)
+end
+print('PASS: five-second arrival grace, exact expiry, zero-delay compatibility and early assist/self-defense')

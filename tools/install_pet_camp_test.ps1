@@ -21,7 +21,7 @@ $Backup = Join-Path $BackupRoot "pet-camp-test-$Stamp-$([guid]::NewGuid().ToStri
 New-Item -ItemType Directory -Path $Backup -Force | Out-Null
 $Archive = Join-Path $Backup 'test-source.zip'
 $Candidate = Join-Path $Backup 'candidate'
-$Files = @('TAC/lua/TAC_support_modules/pet_camp_controller.lua', 'TAC/lua/triune.lua')
+$Files = @('TAC/lua/TAC_support_modules/pet_camp_controller.lua', 'TAC/lua/triune.lua', 'TAC/lua/tac/auto_aa.lua')
 # Preserve canonical blob bytes even when the Windows checkout uses core.autocrlf=true.
 git -c core.autocrlf=false -c core.eol=lf -C $Dev archive --format=zip "--output=$Archive" $Revision -- @Files
 if ($LASTEXITCODE -ne 0) { throw 'Could not extract the exact test files; live files were not changed.' }

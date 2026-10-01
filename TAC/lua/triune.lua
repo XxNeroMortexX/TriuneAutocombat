@@ -11800,6 +11800,10 @@ function UI.drawControlTab()
                 ctrl.pet_camp_pull_back = ImGui.Checkbox('Pet Pull Back to Camp##petCampPullBack', ctrl.pet_camp_pull_back == true)
                 if ImGui.IsItemHovered() then ImGui.SetTooltip('One pet with confirmed Taunt ON tags mobs, then returns. If all living pets have confirmed Taunt OFF, use all pets. A mob arriving at camp ends gathering immediately, even before the chosen count.') end
                 if ctrl.pet_camp_pull_back then
+                    -- Edited By: NeroMorte - Recall delay is editable beside the pull-back controls and saved with ctrl.
+                    ImGui.SetNextItemWidth(UI.px(180))
+                    ctrl.pet_camp_recall_delay = math.max(0, ImGui.InputInt('Pet Recall Delay (seconds)##petCampRecallDelay', ctrl.pet_camp_recall_delay or 5))
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Wait after the pulling pet reaches camp before releasing pets. Default 5 seconds; 0 disables the delay. A mob entering Player Assist Radius or directly threatening you ends the wait early.') end
                     ImGui.SetNextItemWidth(UI.px(180))
                     ctrl.pet_camp_batch_size = ImGui.SliderInt('Mobs per Pull##petCampBatch', ctrl.pet_camp_batch_size or 1, 1, 100)
                     ctrl.pet_camp_batch_size = math.max(1, math.min(100, ctrl.pet_camp_batch_size))
@@ -14537,6 +14541,13 @@ function UI.drawSettingsTab()
                 .. 'state every few seconds) to help track down a stuck/frozen\n'
                 .. 'report. Off by default -- noisy for normal use.')
         end
+        -- Edited By: NeroMorte - Suppress routine Auto AA chatter without hiding errors or requested status.
+        local quietAA = ImGui.Checkbox('Suppress Auto AA purchase/skip messages', ctrl.auto_aa_suppress_messages == true)
+        if quietAA ~= (ctrl.auto_aa_suppress_messages == true) then
+            ctrl.auto_aa_suppress_messages = quietAA
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('Hide routine AA purchase, priority-skip, waiting and cap-spender messages. Errors and /ac aastatus output remain visible. Unchecked by default.') end
         local logVal = ImGui.Checkbox('Log To File', ctrl.log_to_file or false)
         if logVal ~= (ctrl.log_to_file or false) then
             ctrl.log_to_file = logVal
