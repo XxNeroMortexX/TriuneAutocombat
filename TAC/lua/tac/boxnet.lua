@@ -189,6 +189,24 @@ local function myZone()
     return tlo(function() return mq.TLO.Zone.ShortName() end, '')
 end
 
+local function myDzInstanceKey()
+    local dzName = tlo(function() return mq.TLO.DynamicZone.Name() end, '')
+    if type(dzName) ~= 'string' or dzName == '' then return '' end
+    local leader = lower(tlo(function() return mq.TLO.DynamicZone.Leader.Name() end, ''))
+    if leader == '' then
+        local members = {}
+        local count = tonumber(tlo(function() return mq.TLO.DynamicZone.Members() end, 0)) or 0
+        for index = 1, count do
+            local name = tlo(function() return mq.TLO.DynamicZone.Member(index).Name() end, '')
+            if type(name) == 'string' and name ~= '' then members[#members + 1] = lower(name) end
+        end
+        table.sort(members)
+        leader = table.concat(members, ',')
+    end
+    if leader == '' then return '' end
+    return table.concat({ 'dz', lower(dzName), leader }, ':')
+end
+
 -- ----------------------------------------------------------------------------
 -- Payload hygiene: only nil/string/number/boolean/table survive serialization.
 -- Strip anything else so a stray TLO object never reaches actors.
@@ -415,6 +433,8 @@ local function validateHeartbeat(hb)
     if type(hb) ~= 'table' then return nil end
     if type(hb.name) ~= 'string' then hb.name = nil end
     if type(hb.zone) ~= 'string' then hb.zone = tostring(hb.zone or '') end
+    if type(hb.dzInstanceKey) ~= 'string' or #hb.dzInstanceKey > 256 then hb.dzInstanceKey = '' end
+    if type(hb.inDynamicZone) ~= 'boolean' then hb.inDynamicZone = false end
     local t = hb.target
     if type(t) ~= 'table' or type(t.id) ~= 'number' then
         hb.target = nil
@@ -567,8 +587,13 @@ end
 local function sampleFingerprint()
     local tid = sampleTarget()
     local combat = tlo(function() return mq.TLO.Me.Combat() or (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT') end, false) == true
+    local zone = myZone()
+    local me = myName()
+    local inDynamicZone = lower(tlo(function() return mq.TLO.DynamicZone.Member(me).Status() end, '')) == 'in dynamic zone'
     local s = {
-        zone     = myZone(),
+        zone     = zone,
+        dzInstanceKey = myDzInstanceKey(),
+        inDynamicZone = inDynamicZone,
         mode     = ctrl and ctrl.mode or '',
         submode  = ctrl and ctrl.submode or '',
         running  = (ctrl and ctrl.running == true) or false,
@@ -601,6 +626,8 @@ local function snapshot(sample)
         name    = myName(),
         level   = tlo(function() return mq.TLO.Me.Level() end, 0),
         zone    = sample.zone,
+        dzInstanceKey = sample.dzInstanceKey or '',
+        inDynamicZone = sample.inDynamicZone == true,
         zoneId  = tlo(function() return mq.TLO.Zone.ID() end, 0),
         classes = {},
         mode    = sample.mode,
@@ -655,7 +682,7 @@ local function fingerprint(s)
     local engaged = 'nil'
     if tid > 0 then engaged = tostring(s.engaged == true) end
     return table.concat({
-        s.zone or '', s.mode or '', s.submode or '', tostring(s.running), tostring(s.burn),
+        s.zone or '', s.dzInstanceKey or '', tostring(s.inDynamicZone), s.mode or '', s.submode or '', tostring(s.running), tostring(s.burn),
         s.ma or '', tostring(tid), engaged,
         tostring(s.combat), tostring(s.sitting),
         tostring((c.poison or 0) > 0), tostring((c.disease or 0) > 0), tostring((c.curse or 0) > 0), tostring((c.corruption or 0) > 0),
