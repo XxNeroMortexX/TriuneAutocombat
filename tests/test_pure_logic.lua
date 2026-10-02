@@ -2924,7 +2924,8 @@ end
 -- 36. copyWaypointList (per-zone waypoint routes/presets)
 -- ============================================================================
 print('--- copyWaypointList ---')
-local copyWaypointList = loadFunc(src, 'copyWaypointList', {})
+local copyWaypointList = loadFunc(src, 'copyWaypointList',
+    { wpNormalize = loadFunc(src, 'wpNormalize', { ctrl = {} }) })
 
 do
     local original = { { name = 'A', x = 1, y = 2, z = 3 }, { name = 'B', x = 4, y = 5, z = 6 } }
@@ -14988,7 +14989,7 @@ end)()
         pullState = 'IDLE', pullTargetId = 0, medBreakActive = false, pullHpRest = false, wasRunning = false,
         saveLoadout = function() S.saves = S.saves + 1 end,
         fullStop = function() S.fullStops = (S.fullStops or 0) + 1 end,
-        setNearestWaypoint = function() end, isCombat = function() return false end,
+        setNearestWaypoint = function() end, wpAcquired = function() end, isCombat = function() return false end,
         getMaTargetInfo = function() return S.maInfo end,
         pluginManager = { drawHeaderButtons = function(n) S.hdrBtnArg = n return S.hdrBtnCount or 3 end },
         initPluginManager = function() end,

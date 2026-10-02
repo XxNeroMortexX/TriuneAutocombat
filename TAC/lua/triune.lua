@@ -517,6 +517,10 @@ local function defaultCtrl()
         mini_show_camp           = true,
         mini_show_tracker        = true,
         mini_show_buttons        = true,
+        waypoint_anchors         = false,
+        waypoint_default_radius  = 100,
+        waypoint_default_wait    = 5,
+        waypoint_default_roam    = false,
         use_waypoints            = false,
         waypoint_radius          = 20,
         waypoint_scan_radius     = 100,
@@ -5214,6 +5218,7 @@ function runtime.applyEntry(e)
         -- are in, if any. The radius setting is kept either way.
         ctrl.hunter_combat_loc = nil
         runtime.loadZoneAnchor()
+        for _, wp in ipairs(ctrl.waypoints or {}) do runtime.wpNormalize(wp) end
     end
 end
 
@@ -5301,10 +5306,29 @@ end
 -- Waypoints are plain {name,x,y,z} tables with no nesting -- a per-entry
 -- shallow copy is enough to keep a saved zone/preset snapshot from aliasing
 -- the live ctrl.waypoints list (so editing one doesn't silently edit the other).
+-- Materialize defaults once; later default edits never change existing nodes.
+function runtime.wpNormalize(wp)
+    local function number(v, fallback, zero)
+        v = tonumber(v)
+        if not v or v ~= v or v == math.huge or v == -math.huge or v < 0 or (not zero and v == 0) then
+            return fallback
+        end
+        return v
+    end
+    wp.kind = wp.kind == 'Travel' and 'Travel' or 'Hunt'
+    wp.combat_radius = number(wp.combat_radius, number(ctrl.waypoint_default_radius, 100), false)
+    wp.wait_seconds = number(wp.wait_seconds, number(ctrl.waypoint_default_wait, 5, true), true)
+    if wp.roam == nil then wp.roam = ctrl.waypoint_default_roam == true end
+    wp.roam = wp.roam == true
+    return wp
+end
+
 local function copyWaypointList(list)
     local out = {}
     for i, wp in ipairs(list or {}) do
-        out[i] = { name = wp.name, x = wp.x, y = wp.y, z = wp.z }
+        runtime.wpNormalize(wp)
+        out[i] = { name = wp.name, x = wp.x, y = wp.y, z = wp.z,
+            kind = wp.kind, combat_radius = wp.combat_radius, wait_seconds = wp.wait_seconds, roam = wp.roam }
     end
     return out
 end
@@ -5312,7 +5336,7 @@ end
 -- ============================================================================
 -- Waypoint preset export/import string helpers
 -- ============================================================================
--- Exported strings look like "TACWP1:<base64>". The number after TACWP is a
+-- Exported strings look like "TACWP2:<base64>". The number after TACWP is a
 -- schema version (independent of the addon's own version -- it only bumps if
 -- this payload layout changes), so an import from a newer Triune can be
 -- rejected with a clear message instead of being misread.
@@ -5328,8 +5352,8 @@ end
 -- control characters before a field is written out, guaranteeing they can
 -- never collide with our own delimiters.
 local WP = {
-    VERSION    = 1,
-    PREFIX     = 'TACWP1:',
+    VERSION    = 2,
+    PREFIX     = 'TACWP2:',
     RS         = string.char(30),
     US         = string.char(31),
     B64_CHARS  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
@@ -5450,6 +5474,7 @@ function runtime.syncCurrentZoneWaypoints()
         waypoint_radius      = ctrl.waypoint_radius,
         waypoint_scan_radius = ctrl.waypoint_scan_radius,
         waypoint_loop        = ctrl.waypoint_loop,
+        waypoint_anchors     = ctrl.waypoint_anchors == true,
     }
 end
 
@@ -5684,6 +5709,8 @@ function runtime.wpAdd(name)
     local wpName = (name and name ~= '') and name or string.format('WP %d', wpNum)
     table.insert(ctrl.waypoints,
         { name = wpName, x = math.floor(x * 10) / 10, y = math.floor(y * 10) / 10, z = math.floor(z * 10) / 10 })
+    runtime.wpNormalize(ctrl.waypoints[#ctrl.waypoints])
+    runtime.wpReset(true)
     ctrl.use_waypoints = true
     runtime.saveLoadout(true)
     runtime.syncWaypointMapLines()
@@ -5691,6 +5718,7 @@ function runtime.wpAdd(name)
 end
 
 function runtime.wpClear()
+    runtime.wpReset(true)
     ctrl.waypoints = {}
     ctrl.current_waypoint_idx = 1
     ctrl.waypoint_direction = 1
@@ -5699,6 +5727,7 @@ function runtime.wpClear()
 end
 
 function runtime.wpDelete(idx)
+    runtime.wpReset(true)
     if not ctrl.waypoints or not ctrl.waypoints[idx] then return false end
     table.remove(ctrl.waypoints, idx)
     if not ctrl.current_waypoint_idx or ctrl.current_waypoint_idx > #ctrl.waypoints then
@@ -5711,6 +5740,7 @@ function runtime.wpDelete(idx)
 end
 
 function runtime.wpMoveUp(idx)
+    runtime.wpReset(true)
     if not ctrl.waypoints or idx <= 1 or idx > #ctrl.waypoints then return false end
     local tmp = ctrl.waypoints[idx]
     ctrl.waypoints[idx] = ctrl.waypoints[idx - 1]
@@ -5726,6 +5756,7 @@ function runtime.wpMoveUp(idx)
 end
 
 function runtime.wpMoveDown(idx)
+    runtime.wpReset(true)
     if not ctrl.waypoints or idx < 1 or idx >= #ctrl.waypoints then return false end
     local tmp = ctrl.waypoints[idx]
     ctrl.waypoints[idx] = ctrl.waypoints[idx + 1]
@@ -5767,6 +5798,8 @@ function runtime.loadZoneWaypoints(zs)
     ctrl.waypoint_radius      = saved.waypoint_radius or ctrl.waypoint_radius
     ctrl.waypoint_scan_radius = saved.waypoint_scan_radius or ctrl.waypoint_scan_radius
     ctrl.waypoint_loop        = saved.waypoint_loop or false
+    ctrl.waypoint_anchors     = saved.waypoint_anchors == true
+    runtime.wpReset(true)
     ctrl.current_waypoint_idx = 1
     ctrl.waypoint_direction   = 1
     runtime.wpSelectedPreset  = nil
@@ -5808,6 +5841,7 @@ function runtime.wpPresetSave(name)
         waypoint_radius      = ctrl.waypoint_radius,
         waypoint_scan_radius = ctrl.waypoint_scan_radius,
         waypoint_loop        = ctrl.waypoint_loop,
+        waypoint_anchors     = ctrl.waypoint_anchors == true,
     })
     return true, nil, name
 end
@@ -5821,6 +5855,8 @@ function runtime.wpPresetLoad(name)
             ctrl.waypoint_radius      = p.waypoint_radius or ctrl.waypoint_radius
             ctrl.waypoint_scan_radius = p.waypoint_scan_radius or ctrl.waypoint_scan_radius
             ctrl.waypoint_loop        = p.waypoint_loop or false
+            ctrl.waypoint_anchors     = p.waypoint_anchors == true
+            runtime.wpReset(true)
             ctrl.current_waypoint_idx = 1
             ctrl.waypoint_direction   = 1
             runtime.syncWaypointMapLines(zs, true)
@@ -5864,7 +5900,7 @@ function runtime.wpPresetRename(oldName, newName)
     return false
 end
 
--- Exports a named preset as a shareable "TACWP1:..." string. Only named
+-- Exports a named preset as a shareable "TACWP2:..." string. Only named
 -- presets can be exported (not the auto-tracked "Current" state) so every
 -- export always carries a name for the recipient to import under.
 function runtime.wpPresetExport(name)
@@ -5887,14 +5923,17 @@ function runtime.wpPresetExport(name)
         string.format('%.2f', snap.waypoint_radius or 0),
         string.format('%.2f', snap.waypoint_scan_radius or 0),
         snap.waypoint_loop and '1' or '0',
+        snap.waypoint_anchors and '1' or '0',
     }
     local payload = { table.concat(fields, WP.RS) }
     for _, wp in ipairs(snap.waypoints) do
+        runtime.wpNormalize(wp)
         payload[#payload + 1] = table.concat({
             sanitizeWpField(wp.name or ''),
             string.format('%.2f', wp.x or 0),
             string.format('%.2f', wp.y or 0),
             string.format('%.2f', wp.z or 0),
+            wp.kind, tostring(wp.combat_radius), tostring(wp.wait_seconds), wp.roam and '1' or '0',
         }, WP.US)
     end
     return WP.PREFIX .. base64Encode(table.concat(payload, WP.RS))
@@ -5910,7 +5949,7 @@ function runtime.wpPresetParseImport(str)
     local versionStr, body = str:match('^TACWP(%d+):(.+)$')
     if not versionStr then return nil, 'Not a recognized Triune waypoint string.' end
     local version = tonumber(versionStr)
-    if version ~= WP.VERSION then
+    if version ~= 1 and version ~= WP.VERSION then
         return nil, string.format(
             'This string uses waypoint format v%s, but this version of Triune only supports v%d. Update Triune and try again.',
             versionStr, WP.VERSION)
@@ -5932,14 +5971,28 @@ function runtime.wpPresetParseImport(str)
         return nil, 'That string is missing data -- it looks corrupted or incomplete.'
     end
 
+    local function finite(v) return v and v == v and v ~= math.huge and v ~= -math.huge end
+    if not finite(radius) or radius <= 0 or not finite(scanRadius) or scanRadius <= 0
+        or (parts[6] ~= '0' and parts[6] ~= '1') then return nil, 'Invalid patrol radii or loop flag.' end
+    if version == 2 and parts[7] ~= '0' and parts[7] ~= '1' then return nil, 'Invalid anchor patrol flag.' end
     local waypoints = {}
-    for i = 7, #parts do
+    for i = (version == 2 and 8 or 7), #parts do
         local wpFields = splitByChar(parts[i], WP.US)
         local wx, wy, wz = tonumber(wpFields[2]), tonumber(wpFields[3]), tonumber(wpFields[4])
-        if not (wx and wy and wz) then
+        if not (finite(wx) and finite(wy) and finite(wz)) then
             return nil, 'That string is missing data -- it looks corrupted or incomplete.'
         end
-        waypoints[#waypoints + 1] = { name = wpFields[1] or '', x = wx, y = wy, z = wz }
+        local wp = { name = wpFields[1] or '', x = wx, y = wy, z = wz }
+        if version == 2 then
+            local cr, wait = tonumber(wpFields[6]), tonumber(wpFields[7])
+            if #wpFields ~= 8 or (wpFields[5] ~= 'Travel' and wpFields[5] ~= 'Hunt')
+                or not finite(cr) or cr <= 0 or not finite(wait) or wait < 0
+                or (wpFields[8] ~= '0' and wpFields[8] ~= '1') then
+                return nil, 'Invalid waypoint type, combat radius, wait time, or roaming flag.'
+            end
+            wp.kind, wp.combat_radius, wp.wait_seconds, wp.roam = wpFields[5], cr, wait, wpFields[8] == '1'
+        end
+        waypoints[#waypoints + 1] = runtime.wpNormalize(wp)
     end
     if #waypoints == 0 then return nil, 'That string has no waypoints in it.' end
 
@@ -5956,6 +6009,7 @@ function runtime.wpPresetParseImport(str)
         waypoint_radius      = radius,
         waypoint_scan_radius = scanRadius,
         waypoint_loop        = parts[6] == '1',
+        waypoint_anchors     = version == 2 and parts[7] == '1',
         waypoints            = waypoints,
         zoneMismatch         = (currentZs ~= '' and currentZs ~= zoneShort),
         currentZoneDisplay   = runtime.getZoneDisplayName(currentZs),
@@ -5975,6 +6029,7 @@ function runtime.wpPresetCommitImport(pending)
         waypoint_radius      = pending.waypoint_radius,
         waypoint_scan_radius = pending.waypoint_scan_radius,
         waypoint_loop        = pending.waypoint_loop,
+        waypoint_anchors     = pending.waypoint_anchors == true,
     })
     return true
 end
@@ -6251,6 +6306,7 @@ function runtime.onCharacterChanged()
         local liveClasses = detectClasses(false)
         if liveClasses then myClasses = liveClasses end
     end
+    runtime.wpReset(false)
     ctrl.running = false -- never auto-start on load
 end
 
@@ -10134,10 +10190,113 @@ end
 -- not run fullStop() a second time, and leaves the pet hold to fullStop
 -- (the separate hold-off that used to be issued here was overwritten by
 -- fullStop's hold a frame later).
+function UI.drawAnchorPatrolSettings()
+    local on, changed = ImGui.Checkbox('Use Combat Anchors at Waypoints##wpAnchors', ctrl.waypoint_anchors == true)
+    if changed then
+        ctrl.waypoint_anchors = on
+        runtime.wpReset(true)
+        runtime.saveLoadout(true)
+    end
+    if not on then return end
+    ImGui.TextDisabled('New Hunt node defaults (existing nodes keep their settings):')
+    local radius, rc = ImGui.InputFloat('Default Combat Radius##wpDefaultRadius', ctrl.waypoint_default_radius or 100)
+    local wait, wc = ImGui.InputFloat('Default No-Target Wait (seconds)##wpDefaultWait', ctrl.waypoint_default_wait or 5)
+    local roam, oc = ImGui.Checkbox('Default Roam Inside the Circle##wpDefaultRoam', ctrl.waypoint_default_roam == true)
+    if rc and radius > 0 and radius < math.huge then ctrl.waypoint_default_radius = radius end
+    if wc and wait >= 0 and wait < math.huge then ctrl.waypoint_default_wait = wait end
+    if oc then ctrl.waypoint_default_roam = roam end
+    if rc or wc or oc then runtime.saveLoadout(true) end
+    ImGui.TextDisabled('Travel: navigation and self-defense. Hunt: combat inside a fixed circle.')
+end
+
+function UI.drawWaypointAnchorEditor(idx, wp)
+    runtime.wpNormalize(wp)
+    if ImGui.Button('Waypoint Settings##wpEdit_' .. idx) then ImGui.OpenPopup('wpNode_' .. idx) end
+    if not ImGui.BeginPopup('wpNode_' .. idx) then return end
+    ImGui.Text('%s - Node Settings', wp.name or ('WP ' .. idx))
+    ImGui.Separator()
+    ImGui.Spacing()
+
+    -- Size the two mode buttons and field columns from the current font/scale.
+    local radiusLabelWidth = ImGui.CalcTextSize('Combat Radius')
+    local waitLabelWidth = ImGui.CalcTextSize('No-Target Wait')
+    local labelWidth = math.max(radiusLabelWidth, waitLabelWidth) + UI.px(24)
+    local inputWidth, gap = UI.px(200), UI.px(8)
+    local contentWidth = labelWidth + inputWidth + gap + ImGui.CalcTextSize('seconds')
+    local modeWidth = (contentWidth - gap) / 2
+    local inputX = ImGui.GetCursorPosX() + labelWidth
+    local changed, approach = false, false
+    ImGui.BeginDisabled(ctrl.running)
+    -- Regular buttons keep the popup open when switching between Travel/Hunt.
+    for _, kind in ipairs({ 'Travel', 'Hunt' }) do
+        local selected = wp.kind == kind
+        if selected then
+            ImGui.PushStyleColor(ImGuiCol.Button, 0.08, 0.32, 0.72, 1.0)
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.12, 0.42, 0.88, 1.0)
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, 0.06, 0.25, 0.60, 1.0)
+        end
+        if ImGui.Button(kind .. '##wp' .. kind .. '_' .. idx, modeWidth, UI.px(34)) then
+            wp.kind, changed, approach = kind, true, true
+        end
+        if selected then ImGui.PopStyleColor(3) end
+        if kind == 'Travel' then ImGui.SameLine(0, gap) end
+    end
+    ImGui.EndDisabled()
+    if ctrl.running then ImGui.TextDisabled('Pause patrol to change node type.') end
+    ImGui.Spacing()
+    if wp.kind == 'Hunt' then
+        ImGui.AlignTextToFramePadding()
+        ImGui.Text('Combat Radius')
+        ImGui.SameLine(inputX)
+        ImGui.SetNextItemWidth(inputWidth)
+        local radius, rc = ImGui.InputFloat('##wpRadius_' .. idx, wp.combat_radius, 1, 10, '%.3f')
+
+        ImGui.AlignTextToFramePadding()
+        ImGui.Text('No-Target Wait')
+        ImGui.SameLine(inputX)
+        ImGui.SetNextItemWidth(inputWidth)
+        local wait, wc = ImGui.InputFloat('##wpWait_' .. idx, wp.wait_seconds, 1, 10, '%.3f')
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('%s',
+            'Advance after no eligible targets are found for this long. Zero searches once without waiting.\n'
+            .. 'Search Radius still limits discovery; this does not guarantee the whole circle is clear.') end
+        ImGui.SameLine(0, gap)
+        ImGui.AlignTextToFramePadding()
+        ImGui.TextDisabled('seconds')
+        ImGui.Spacing()
+        ImGui.Separator()
+        ImGui.Spacing()
+        local roam, oc = ImGui.Checkbox('Roam inside the circle while idle##wpRoam_' .. idx, wp.roam)
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('%s',
+            'Reuse anchor roaming while searching. Roaming does not reset the no-target timer.') end
+        if rc and radius > 0 and radius < math.huge then wp.combat_radius, changed = radius, true end
+        if wc and wait >= 0 and wait < math.huge then wp.wait_seconds, changed = wait, true end
+        if oc then wp.roam, changed = roam, true end
+    else
+        ImGui.TextDisabled('Navigate, defend, then advance on arrival. Hunt settings are retained.')
+    end
+    if changed then
+        local st = runtime.wpPatrol
+        if approach then
+            runtime.wpReset(true)
+        elseif st and st.node == wp then
+            runtime.wpAcquired()
+            runtime.anchorReturning, runtime.anchorRoamNextAt = false, nil
+            pursuit.wanderLoc, runtime.roamScanEmpty = nil, nil
+            runtime.wpNeedsStop = true
+        end
+        runtime.saveLoadout(true)
+    end
+    ImGui.EndPopup()
+end
+
 function UI.startEngine()
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
-        runtime.setNearestWaypoint()
+        if not runtime.wpAnchorActive() or (not runtime.wpPatrol and not runtime.wpKeepDestination) then
+            runtime.setNearestWaypoint()
+        end
     end
+    runtime.wpAcquired()
+    if runtime.wpPatrol then runtime.wpPatrol.lastTick = nil end
     ctrl.running = true
     runtime.wasRunning = true
     if not navLoaded() and ctrl.mode ~= 'Manual' then
@@ -10155,6 +10314,7 @@ function UI.startEngine()
 end
 
 function UI.pauseEngine()
+    runtime.wpAcquired()
     ctrl.running = false
     runtime.wasRunning = false
     if runtime.fullStop then runtime.fullStop() end
@@ -11758,13 +11918,16 @@ function UI.drawControlTab()
             ImGui.Dummy(0, UI.px(2))
 
             accent(GOLD, 'Combat Radius Anchor (optional)')
+            local anchorPatrol = runtime.wpAnchorActive()
+            if anchorPatrol then ImGui.TextDisabled('Combat Anchor Patrol is active. The single combat anchor is not used.') end
+            ImGui.BeginDisabled(anchorPatrol)
             if ctrl.hunter_combat_loc then
                 local mx, my = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
                 local dx, dy = mx - ctrl.hunter_combat_loc.x, my - ctrl.hunter_combat_loc.y
                 ImGui.Text(string.format('Anchor: %.1f, %.1f, %.1f -- you are %.0f units from it (saved for %s)',
                     ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y, ctrl.hunter_combat_loc.z,
                     math.sqrt(dx * dx + dy * dy), runtime.getZoneDisplayName(runtime.getCurrentZoneShortName())))
-                if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
+                if not anchorPatrol and ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
                     accent(WARN, 'Waypoint Patrol is on -- the route sets the ground, the anchor is ignored.')
                 end
             else
@@ -11826,6 +11989,7 @@ function UI.drawControlTab()
                     .. 'so the hunt sweeps the whole circle instead of waiting at one spot for spawns to come by.\n'
                     .. 'Unchecked: wait where you stand (still walks back in if outside).')
             end
+            ImGui.EndDisabled()
         elseif ctrl.submode == 'Camp' then
             accent(GOLD, 'Puller Camp Location')
             if ctrl.camp_loc then
@@ -11889,6 +12053,19 @@ function UI.drawControlTab()
 
         -- Puller Waypoint Patrol Section
         accent(GOLD, 'Puller Waypoint Patrol')
+        if runtime.wpAnchorActive() then
+            local st = runtime.wpPatrol
+            local wp = runtime.wpNode()
+            if wp then
+                ImGui.Text(string.format('WP %d/%d | %s | %s | %s', ctrl.current_waypoint_idx or 1,
+                    #ctrl.waypoints, wp.kind, (ctrl.waypoint_direction or 1) == -1 and 'Reverse' or 'Forward',
+                    st and st.phase or 'approach'))
+                if st and st.phase == 'hunt' then
+                    ImGui.Text(string.format('No targets: %.1f / %.1f seconds%s', st.elapsed, wp.wait_seconds,
+                        st.eligible and '' or ' (suspended)'))
+                end
+            end
+        end
         local useWp = ImGui.Checkbox('Enable Waypoint Patrol##useWaypoints', ctrl.use_waypoints == true)
         if useWp ~= ctrl.use_waypoints then
             ctrl.use_waypoints = useWp
@@ -11902,8 +12079,10 @@ function UI.drawControlTab()
                 'When checked, Puller systematically travels through configured 3D waypoints in a loop to search for mobs instead of remaining stationary.')
         end
 
+        if ctrl.submode == 'Hunt' then UI.drawAnchorPatrolSettings() end
+
         if ctrl.use_waypoints then
-            ImGui.SameLine()
+            if ctrl.submode ~= 'Hunt' then ImGui.SameLine() end
             ImGui.SetNextItemWidth(UI.px(120))
             local newRad, changedRad = ImGui.SliderInt('Arrival Radius##wpRadius', ctrl.waypoint_radius or 20, 5, 100)
             if changedRad then
@@ -12138,13 +12317,14 @@ function UI.drawControlTab()
             if #wps > 0 then
                 local wpTableFlags = bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg,
                     ImGuiTableFlags.SizingFixedFit)
-                if ImGui.BeginTable('WaypointTable', 6, wpTableFlags) then
+                if ImGui.BeginTable('WaypointTable', ctrl.waypoint_anchors and 7 or 6, wpTableFlags) then
                     ImGui.TableSetupColumn('#', ImGuiTableColumnFlags.WidthFixed, UI.px(25))
                     ImGui.TableSetupColumn('Name', ImGuiTableColumnFlags.WidthFixed, UI.px(100))
                     ImGui.TableSetupColumn('Coordinates (Y, X, Z)', ImGuiTableColumnFlags.WidthFixed, UI.px(150))
                     ImGui.TableSetupColumn('Distance', ImGuiTableColumnFlags.WidthFixed, UI.px(60))
                     ImGui.TableSetupColumn('Active', ImGuiTableColumnFlags.WidthFixed, UI.px(50))
                     ImGui.TableSetupColumn('Actions', ImGuiTableColumnFlags.WidthFixed, UI.px(130))
+                    if ctrl.waypoint_anchors then ImGui.TableSetupColumn('Node Settings') end
                     ImGui.TableHeadersRow()
 
                     for idx, wp in ipairs(wps) do
@@ -12176,6 +12356,7 @@ function UI.drawControlTab()
 
                         ImGui.TableNextColumn()
                         if ImGui.Button(string.format('Set##wpSet_%d', idx)) then
+                            runtime.wpReset(true)
                             ctrl.current_waypoint_idx = idx
                             if ctrl.waypoint_loop then
                                 ctrl.waypoint_direction = 1
@@ -12205,6 +12386,10 @@ function UI.drawControlTab()
                             runtime.wpDelete(idx)
                         end
                         if ImGui.IsItemHovered() then ImGui.SetTooltip('Delete this waypoint') end
+                        if ctrl.waypoint_anchors then
+                            ImGui.TableNextColumn()
+                            UI.drawWaypointAnchorEditor(idx, wp)
+                        end
                     end
                     ImGui.EndTable()
                 end
@@ -15932,6 +16117,10 @@ end
 -- place we would only sit through the approach watchdog and blacklist a mob
 -- that is on its way.
 local function huntNPCXtarget(maxZ, maxDist)
+    if runtime.wpAnchorActive and runtime.wpAnchorActive() then
+        return runtime.findFirstNPCXtarget(false, isIgnored,
+            function(id) return isUnreachable(id) or not runtime.wpAutoTargetAllowed(id) end, maxDist, maxZ, buffActive)
+    end
     if not runtime.huntAnchor() then return firstNPCXtarget(false, maxZ, maxDist) end
     return runtime.findFirstNPCXtarget(false, isIgnored,
         function(id) return isUnreachable(id) or runtime.anchorRejects(id) end, maxDist, maxZ, buffActive)
@@ -20102,6 +20291,145 @@ function runtime.moveTowardLoc(x, y, z, dist)
     return false
 end
 
+-- Opt-in patrol policy. The legacy wpTick path below is unchanged.
+function runtime.wpAnchorActive()
+    return ctrl.waypoint_anchors == true and ctrl.use_waypoints == true
+        and ctrl.mode == 'Puller' and ctrl.submode == 'Hunt'
+        and ctrl.waypoints and #ctrl.waypoints > 0
+end
+
+function runtime.wpNode()
+    if not runtime.wpAnchorActive() then return nil end
+    local idx = tonumber(ctrl.current_waypoint_idx) or 1
+    if idx < 1 or idx > #ctrl.waypoints or idx ~= math.floor(idx) then idx = 1 end
+    ctrl.current_waypoint_idx = idx
+    local wp = ctrl.waypoints[ctrl.current_waypoint_idx or 1]
+    if wp then return runtime.wpNormalize(wp) end
+end
+
+-- Does not issue MQ commands: safe for UI edits and load callbacks.
+function runtime.wpReset(keepDestination)
+    local ownedMovement = runtime.wpPatrol ~= nil or runtime.wpAnchorActive()
+    runtime.wpPatrol = nil
+    runtime.wpKeepDestination = keepDestination == true
+    if not ownedMovement then return end
+    runtime.roamScanEmpty = nil
+    runtime.anchorReturning = false
+    runtime.anchorRoamNextAt = nil
+    pursuit.wanderLoc = nil
+    runtime.wpNeedsStop = true
+end
+
+function runtime.wpState()
+    local wp = runtime.wpNode()
+    if not wp then return nil end
+    local st = runtime.wpPatrol
+    if not st or st.node ~= wp then
+        runtime.wpReset(true)
+        st = { node = wp, phase = 'approach', elapsed = 0, empty = false }
+        runtime.wpPatrol = st
+    end
+    return st
+end
+
+-- Called before combatTick's early returns. Only consecutive eligible idle
+-- passes contribute time; casting, recovery, holds and return suspend it.
+function runtime.wpBeginTick()
+    if not ctrl.running then return end
+    if not runtime.wpAnchorActive() then
+        if runtime.wpPatrol then runtime.wpReset(false) end
+        if runtime.wpNeedsStop then stopMoving(); runtime.wpNeedsStop = false end
+        return
+    end
+    local st = runtime.wpState()
+    if not st then return end
+    local now = os.clock()
+    st.delta = st.eligible and st.lastTick and math.max(0, now - st.lastTick) or 0
+    st.lastTick, st.eligible = now, false
+    if runtime.wpNeedsStop then
+        stopMoving()
+        runtime.wpNeedsStop = false
+    end
+    local fighting = false
+    pcall(function() fighting = mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() end)
+    if fighting then st.elapsed, st.empty, st.delta = 0, false, 0 end
+end
+
+function runtime.wpAcquired()
+    local st = runtime.wpPatrol
+    if st then st.elapsed, st.empty, st.eligible, st.delta = 0, false, false, 0 end
+end
+
+-- Travel must not join remote group Auto Haters. Use existing personal/pet
+-- threat information; explicit Force Target remains a user override.
+function runtime.wpAutoTargetAllowed(id)
+    local wp = runtime.wpNode()
+    if not wp then return true end
+    if runtime.forcedTargetId() == id then return true end
+    if wp.kind == 'Hunt' then return not runtime.anchorRejects(id) end
+    if runtime.playerHasAggro(id) then return true end
+    local defending = false
+    pcall(function()
+        for i = 1, 13 do
+            local xt = mq.TLO.Me.XTarget(i)
+            if xt() and xt.ID() == id and xtSlotFightingMe(xt) then defending = true; break end
+        end
+    end)
+    return defending
+end
+
+function runtime.wpAdvance()
+    local wps = ctrl.waypoints
+    if #wps <= 1 then
+        local st = runtime.wpState()
+        st.elapsed, st.empty, st.eligible = 0, false, false
+        stopMoving()
+        return
+    end
+    local idx, dir = ctrl.current_waypoint_idx or 1, ctrl.waypoint_direction or 1
+    if ctrl.waypoint_loop then
+        idx, dir = idx % #wps + 1, 1
+    else
+        if dir ~= -1 then dir = 1 end
+        idx = idx + dir
+        if idx > #wps then idx, dir = #wps - 1, -1
+        elseif idx < 1 then idx, dir = 2, 1 end
+    end
+    stopMoving()
+    ctrl.current_waypoint_idx, ctrl.waypoint_direction = idx, dir
+    runtime.wpReset(true)
+end
+
+function runtime.wpAnchorTick(scanComplete)
+    local st = runtime.wpState()
+    if not st then return false end
+    local wp = st.node
+    if st.phase == 'approach' then
+        if not runtime.moveTowardLoc(wp.x, wp.y, wp.z, ctrl.waypoint_radius or 20) then return true end
+        if wp.kind == 'Travel' then
+            if #ctrl.waypoints > 1 then runtime.wpAdvance() else st.phase = 'arrived' end
+            return true
+        end
+        st.phase, st.elapsed, st.empty = 'hunt', 0, false
+        runtime.roamScanEmpty = nil -- next scan happens after arrival
+        return true
+    end
+    if wp.kind == 'Travel' then return true end -- single travel node holds
+    if runtime.anchorReturnTick() then return true end
+    if not st.empty then
+        if scanComplete then st.empty, st.elapsed = true, 0 end
+    else
+        st.elapsed = st.elapsed + (st.delta or 0)
+    end
+    st.eligible = true
+    if st.empty and st.elapsed >= wp.wait_seconds and scanComplete then
+        runtime.wpAdvance()
+        return true
+    end
+    if wp.roam then runtime.anchorRoamTick() end
+    return true
+end
+
 function runtime.wpTick()
     local wps = ctrl.waypoints
     if not wps or #wps == 0 then return false end
@@ -21033,6 +21361,11 @@ end
 -- here so they cannot drift apart.
 function runtime.huntAnchor()
     if not ctrl or ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Hunt' then return nil end
+    local wp = runtime.wpNode and runtime.wpNode()
+    if wp then
+        if wp.kind == 'Travel' then return nil end
+        return wp, wp.combat_radius
+    end
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then return nil end
     local a = ctrl.hunter_combat_loc
     local r = tonumber(ctrl.hunter_combat_radius) or 0
@@ -21097,6 +21430,8 @@ end
 -- is centred on us, covers the circle rather than the ground we were dragged
 -- to. Returns true while the walk is in progress.
 function runtime.anchorReturnTick()
+    local st = runtime.wpAnchorActive and runtime.wpAnchorActive() and runtime.wpState()
+    if st and st.phase ~= 'hunt' then return false end
     local a, r = runtime.huntAnchor()
     if not a then runtime.anchorReturning = false; return false end
     local me = mq.TLO.Me
@@ -21108,7 +21443,12 @@ function runtime.anchorReturnTick()
             '\ay[Triune]\ax Puller (Hunt): %.0f units outside the combat anchor radius (%d) -- returning to the anchor.',
             md - r, r))
     end
-    local arrived = runtime.moveTowardLoc(a.x, a.y, a.z or (me.Z() or 0), math.max(10, r * 0.5))
+    local tolerance = st and (r * 0.5) or math.max(10, r * 0.5)
+    local arrived = runtime.moveTowardLoc(a.x, a.y, a.z or (me.Z() or 0), tolerance)
+    if st then
+        local inside = (runtime.anchorDist(me.X() or 0, me.Y() or 0) or math.huge) <= r
+        arrived = arrived and inside
+    end
     if arrived then runtime.anchorReturning = false end
     return not arrived
 end
@@ -21129,7 +21469,9 @@ runtime.ANCHOR_ROAM = {
 }
 function runtime.anchorRoamTick()
     local a, r = runtime.huntAnchor()
-    if not a or ctrl.hunter_anchor_roam == false then
+    local st = runtime.wpAnchorActive and runtime.wpAnchorActive() and runtime.wpState()
+    local roam = st and (st.phase == 'hunt' and st.node.roam)
+    if not a or (st and not roam) or (not st and ctrl.hunter_anchor_roam == false) then
         if pursuit.wanderLoc then pursuit.wanderLoc = nil; stopMoving() end
         return false
     end
@@ -21185,7 +21527,9 @@ end
 -- "targetable radius N" filter, which silently returned zero candidates and left
 -- Hunter standing still. NearestSpawn(i, ...) returning a falsy spawn () is what
 -- actually marks "no more candidates."
-function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
+function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, fresh)
+    local wp = runtime.wpNode and runtime.wpNode()
+    if wp and wp.kind == 'Travel' then return nil, true end
     local isPulling    = (ctrl.mode == 'Puller')
     local isCampMode   = isPulling and (ctrl.submode == 'Camp')
     local minLv        = minLevel or (isCampMode and (ctrl.pull_min_level or 1) or (ctrl.hunter_min_level or 1))
@@ -21199,7 +21543,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
     local function outsideAnchor(sy, sx)
         if anchorRadius <= 0 or not anchorLoc then return false end
         -- When Waypoint Patrol is active, pulling/hunting scans dynamically around the character's patrol location
-        if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
+        if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 and not wp then
             return false
         end
         local ay = anchorLoc.y or anchorLoc[1] or 0
@@ -21215,7 +21559,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
     local nowScan = os.clock()
     local emptyKey = string.format('%s|%s|%s|%s', tostring(searchRadius), tostring(searchMaxZ), tostring(minLv), tostring(maxLv))
     local lastEmpty = runtime.roamScanEmpty
-    if lastEmpty and lastEmpty.key == emptyKey and (nowScan - lastEmpty.at) < 1.0 then return nil end
+    if not fresh and lastEmpty and lastEmpty.key == emptyKey and (nowScan - lastEmpty.at) < 1.0 then return nil, false end
 
     local playerOffMesh = runtime.isPlayerOffMesh()
     -- Candidates that passed every filter but PathExists. If that is ALL of
@@ -21348,7 +21692,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel)
     end
 
     runtime.roamScanEmpty = { key = emptyKey, at = nowScan }
-    return nil
+    return nil, true
 end
 
 function runtime.checkCloserTarget(curTargetId, searchRadius, searchMaxZ, minLevel, maxLevel)
@@ -21845,7 +22189,8 @@ function runtime.checkAggroSwitch()
         local xt = mq.TLO.Me.XTarget(i)
         if xt() and (xt.ID() or 0) > 0 and xt.ID() ~= curId and (xt.Type() == 'NPC' or xt.Type() == 'Pet') and not isUnreachable(xt.ID())
             and not isGroupOrRaidMember(xt.ID()) and not isSpawnPetOrPlayer(xt.ID()) and isHostileTarget(xt.ID())
-            and not isIgnored(xt.CleanName()) and xtSlotCounts(xt, xt.ID()) then
+            and not isIgnored(xt.CleanName()) and xtSlotCounts(xt, xt.ID())
+            and (not runtime.wpAutoTargetAllowed or runtime.wpAutoTargetAllowed(xt.ID())) then
             local d = xt.Distance3D() or 999
             local isHittingMe = false
             pcall(function()
@@ -21931,6 +22276,7 @@ runtime.fullStop = function()
 end
 
 runtime.onZoned = function()
+    runtime.wpReset(false)
     local now = os.clock()
     if (now - (runtime.lastZonedAt or 0)) < 2.0 then return end
     runtime.lastZonedAt = now
@@ -22338,6 +22684,7 @@ local function manualMovePolicy(engaged, approaching)
 end
 
 local function combatTick()
+    runtime.wpBeginTick()
     local fullStop = runtime.fullStop
     local anyXtarAlive = runtime.anyXtarAlive
     local countNPCXtarget = runtime.countNPCXtarget
@@ -22729,6 +23076,13 @@ local function combatTick()
                 engage = (runtime.pullState == 'FIGHTING')
             end
         else -- Submode 'Hunt'
+            if runtime.wpAnchorActive() and haveNPC and not runtime.wpAutoTargetAllowed(mq.TLO.Target.ID() or 0) then
+                stopMoving()
+                mq.cmd('/attack off')
+                mq.cmd('/autofire off')
+                clearTarget()
+                haveNPC = false
+            end
             local hasWps = (ctrl.waypoints and #ctrl.waypoints > 0 and ctrl.use_waypoints ~= false)
             local maxHuntZ = ctrl.hunter_z or 75
             local myZ = mq.TLO.Me.Z() or 0
@@ -22857,8 +23211,12 @@ local function combatTick()
 
                 local scanRadius = hasWps and (ctrl.waypoint_scan_radius or 100) or (ctrl.hunter_radius or 1500)
                 local id = huntNPCXtarget(maxHuntXtarZ, maxHuntXtarDist)
+                local scanComplete = false
                 if not id then
-                    id = findRoamTarget(scanRadius, maxHuntZ, ctrl.hunter_min_level, ctrl.hunter_max_level)
+                    -- In anchor patrol an uncached scan makes each empty result
+                    -- safe to use for completion; legacy scan caching is unchanged.
+                    id, scanComplete = findRoamTarget(scanRadius, maxHuntZ, ctrl.hunter_min_level,
+                        ctrl.hunter_max_level, runtime.wpAnchorActive())
                 end
                 if id and setTarget(id) then
                     if not runtime.verifyTargetCon(id, true) then
@@ -22878,8 +23236,10 @@ local function combatTick()
                     runtime.lastHunterMsgKey = nil
                     print(string.format('\ay[Triune]\ax Puller (Hunt) target acquired: #%d (%s) dist %.1f',
                         id, tostring(mq.TLO.Target.CleanName()), distToId(id)))
-                elseif not anyXtarAlive() then
-                    if hasWps then
+                elseif not anyXtarAlive() or runtime.wpAnchorActive() then
+                    if runtime.wpAnchorActive() then
+                        runtime.wpAnchorTick(scanComplete)
+                    elseif hasWps then
                         runtime.wpTick()
                     else
                         -- Dragged outside the combat anchor circle with nothing
@@ -22927,6 +23287,7 @@ local function combatTick()
             end
 
             if haveNPC then
+                runtime.wpAcquired()
                 local id = mq.TLO.Target.ID()
                 local pullStyle = ctrl.pull_style or 'Melee'
 
@@ -24774,6 +25135,8 @@ local function runMainLoop()
             if slot then
                 local name = runtime.pendingMem[slot]
                 runtime.pendingMem[slot] = nil
+                -- Memorizing can block outside combatTick; suspend patrol time.
+                if runtime.wpPatrol then runtime.wpPatrol.eligible = false end
                 runtime.tryMem(slot, name) -- verifies + reports; blocks briefly while it lands
                 memmed = true
             end
