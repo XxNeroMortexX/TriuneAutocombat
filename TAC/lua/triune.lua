@@ -753,7 +753,7 @@ function runtime.trioHasPetClass()
 end
 
 local COMBO_OPTIONS = {
-    FRIENDLY = { 'Myself', 'Main Assist', 'Tank', 'Lowest-HP Ally', 'Whole Group', 'Pet' },
+    FRIENDLY = { 'Myself', 'Main Assist', 'Tank', 'Lowest-HP Ally', 'Me, then Group', 'Group, then Me', 'Whole Group', 'Pet' },
     ENEMY    = { 'Current Target', 'Assist Target', 'Nearest Add', 'Unmezzed Add', 'All Enemies' },
     TARGETS  = {},
     WHENS    = { 'HP <=', 'target HP <=', 'target HP between', 'my HP <=', 'my Mana <=', 'missing buff', 'missing pet',
@@ -3404,9 +3404,13 @@ function runtime.abortPendingCast(orig, id, keepHostile)
     castTracker.activeKind     = nil
     castTracker.targetRequired = nil
     castTracker.castStartTime  = 0
-    if orig and orig > 0 and orig ~= id and not keepHostile then
-        if isSpawnAlive(orig) and (mq.TLO.Target.ID() or 0) ~= orig then
-            runtime.setTarget(orig)
+    if orig and orig ~= id and not keepHostile then
+        if orig > 0 then
+            if isSpawnAlive(orig) and (mq.TLO.Target.ID() or 0) ~= orig then
+                runtime.setTarget(orig)
+            end
+        elseif (mq.TLO.Target.ID() or 0) == id then
+            runtime.clearTarget()
         end
     end
 end
@@ -8611,6 +8615,8 @@ UI.HELP_TARGETS = {
         { opt = 'F: Main Assist',     color = GOOD, desc = 'Targets the designated Main Assist character for single-target buffs, heals, or utility.' },
         { opt = 'F: Tank',            color = GOOD, desc = 'Targets the designated Tank character for targeted heals, protective buffs, or damage mitigation.' },
         { opt = 'F: Lowest-HP Ally',  color = GOOD, desc = 'Scans yourself and all group members, automatically targeting the ally with the lowest current HP percentage. Ideal for reactive heals.' },
+        { opt = 'F: Me, then Group',  color = GOOD, desc = 'Checks you first, then present, living group members in range. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
+        { opt = 'F: Group, then Me',  color = GOOD, desc = 'Checks present, living group members in range first, then you. Targets the first whose individual condition is met, switching and restoring your previous target afterward.' },
         { opt = 'F: Whole Group',     color = GOOD, desc = 'Targets your character to cast group-wide spells (group heals, group buffs, group auras).' },
         { opt = 'F: Pet',             color = GOOD, desc = 'Targets your summoned pet. On multi-class trio characters with multiple pets, prioritizes the pet class matching the spell, lowest HP pet, or pet missing the buff.' },
 }
@@ -15997,8 +16003,9 @@ function runtime.computeIsHealAction(name, targetToken, entry)
     if entry and entry.when == 'missing buff' then
         return false
     end
-    -- Target check: Lowest-HP Ally is almost certainly a heal if not offensive
-    if targetToken and baseTok(targetToken) == 'Lowest-HP Ally' then
+    -- Ally selectors are almost certainly heals if not offensive.
+    if targetToken and (baseTok(targetToken) == 'Lowest-HP Ally'
+        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me') then
         if not runtime.isDetrimentalAction(name, targetToken, entry) then
             return true
         end
@@ -16012,7 +16019,8 @@ function runtime.computeIsHealAction(name, targetToken, entry)
                     or lowerName:find('remedy') or lowerName:find('chloroplast') or lowerName:find('regeneration')
                     or lowerName:find('renewal') or lowerName:find('restoration') or lowerName:find('lay on hands')
                     or lowerName:find('burst of life') or lowerName:find('arbitration') or lowerName:find('touch')
-                    or (targetToken and baseTok(targetToken) == 'Lowest-HP Ally') then
+                    or (targetToken and (baseTok(targetToken) == 'Lowest-HP Ally'
+                        or baseTok(targetToken) == 'Me, then Group' or baseTok(targetToken) == 'Group, then Me')) then
                     return true
                 end
             end
@@ -16315,7 +16323,8 @@ runtime.BOX_BUFF_REQUEST_TTL = 120 -- seconds a queued request stays valid
 
 function runtime.isFriendlyBuffToken(token)
     local b = baseTok(token)
-    return b == 'Myself' or b == 'Main Assist' or b == 'Tank' or b == 'Lowest-HP Ally' or b == 'Whole Group'
+    return b == 'Myself' or b == 'Main Assist' or b == 'Tank' or b == 'Lowest-HP Ally'
+        or b == 'Me, then Group' or b == 'Group, then Me' or b == 'Whole Group'
 end
 
 -- Gems we could cast on another player: friendly 'missing buff' entries with a
@@ -17281,6 +17290,57 @@ function runtime.deadAllyCorpseId(maxDist)
     return bestId
 end
 
+function runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
+    local selfId = 0
+    pcall(function() selfId = mq.TLO.Me.ID() or 0 end)
+    local candidates, seen = {}, {}
+    local selfOnly = when == 'my HP <=' or when == 'my Mana <='
+    local selfFirst = baseTok(token) == 'Me, then Group'
+
+    local function addCandidate(id)
+        id = tonumber(id) or 0
+        if id <= 0 or seen[id] then return end
+        seen[id] = true
+        local alive = false
+        pcall(function() alive = isSpawnAlive(id) end)
+        if not alive then return end
+        if id ~= selfId then
+            local inRange = false
+            pcall(function() inRange = runtime.isTargetInRange(spellName, id) end)
+            if not inRange then return end
+        end
+        candidates[#candidates + 1] = id
+    end
+
+    if selfOnly or selfFirst then addCandidate(selfId) end
+    if not selfOnly then
+        local total = 0
+        pcall(function() total = mq.TLO.Group.Members() or 0 end)
+        for i = 0, total do
+            local member = nil
+            pcall(function() member = mq.TLO.Group.Member(i) end)
+            if member then
+                local ok, id, isValid = pcall(function()
+                    if not member() then return nil end
+                    return member.ID(), not member.Dead()
+                        and (member.Present == nil or member.Present())
+                        and (member.OtherZone == nil or not member.OtherZone())
+                        and (member.Offline == nil or not member.Offline())
+                end)
+                if ok and isValid and id and id ~= selfId then addCandidate(id) end
+            end
+        end
+    end
+    if not selfOnly and not selfFirst then addCandidate(selfId) end
+
+    for _, id in ipairs(candidates) do
+        if runtime.conditionMet(when, pct, spellName, id, cls, 'F: ' .. baseTok(token), extra) then
+            return id
+        end
+    end
+    return nil
+end
+
 function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
     local b = baseTok(token)
     local id
@@ -17294,6 +17354,8 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
         id = runtime.maPcId()
     elseif b == 'Lowest-HP Ally' then
         id = runtime.lowestHpAlly(nil, true)
+    elseif b == 'Me, then Group' or b == 'Group, then Me' then
+        id = runtime.anyGroupMemberId(token, when, pct, spellName, cls, extra)
     elseif b == 'Pet' then
         id = runtime.resolvePetTargetId(when, spellName, cls, pct)
     elseif b == 'Current Target' then
@@ -17718,12 +17780,14 @@ function runtime.castGem(i, g, id)
             since = os.clock(), deadline = os.clock() + (sp.Beneficial() and 4.0 or ((castMs + 300) / 1000)),
         }
     end
-    if orig ~= id and orig > 0 and not keepHostile then
+    if orig ~= id and not keepHostile then
         if g.cls ~= 'Brd' then
             -- Spell has a cast time: keep target on ally until cast finishes, then restore combat target!
             runtime.restoreTargetId = orig
-        else
+        elseif orig > 0 then
             mq.cmdf('/timed 1 /target id %d', orig)
+        else
+            mq.cmd('/timed 1 /target clear')
         end
     end
     if g.cls == 'Brd' and wasAttacking and not mq.TLO.Me.Combat() then
@@ -17828,12 +17892,16 @@ function runtime.fireAA(name, a, id)
     runtime.noteAAEffectStarted(name, now)
 
     print('\ag[Triune]\ax AA fired: ' .. name)
-    if orig ~= id and orig > 0 and not keepHostile then
+    if orig ~= id and not keepHostile then
         if castMs > 0 then
             runtime.restoreTargetId = orig
         else
             mq.delay(60)
-            if orig > 0 and mq.TLO.Target.ID() ~= orig then mq.cmdf('/target id %d', orig) end
+            if orig > 0 and mq.TLO.Target.ID() ~= orig then
+                mq.cmdf('/target id %d', orig)
+            elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
+                mq.cmd('/target clear')
+            end
         end
     end
     if not isFD and wasAttacking and not mq.TLO.Me.Combat() then
@@ -18137,7 +18205,11 @@ runtime.fireDisc = function(name, a, id)
     print('\ag[Triune]\ax discipline fired: ' .. name)
     if not selfCast and orig ~= id then
         mq.delay(60)
-        if orig > 0 and mq.TLO.Target.ID() ~= orig then mq.cmdf('/target id %d', orig) end
+        if orig > 0 and mq.TLO.Target.ID() ~= orig then
+            mq.cmdf('/target id %d', orig)
+        elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
+            mq.cmd('/target clear')
+        end
     end
     if wasAttacking and not mq.TLO.Me.Combat() then
         mq.cmd('/attack on')
@@ -18202,9 +18274,13 @@ runtime.fireSkill = function(name, a, id)
     runtime.lastSkillFiredAt[name] = now
 
     print('\ag[Triune]\ax skill fired: ' .. name)
-    if not selfCast and orig > 0 and orig ~= id then
+    if not selfCast and orig ~= id then
         mq.delay(60)
-        if mq.TLO.Target.ID() ~= orig then mq.cmdf('/target id %d', orig) end
+        if orig > 0 and mq.TLO.Target.ID() ~= orig then
+            mq.cmdf('/target id %d', orig)
+        elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
+            clearTarget()
+        end
     end
     if not isFD and wasAttacking and not mq.TLO.Me.Combat() then
         mq.cmd('/attack on')
@@ -18334,12 +18410,16 @@ runtime.useClickie = function(c, id)
         if bene then runtime.recordPetBuff(id, cSpell, durSec) end
     end
 
-    if orig ~= id and orig > 0 and not keepHostile then
+    if orig ~= id and not keepHostile then
         if castMs > 0 then
             runtime.restoreTargetId = orig
         else
             mq.delay(60)
-            if mq.TLO.Target.ID() ~= orig then mq.cmdf('/target id %d', orig) end
+            if orig > 0 and mq.TLO.Target.ID() ~= orig then
+                mq.cmdf('/target id %d', orig)
+            elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
+                mq.cmd('/target clear')
+            end
         end
     end
     if castMs == 0 and wasAttacking and not mq.TLO.Me.Combat() then
@@ -22449,11 +22529,13 @@ local function combatTick()
         castTracker.activeKind     = nil
         castTracker.targetRequired = nil
         clearCursor()
-        if runtime.restoreTargetId and runtime.restoreTargetId > 0 then
+        if runtime.restoreTargetId ~= nil then
             local rId = runtime.restoreTargetId
             runtime.restoreTargetId = nil
-            if isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
+            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
                 runtime.setTarget(rId)
+            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
+                runtime.clearTarget()
             end
         end
     end
@@ -23481,11 +23563,13 @@ local function combatTick()
     local canCastMove = isBrdMe or not isMoving
 
     if combatReady and not isCasting() and not isMoveActive() and canCastMove and loadout.clickies and #loadout.clickies > 0 then
-        if not isCasting() and runtime.restoreTargetId and runtime.restoreTargetId > 0 then
+        if not isCasting() and runtime.restoreTargetId ~= nil then
             local rId = runtime.restoreTargetId
             runtime.restoreTargetId = nil
-            if isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
+            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
                 runtime.setTarget(rId)
+            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
+                runtime.clearTarget()
             end
         end
         for _, c in ipairs(loadout.clickies) do
@@ -23522,11 +23606,13 @@ local function combatTick()
     local gemCasted = false
 
     if combatReady and not isCasting() and not isMoveActive() and canCastMove then
-        if not isCasting() and runtime.restoreTargetId and runtime.restoreTargetId > 0 then
+        if not isCasting() and runtime.restoreTargetId ~= nil then
             local rId = runtime.restoreTargetId
             runtime.restoreTargetId = nil
-            if isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
+            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
                 runtime.setTarget(rId)
+            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
+                runtime.clearTarget()
             end
         end
         if loadout.gems then

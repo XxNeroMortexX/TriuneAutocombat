@@ -1,5 +1,11 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-01
+
+- **Ordered self/group targets for spells, discs, and clickies (`TAC/lua/triune.lua`, `tests/test_pure_logic.lua`).** Adds **Me, then Group** and **Group, then Me** so single-target actions choose the first present, living, in-range member whose individual condition is met, in the configured priority order. Self-HP and self-mana conditions stay on the caster; target switching restores the previous target.
+
+---
+
 ## 2026-09-18
 
 - **Canonical Version Bump to 3.1 (`TAC/lua/triune.lua`, `README.md`, `TAC/lua/tac/hud_unitframes.lua`, `tests/test_pure_logic.lua`, `RELEASES.md`).** Bug-fix release: every fix below since 3.0, no new plugins. Bumped the version across the main script, the README, the unit-frame window title fallbacks and the test suites; `RELEASES.md` has the `## 3.1` summary the release workflow turns into the GitHub release page. Tag the release as `V3.1`.

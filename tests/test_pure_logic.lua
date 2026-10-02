@@ -4560,6 +4560,37 @@ do
 
     assert_true(conditionMet ~= nil, 'conditionMet loaded successfully')
 
+    local function fakeGroupMember(id)
+        return setmetatable({
+            ID = function() return id end,
+            Dead = function() return false end,
+            Present = function() return true end,
+            OtherZone = function() return false end,
+            Offline = function() return false end,
+        }, { __call = function() return true end })
+    end
+    local groupMembers = { [0] = fakeGroupMember(1001), [1] = fakeGroupMember(2002), [2] = fakeGroupMember(3003) }
+    local anyGroupRuntime = {
+        conditionMet = function(_, _, _, id) return id == 3003 or id == 1001 end,
+        isTargetInRange = function(_, id) return id ~= 2002 end,
+    }
+    local groupPriorityTargetId = loadFunc(src, 'anyGroupMemberId', {
+        mq = { TLO = { Me = { ID = function() return 1001 end }, Group = {
+            Members = function() return 2 end,
+            Member = function(i) return groupMembers[i] end,
+        } } },
+        runtime = anyGroupRuntime,
+        baseTok = function(token) return token:gsub('^[FE]:%s*', '') end,
+        isSpawnAlive = function() return true end,
+    })
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'HP <=', 50, 'Heal', 'Clr'), 3003,
+        'Group, then Me selects a matching group member before self')
+    assert_eq(groupPriorityTargetId('F: Me, then Group', 'HP <=', 50, 'Heal', 'Clr'), 1001,
+        'Me, then Group selects self before a matching group member')
+    anyGroupRuntime.isTargetInRange = function() return true end
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'my HP <=', 20, 'Heal', 'Clr'), 1001,
+        'Group priority targets self for my-HP conditions')
+
     -- Scenario A: Player at 100% HP, Target Mob at 15% HP, Feign Death slider at 20%
     playerHp = 100
     targetHp = 15
@@ -10803,18 +10834,20 @@ do
     local rt = sandbox.runtime
     rt.saveLoadout = env.saveLoadout
 
-    -- 1. Discovery loads every shipped plugin from TAC/lua/tac and enables the defaults
+    -- 1. Discovery loads every shipped plugin and honors each defaultEnabled setting
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
-    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
+    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nms_looter_handoff', 'nmsloot', 'parcels', 'spellbook', 'update_check' }
+    local disabledByDefault = { nms_looter_handoff = true }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
         if p then
-            assert_eq(p.enabled, true, 'Suite 88: ' .. id .. ' enabled by default')
-            assert_eq(p.status, 'Active', 'Suite 88: ' .. id .. ' initialised without error (' .. tostring(p.errorMsg) .. ')')
-            assert_eq(ctrl88.plugins[id] and ctrl88.plugins[id].enabled, true, 'Suite 88: ' .. id .. ' enabled flag persisted to ctrl.plugins')
+            local enabledByDefault = not disabledByDefault[id]
+            assert_eq(p.enabled, enabledByDefault, 'Suite 88: ' .. id .. ' default enabled state')
+            assert_eq(p.status, enabledByDefault and 'Active' or 'Disabled', 'Suite 88: ' .. id .. ' status matches default (' .. tostring(p.errorMsg) .. ')')
+            assert_eq(not not (ctrl88.plugins[id] and ctrl88.plugins[id].enabled == true), enabledByDefault, 'Suite 88: ' .. id .. ' persisted enabled state matches default')
         end
     end
     assert_eq(#pm.pluginOrder, #expected, 'Suite 88: exactly the shipped plugins are registered')
@@ -12314,7 +12347,7 @@ do
     initPM()
     local pm = rt.pluginManager
     S.shipped = #pm.pluginOrder
-    assert_eq(S.shipped, 22, 'Suite 92: all shipped plugins still load under the load-time guards')
+    assert_eq(S.shipped, 23, 'Suite 92: all shipped plugins still load under the load-time guards')
 
     -- Soft plugin dependencies (`uses`): normalised at registration, reverse-listed, state-tracked
     assert_eq(#pm.normalizeUses(nil), 0, 'Suite 92: no uses -> empty list')
@@ -12329,7 +12362,7 @@ do
     assert_eq(S.ids(pm.plugins.hud_spellgems.uses), 'gamedb,spellbook', 'Suite 92: hud_spellgems declares it uses gamedb and spellbook')
     assert_eq(#pm.plugins.boxnet.uses, 0, 'Suite 92: boxnet uses nothing')
     assert_eq(S.ids(pm.plugins.inventory.uses), 'boxnet,gamedb', 'Suite 92: inventory declares it uses boxnet and gamedb')
-    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nmsloot', 'Suite 92: usedBy(boxnet) lists the five consumers in load order')
+    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nms_looter_handoff,nmsloot', 'Suite 92: usedBy(boxnet) lists all consumers in load order')
     assert_eq(S.ids(pm.usedBy('spellbook')), 'hud_spellgems', 'Suite 92: usedBy(spellbook) lists the gem bar')
     assert_eq(#pm.usedBy('cursor'), 0, 'Suite 92: cursor is used by nobody')
     assert_eq(pm.useState('boxnet'), 'active', 'Suite 92: an enabled plugin is an active dependency')
