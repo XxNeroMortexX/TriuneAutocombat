@@ -89,3 +89,15 @@ end
 local targets = check('Self', false, 7, 99, false, false, false)
 assert(targets[1] == 7)
 print('PASS: Self spell target preservation, bard/abort paths, targeted buffs, and existing self-heals')
+
+-- Edited By: NeroMorte - Upstream group casting restores an originally empty target too.
+for _, bard in ipairs({false, true}) do
+    local selected, _, state, commands, ok = check('Single', true, 42, 0, false, false, bard)
+    assert(ok and selected[1] == 42)
+    if bard then
+        assert(commands[#commands] == '/timed 1 /target clear')
+    else
+        assert(state.restoreTargetId == 0)
+    end
+end
+print('PASS: targeted group casts restore empty targets while true Self spells keep them unchanged')

@@ -2929,7 +2929,8 @@ end
 -- 36. copyWaypointList (per-zone waypoint routes/presets)
 -- ============================================================================
 print('--- copyWaypointList ---')
-local copyWaypointList = loadFunc(src, 'copyWaypointList', {})
+local copyWaypointList = loadFunc(src, 'copyWaypointList',
+    { wpNormalize = loadFunc(src, 'wpNormalize', { ctrl = {} }) })
 
 do
     local original = { { name = 'A', x = 1, y = 2, z = 3 }, { name = 'B', x = 4, y = 5, z = 6 } }
@@ -4564,6 +4565,37 @@ do
     local conditionMet = loadFunc(src, 'conditionMet', condEnv)
 
     assert_true(conditionMet ~= nil, 'conditionMet loaded successfully')
+
+    local function fakeGroupMember(id)
+        return setmetatable({
+            ID = function() return id end,
+            Dead = function() return false end,
+            Present = function() return true end,
+            OtherZone = function() return false end,
+            Offline = function() return false end,
+        }, { __call = function() return true end })
+    end
+    local groupMembers = { [0] = fakeGroupMember(1001), [1] = fakeGroupMember(2002), [2] = fakeGroupMember(3003) }
+    local anyGroupRuntime = {
+        conditionMet = function(_, _, _, id) return id == 3003 or id == 1001 end,
+        isTargetInRange = function(_, id) return id ~= 2002 end,
+    }
+    local groupPriorityTargetId = loadFunc(src, 'anyGroupMemberId', {
+        mq = { TLO = { Me = { ID = function() return 1001 end }, Group = {
+            Members = function() return 2 end,
+            Member = function(i) return groupMembers[i] end,
+        } } },
+        runtime = anyGroupRuntime,
+        baseTok = function(token) return token:gsub('^[FE]:%s*', '') end,
+        isSpawnAlive = function() return true end,
+    })
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'HP <=', 50, 'Heal', 'Clr'), 3003,
+        'Group, then Me selects a matching group member before self')
+    assert_eq(groupPriorityTargetId('F: Me, then Group', 'HP <=', 50, 'Heal', 'Clr'), 1001,
+        'Me, then Group selects self before a matching group member')
+    anyGroupRuntime.isTargetInRange = function() return true end
+    assert_eq(groupPriorityTargetId('F: Group, then Me', 'my HP <=', 20, 'Heal', 'Clr'), 1001,
+        'Group priority targets self for my-HP conditions')
 
     -- Scenario A: Player at 100% HP, Target Mob at 15% HP, Feign Death slider at 20%
     playerHp = 100
@@ -10809,18 +10841,20 @@ do
     local rt = sandbox.runtime
     rt.saveLoadout = env.saveLoadout
 
-    -- 1. Discovery loads every shipped plugin from TAC/lua/tac and enables the defaults
+    -- 1. Discovery loads every shipped plugin and honors each defaultEnabled setting
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
     local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager', 'nms_looter_handoff' }
+    local disabledByDefault = { nms_looter_handoff = true }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
         if p then
-            assert_eq(p.enabled, id ~= 'nms_looter_handoff', 'Suite 88: ' .. id .. ' enabled by default')
-            assert_eq(p.status, id == 'nms_looter_handoff' and 'Disabled' or 'Active', 'Suite 88: ' .. id .. ' initialised without error (' .. tostring(p.errorMsg) .. ')')
-            assert_eq(ctrl88.plugins[id] and ctrl88.plugins[id].enabled == true or false, id ~= 'nms_looter_handoff', 'Suite 88: ' .. id .. ' enabled flag persisted to ctrl.plugins')
+            local enabledByDefault = not disabledByDefault[id]
+            assert_eq(p.enabled, enabledByDefault, 'Suite 88: ' .. id .. ' default enabled state')
+            assert_eq(p.status, enabledByDefault and 'Active' or 'Disabled', 'Suite 88: ' .. id .. ' status matches default (' .. tostring(p.errorMsg) .. ')')
+            assert_eq(not not (ctrl88.plugins[id] and ctrl88.plugins[id].enabled == true), enabledByDefault, 'Suite 88: ' .. id .. ' persisted enabled state matches default')
         end
     end
     assert_eq(#pm.pluginOrder, #expected, 'Suite 88: exactly the shipped plugins are registered')
@@ -14964,7 +14998,7 @@ end)()
         pullState = 'IDLE', pullTargetId = 0, medBreakActive = false, pullHpRest = false, wasRunning = false,
         saveLoadout = function() S.saves = S.saves + 1 end,
         fullStop = function() S.fullStops = (S.fullStops or 0) + 1 end,
-        setNearestWaypoint = function() end, isCombat = function() return false end,
+        setNearestWaypoint = function() end, wpAcquired = function() end, isCombat = function() return false end,
         getMaTargetInfo = function() return S.maInfo end,
         pluginManager = { drawHeaderButtons = function(n) S.hdrBtnArg = n return S.hdrBtnCount or 3 end },
         initPluginManager = function() end,

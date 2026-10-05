@@ -1,5 +1,18 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-05
+
+- Synchronize Gennro main through `06755f6` (ordered self/group action targets and optional waypoint combat anchors). Preserve NeroMorte's native EQ camp marker, true Self spell targeting, stationary pet camp boundaries, and finish-current-XTargets behavior.
+- Keep pet pull exclusion IDs and waypoint uncached-scan flags as separate scanner arguments; preserve restoration to an originally empty target for targeted group casts. Original code integration blocks retain **Edited By: NeroMorte** markers.
+- Add executable merge regressions for pet exclusions, waypoint fresh scans, Travel/Hunt nodes, camp boundaries, and empty-target restoration. Update isolated test boundaries and plugin expectations without removing existing suites.
+
+---
+
+## 2026-10-01
+
+- **Ordered self/group targets for spells, discs, and clickies (`TAC/lua/triune.lua`, `tests/test_pure_logic.lua`).** Adds **Me, then Group** and **Group, then Me** so single-target actions choose the first present, living, in-range member whose individual condition is met, in the configured priority order. Self-HP and self-mana conditions stay on the caster; target switching restores the previous target.
+
+---
 ## 2026-09-30 — 3.1-Morte.5
 
 NeroMorte's cumulative September 30 update, based on Gennro TAC 3.1. The MQ2WebUpdate engine remains 4.1.6. Earlier AA spending controls remain included; this update adds the changes below.
