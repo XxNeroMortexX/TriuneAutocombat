@@ -1556,7 +1556,8 @@ local function processBuffQueue()
     end
 
     for _, spellInfo in ipairs(gemsToCast) do
-        if not cfg.enabled or rt.preemptRequested then break end
+        -- Edited By: NeroMorte - A toggle can arrive while a buff job is yielding.
+        if not cfg.enabled or rt.preemptRequested or core.runtime.trashMode then break end
         processOutgoingTells()
         if rt.preemptRequested then break end
 
@@ -1667,6 +1668,9 @@ local function processBuffQueue()
             if outOfRange then
                 -- Not cast; leave castSuccess false (no retry).
                 castSuccess = false
+            -- Edited By: NeroMorte - Recheck immediately before the independent cast command.
+            elseif core.runtime.trashMode then
+                break
             elseif isSpellReady(gemNum, expectedName) then
                 -- Cast the spell on the target
                 logMsg(string.format("Casting [%s] on %s (Gem %d)", expectedName, targetLabel, gemNum))
@@ -1749,6 +1753,19 @@ local function processBuffQueue()
                 end
             end
         end
+    end
+
+    -- Edited By: NeroMorte - Preserve the remainder if Trash Mode interrupts a yielding job.
+    if core.runtime.trashMode then
+        if #request.remainingGems > 0 then
+            request.gems = request.remainingGems
+            request.isResumed = true
+            requeuePreemptedJob(request)
+        end
+        rt.currentJob = nil
+        rt.currentRequester = nil
+        rt.state = 'IDLE'
+        return
     end
 
     -- Handle preemption interruption
@@ -2367,6 +2384,8 @@ end
 function plugin.onTick()
     if not core then return end
     refresh()
+    -- Edited By: NeroMorte - Pause automated buff jobs during temporary Trash Mode.
+    if core.runtime.trashMode then return end
     tick()
 end
 
@@ -2378,7 +2397,8 @@ end
 
 -- Hold the puller / assist loop still while a buff job is being cast.
 function plugin.wantsCombatHold()
-    return cfg.enabled == true and rt.currentJob ~= nil
+    -- Edited By: NeroMorte - A paused buff station must not hold trash combat.
+    return not core.runtime.trashMode and cfg.enabled == true and rt.currentJob ~= nil
 end
 
 function plugin.onDrawSettings()

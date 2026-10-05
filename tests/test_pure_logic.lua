@@ -10093,9 +10093,11 @@ do
                 'Suite 83: arrival tolerance stays inside reach ' .. reach)
         end
     end
-    assert_true(triuneContent:find("local isMelee = (not followOnly and (ctrl and ctrl.combat_style or 'Melee') == 'Melee')", 1, true) ~= nil,
+    -- Edited By: NeroMorte - Check the effective style including the temporary override.
+    assert_true(triuneContent:find("local isMelee = (not followOnly and (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee')", 1, true) ~= nil,
         'Suite 83: moveToward arrival tolerance is style-aware')
-    assert_true(triuneContent:find("if ctrl.mode == 'Puller' and (ctrl.combat_style or 'Melee') == 'Melee' and not mq.TLO.Me.Combat() then", 1, true) ~= nil,
+    -- Edited By: NeroMorte - Check the effective style including the temporary override.
+    assert_true(triuneContent:find("if ctrl.mode == 'Puller' and ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' and not mq.TLO.Me.Combat() then", 1, true) ~= nil,
         'Suite 83: Puller FIGHTING /attack on is Melee-only')
     -- Ranged / Spell / Pet pull methods stop at the Engagement Distance (capped
     -- by what the bow or pull spell can reach) and fire the tag from there;
@@ -10137,7 +10139,8 @@ do
         'Suite 83: Hunt post-tag branch defers to combat-style positioning')
     assert_true(triuneContent:find("local atStyleReach = arrived or (distToId(id) <= runtime.styleReach(id) and hasLoS(id))", 1, true) ~= nil,
         'Suite 83: Hunt engage gate uses the shared styleReach')
-    assert_true(triuneContent:find("elseif ctrl.combat_style == 'Ranged' then\n                            if not isCasting() then runtime.engageRangedAttack(id) end", 1, true) ~= nil,
+    -- Edited By: NeroMorte - Check the effective style including the temporary override.
+    assert_true(triuneContent:find("elseif (runtime.trashMode and 'Melee' or ctrl.combat_style) == 'Ranged' then\n                            if not isCasting() then runtime.engageRangedAttack(id) end", 1, true) ~= nil,
         'Suite 83: Hunt Melee pull routes a Ranged style through engageRangedAttack, not /attack on')
     assert_true(triuneContent:find("if not runtime.petCampActive() and ctrl.mode ~= 'Manual' and (style == 'Melee' or not isCasting()) then\n                    moveToward(tid, desiredRange(tid))", 1, true) ~= nil,
         'Suite 83: Ranged/Spell re-close waits for the current cast to finish')

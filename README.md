@@ -59,6 +59,8 @@ Set the Main Assist with `/ac ma <name>` or from the Control tab.
 
 **Burn mode** (`/ac burn`) fires anything you marked *Burn Only* - flip it on for named mobs.
 
+**Trash Mode** (button beside Burn, or `/ac trash on|off|toggle`) temporarily clears easy mobs with melee, skills, disciplines and existing pets. It blocks automated spells (including heals, buffs and pet summons), activated AAs and clickies, including Buffbot and automatic repeatable-AA activations. Spell pulls temporarily use melee; other pull methods remain available. Combat mode, loadout selections and saved styles are unchanged. Turning it off restores normal behavior; restarting Triune resets it off. An already-issued cast can finish. Manual EQ commands and independent scripts remain under your control.
+
 ---
 
 ## Windows and tools
@@ -108,6 +110,7 @@ Type `/ac help` in game for the full list.
 | `/ac manual`, `/ac puller camp`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
 | `/ac ma <name>` | Set the Main Assist |
 | `/ac burn` | Toggle Burn mode |
+| `/ac trash [on\|off\|toggle]` | Temporarily block spells, AAs and clickies for melee trash clearing |
 | `/ac memall` | Memorize any missing spells |
 | `/ac importbar` | Build the spell list from your memorized gems |
 | `/ac style melee\|ranged\|spell` | Set combat style |

@@ -2,6 +2,8 @@
 
 ## 2026-10-05
 
+- **Edited By: NeroMorte — Add session-only Trash Mode** beside Burn in full/compact views and `/ac trash [on|off|toggle]`. Suppress automated spells, AA activations and clickies (including healing/buffing, Buffbot and repeatable-AA activations); preserve skills, disciplines, existing pets, modes and saved loadouts. Use temporary melee positioning and melee fallback for spell pulls; turning it off restores saved styles, and restarting resets it off. Already-issued casts can finish.
+
 - Synchronize Gennro main through `06755f6` (ordered self/group action targets and optional waypoint combat anchors). Preserve NeroMorte's native EQ camp marker, true Self spell targeting, stationary pet camp boundaries, and finish-current-XTargets behavior.
 - Keep pet pull exclusion IDs and waypoint uncached-scan flags as separate scanner arguments; preserve restoration to an originally empty target for targeted group casts. Original code integration blocks retain **Edited By: NeroMorte** markers.
 - Add executable merge regressions for pet exclusions, waypoint fresh scans, Travel/Hunt nodes, camp boundaries, and empty-target restoration. Update isolated test boundaries and plugin expectations without removing existing suites.

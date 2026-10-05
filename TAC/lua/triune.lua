@@ -597,6 +597,8 @@ sanitizeModeConfig(ctrl)
 
 -- Runtime & state management tables
 local runtime = {
+    -- Edited By: NeroMorte - Session-only override; never written into character loadouts.
+    trashMode = false,
     plugins = {},
     pluginManager = nil,
     pullState = 'IDLE',
@@ -10465,10 +10467,30 @@ function UI.drawBurnButton(idSuffix, w, h, onLabel, offLabel)
     end
 end
 
+-- Edited By: NeroMorte - Temporary trash clearing keeps saved selections intact.
+function runtime.setTrashMode(enabled)
+    runtime.trashMode = enabled == true
+    runtime.trashStyleChanged = true -- handled by the main coroutine, never the UI callback
+    print(string.format('\ag[Triune]\ax Trash Mode %s.', runtime.trashMode and 'ON (no spells, AAs, or clickies)' or 'OFF (normal loadout restored)'))
+end
+
+-- Edited By: NeroMorte - Separate control IDs for full and compact windows.
+function UI.drawTrashButton(idSuffix, w, h)
+    if ImGui.Button((runtime.trashMode and 'TRASH (ON)' or 'Trash (OFF)') .. (idSuffix or ''), w, h) then
+        runtime.setTrashMode(not runtime.trashMode)
+    end
+    if ImGui.IsItemHovered() then
+        UI.setTooltip('Temporary melee clearing: no spells (including heals, buffs and pet summons), AAs or clickies. Skills, disciplines and existing pets stay enabled. Spell pulls use melee. Saved selections stay intact; resets OFF on restart. An already-issued cast can finish.')
+    end
+end
+
 function UI.drawActionControls()
     UI.drawStartPauseButton('##btnRun', 130, 24)
     ImGui.SameLine()
     UI.drawBurnButton('##btnBurn', 130, 24)
+    -- Edited By: NeroMorte - Session-only trash toggle beside Burn.
+    ImGui.SameLine()
+    UI.drawTrashButton('##btnTrash', 110, 24)
 
     ImGui.SameLine(0, UI.px(14))
     local modeStr = ctrl.mode or 'Manual'
@@ -15016,6 +15038,9 @@ function UI.drawMiniHeader()
     UI.drawStartPauseButton('##miniRun', 72, 22)
     ImGui.SameLine()
     UI.drawBurnButton('##miniBurn', 64, 22, 'BURN!', 'Burn')
+    -- Edited By: NeroMorte - The compact view shares the same temporary state.
+    ImGui.SameLine()
+    UI.drawTrashButton('##miniTrash', 110, 22)
     ImGui.SameLine(0, UI.px(10))
     UI.drawModeCombos('MiniMode', 86, 82)
     ImGui.SameLine(0, UI.px(10))
@@ -18054,6 +18079,8 @@ mq.event('TriunePetExists1', '#*#cannot have more than one pet#*#', function() o
 mq.event('TriunePetExists2', '#*#already have a pet#*#', function() onPetSummonRefused() end)
 
 function runtime.castGem(i, g, id)
+    -- Edited By: NeroMorte - Trash Mode blocks all automated spells, AAs and clickies.
+    if runtime.trashMode then return false end
     -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
     if not runtime.petCampActionAllowed(g and g.spell, g, id) then return false end
     local isFD = isFeignDeathAbility(g and g.spell)
@@ -18156,6 +18183,11 @@ function runtime.castGem(i, g, id)
             return false
         end
     end
+    -- Edited By: NeroMorte - A UI toggle may arrive during a yielding target/movement wait.
+    if runtime.trashMode then
+        runtime.abortPendingCast(orig, id, keepHostile)
+        return false
+    end
     mq.cmdf('/cast "%s"', g.spell)
     runtime.lastCast[key] = os.clock()
     if id and id > 0 and g and g.spell and g.spell ~= '' then
@@ -18223,6 +18255,8 @@ function runtime.castGem(i, g, id)
 end
 
 function runtime.fireAA(name, a, id)
+    -- Edited By: NeroMorte - Trash Mode blocks all automated spells, AAs and clickies.
+    if runtime.trashMode then return false end
     -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
     if not runtime.petCampActionAllowed(name, a, id) then return false end
     if not name or name == '' then return false end
@@ -18295,6 +18329,11 @@ function runtime.fireAA(name, a, id)
         castTracker.targetRequired = isDet or isTargetRequiredSpell(name) or selfCast
     end
     castTracker.castStartTime  = now
+    -- Edited By: NeroMorte - A UI toggle may arrive during a yielding target/movement wait.
+    if runtime.trashMode then
+        runtime.abortPendingCast(orig, id, keepHostile)
+        return false
+    end
     mq.cmdf('/alt act %d', aa.ID())
 
     local aaReuse = 0
@@ -18721,6 +18760,8 @@ runtime.fireSkill = function(name, a, id)
 end
 
 runtime.useClickie = function(c, id)
+    -- Edited By: NeroMorte - Trash Mode blocks all automated spells, AAs and clickies.
+    if runtime.trashMode then return false end
     -- Edited By: NeroMorte - Stationary pets mode assists only at camp or against direct threats.
     if not runtime.petCampActionAllowed(c and ((c.spell and c.spell ~= '') and c.spell or c.name), c, id) then return false end
     if not c or not c.name or c.name == '' then return false end
@@ -18800,6 +18841,11 @@ runtime.useClickie = function(c, id)
             return false
         end
     end
+    -- Edited By: NeroMorte - A UI toggle may arrive during a yielding target/movement wait.
+    if runtime.trashMode then
+        runtime.abortPendingCast(orig, id, keepHostile)
+        return false
+    end
     mq.cmdf('/useitem "%s"', c.name)
     runtime.lastCast[key] = os.clock()
     print('\ag[Triune]\ax Clickie used: ' .. c.name .. (c.spell and (' (' .. c.spell .. ')') or ''))
@@ -18874,7 +18920,8 @@ function runtime.processHealPriority()
     local eligibleHeals = {}
 
     -- 1. Scan Gems for Heals
-    if loadout.gems then
+    -- Edited By: NeroMorte - Skip blocked heal types without starving skill/disc heals.
+    if not runtime.trashMode and loadout.gems then
         for i = 1, #loadout.gems do
             local g = loadout.gems[i]
             if g and g.spell and g.spell ~= '' then
@@ -18935,7 +18982,8 @@ function runtime.processHealPriority()
     end
 
     -- 2. Scan Activated AAs for Heals
-    if loadout.aas then
+    -- Edited By: NeroMorte - Skip blocked heal types without starving skill/disc heals.
+    if not runtime.trashMode and loadout.aas then
         for rawName, a in pairs(loadout.aas) do
             local name = type(rawName) == 'string' and rawName:match('^%s*(.-)%s*$') or rawName
             if a.enabled and runtime.isHealAction(name, a.target, a) then
@@ -18998,7 +19046,8 @@ function runtime.processHealPriority()
     end
 
     -- 4. Scan Clickies for Heals
-    if loadout.clickies and #loadout.clickies > 0 then
+    -- Edited By: NeroMorte - Skip blocked heal types without starving skill/disc heals.
+    if not runtime.trashMode and loadout.clickies and #loadout.clickies > 0 then
         for _, c in ipairs(loadout.clickies) do
             local effName = (c.spell and c.spell ~= '') and c.spell or c.name
             if (c.enabled ~= false) and runtime.isHealAction(effName, c.target, c) then
@@ -19209,10 +19258,12 @@ end
 runtime.meleeDesiredRange = meleeDesiredRange
 
 local function desiredRange(id)
-    if ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee' then
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    if ctrl.mode == 'Puller' and ctrl.pull_stand_back and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') ~= 'Melee' then
         return rangedApproachDist(ctrl.pull_engage_dist or 100)
     end
-    local style = ctrl and ctrl.combat_style or 'Melee'
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    local style = ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'
     if style ~= 'Melee' then
         return rangedApproachDist(ctrl.ranged_dist or 40)
     end
@@ -19225,10 +19276,12 @@ runtime.desiredRange = desiredRange
 -- test the engage gates share, so a character is only flagged engaged (and
 -- the gem loop / auto-attack released) once it is where the slider says.
 local function styleReach(id)
-    if ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee' then
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    if ctrl.mode == 'Puller' and ctrl.pull_stand_back and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') ~= 'Melee' then
         return ctrl.pull_engage_dist or 100
     end
-    if (ctrl and ctrl.combat_style or 'Melee') == 'Melee' then
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    if (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' then
         return maxMeleeDistance(id)
     end
     return (ctrl and ctrl.ranged_dist) or 40
@@ -19825,7 +19878,8 @@ function runtime.moveToward(id, dist, followOnly)
         end
     end
 
-    local isMelee = (not followOnly and (ctrl and ctrl.combat_style or 'Melee') == 'Melee')
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    local isMelee = (not followOnly and (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee')
     local targetDist = dist or desiredRange(id)
     local effectiveArrivalDist = targetDist + (isMelee and 2 or 3)
 
@@ -19992,7 +20046,8 @@ local function repositionCloser()
     local currentDist = distToId(tid)
     -- When EQ reports "too far away", ensure we close in tighter than current distance
     local targetDist = desiredRange(tid)
-    if (ctrl and ctrl.combat_style) ~= 'Melee' then
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    if (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style)) ~= 'Melee' then
         targetDist = math.max(5, math.min(targetDist, math.floor(currentDist - 15)))
     else
         targetDist = math.max(5, math.min(targetDist, math.floor(currentDist - 8)))
@@ -20095,7 +20150,8 @@ local function handleCantHitFromHere()
     end
 
     local targetDist = desiredRange(tid)
-    if (ctrl and ctrl.combat_style) ~= 'Melee' then
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    if (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style)) ~= 'Melee' then
         targetDist = math.max(12, math.min(targetDist, math.floor(curDist - 10)))
     else
         targetDist = math.max(5, math.min(targetDist, math.floor(curDist - 8)))
@@ -20308,6 +20364,8 @@ end
 -- Cast the pull spell at tid (or, with none configured, the first enabled
 -- detrimental gem in the loadout). Returns true if a cast was issued.
 function runtime.castPullSpell(tid)
+    -- Edited By: NeroMorte - Trash Mode blocks all automated spells, AAs and clickies.
+    if runtime.trashMode then return false end
     local spellName, slot = runtime.pullSpellName()
     if spellName then
         local g = nil
@@ -20379,12 +20437,14 @@ function runtime.pullTagRangedAttack(tid)
     pcall(function() hasRanged = mq.TLO.Me.Inventory('ranged')() ~= nil end)
     if hasRanged then
         if isCasting() then return end
-        if runtime.engageRangedAttack(tid) and (ctrl.combat_style or 'Melee') ~= 'Ranged' then
+        -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+        if runtime.engageRangedAttack(tid) and ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') ~= 'Ranged' then
             -- Remember that the pull -- not the stance -- turned the bow on,
             -- so finishRangedPullTag can hand the toggle back afterwards.
             runtime.rangedPullAttackOn = true
         end
-    elseif (ctrl.combat_style or 'Melee') ~= 'Spell' then
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    elseif ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') ~= 'Spell' then
         runtime.meleeAttackOn()
     end
 end
@@ -20395,7 +20455,8 @@ end
 -- weapon (Melee) or nothing is left running at all (Spell).
 function runtime.finishRangedPullTag()
     if mq.TLO.Me.AutoFire() then mq.cmd('/autofire off') end
-    if (ctrl.combat_style or 'Melee') == 'Ranged' then
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    if ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Ranged' then
         runtime.rangedPullAttackOn = false
         return
     end
@@ -21474,8 +21535,10 @@ function runtime.checkCombatStall()
     end
 
     local d = distToId(t.ID())
-    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
-    local style = ctrl.combat_style or 'Melee'
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') ~= 'Melee')
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    local style = (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'
     if style == 'Melee' and not isPullStandBack then
         if d <= maxMeleeDistance(t.ID()) and not mq.TLO.Me.Combat() then runtime.meleeAttackOn() end
     elseif style == 'Ranged' then
@@ -21515,14 +21578,17 @@ runtime.handleCannotSeeTarget = function()
     -- scheme, Ranged style also drives its bow through plain /attack on, so
     -- Combat() reads true while ranged-attacking too. Only let it count
     -- toward "melee" when we're not confirmed in server Ranged attack mode.
-    local isConfirmedRanged = ctrl and ctrl.combat_style == 'Ranged' and runtime.serverAttackMode == 'Ranged'
+    -- Edited By: NeroMorte - Temporary melee applies to direct style comparisons too.
+    local isConfirmedRanged = ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) == 'Ranged' and runtime.serverAttackMode == 'Ranged'
     -- combat_style == 'Ranged' always re-faces instead of stepping back: the
     -- distance fallback below (d <= maxReach+10) used to catch Ranged too
     -- once low ranged_dist values (down to 5) put bow users inside that
     -- radius, causing a back-away/re-approach loop as the normal Ranged
     -- engage logic immediately closed the gap back to ranged_dist.
-    local isMelee = (ctrl and ctrl.combat_style ~= 'Ranged') and
-        ((ctrl and ctrl.combat_style == 'Melee') or (mq.TLO.Me.Combat() and not isConfirmedRanged) or
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    local isMelee = (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) ~= 'Ranged') and
+        -- Edited By: NeroMorte - Temporary melee applies to direct style comparisons too.
+        ((ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) == 'Melee') or (mq.TLO.Me.Combat() and not isConfirmedRanged) or
             (d <= (maxReach + 10)))
 
     if not isMelee then
@@ -21897,7 +21963,8 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
                                     local sz = s.Z() or 0
                                     local inHaz = runtime.isCoordInActiveHazard(sx, sy, sz)
                                     -- Only melee has to walk into the hazard; ranged/spell can hit it from outside.
-                                    local isMeleeStyle = (ctrl and ctrl.combat_style or 'Melee') == 'Melee'
+                                    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                                    local isMeleeStyle = (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee'
                                     local pathOk = not (inHaz and isMeleeStyle)
                                     if pathOk and navLoaded() and not playerOffMesh then
                                             local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
@@ -22266,7 +22333,8 @@ function runtime.pullerTick()
             runtime.pullState = 'IDLE'; runtime.pullTargetId = 0; stopMoving()
             clearTarget()
         else
-            local pullStyle = ctrl.pull_style or 'Melee'
+            -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+            local pullStyle = (runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee'
             -- A pull method only decides how the mob gets tagged. The Melee
             -- method never drags a Ranged/Spell character into weapon reach:
             -- every stance runs up and stops at its own Combat Distance
@@ -22277,7 +22345,8 @@ function runtime.pullerTick()
             -- (capped by what the bow or spell can actually reach), fire the
             -- tag from there, and then bring the mob home -- the stance takes
             -- over once the fight starts at camp.
-            local combatStyle = ctrl.combat_style or 'Melee'
+            -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+            local combatStyle = (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'
             local tagStyle = pullStyle
             if pullStyle == 'Melee' and combatStyle == 'Spell' then tagStyle = 'Spell' end
             local reqRange
@@ -22375,7 +22444,8 @@ function runtime.pullerTick()
         -- Ranged/Spell styles are engaged by combatTick's own style block.
         -- Only re-issue /attack while the pull target is actually our target
         -- and in reach; otherwise this spammed the command every tick.
-        if ctrl.mode == 'Puller' and (ctrl.combat_style or 'Melee') == 'Melee' and not mq.TLO.Me.Combat() then
+        -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+        if ctrl.mode == 'Puller' and ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' and not mq.TLO.Me.Combat() then
             local ptId = runtime.pullTargetId or 0
             local tgtId = 0
             pcall(function() tgtId = mq.TLO.Target.ID() or 0 end)
@@ -22718,6 +22788,8 @@ function runtime.tickPendingBardSong()
 end
 
 function runtime.tickPendingDowntimeReady()
+    -- Edited By: NeroMorte - A pending buff-ready wait must not hold melee trash clearing.
+    if runtime.trashMode then return false end
     local pend = runtime.pendingDowntimeReady
     if not pend then return false end
     local function finish()
@@ -22755,6 +22827,8 @@ function runtime.tickPendingDowntimeReady()
 end
 
 function runtime.processDowntimeBuffing()
+    -- Edited By: NeroMorte - Trash Mode blocks all automated spells, AAs and clickies.
+    if runtime.trashMode then return false end
     if not ctrl.running then return end
     if runtime.tickPendingDowntimeReady() then return end
     if runtime.hasDowntimeAggroThreat() then return end
@@ -23351,7 +23425,8 @@ local function combatTick()
                 local id = pt.ID()
                 if moveToward(id, desiredRange(id)) then
                     engage = true
-                elseif (ctrl.combat_style or 'Melee') == 'Melee' then
+                -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                elseif ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' then
                     engage = (distToId(id) <= maxMeleeDistance(id) or isXTargetId(id))
                 else
                     -- Ranged/Spell: only engage once inside Combat Distance with
@@ -23579,7 +23654,8 @@ local function combatTick()
             if haveNPC then
                 runtime.wpAcquired()
                 local id = mq.TLO.Target.ID()
-                local pullStyle = ctrl.pull_style or 'Melee'
+                -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+                local pullStyle = (runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee'
 
                 -- Pet pull: dispatch pets while navigating (don't wait for arrival)
                 if pullStyle == 'Pet' and (os.clock() - (runtime.lastPetPullAt or 0)) > 3.0 then
@@ -23632,14 +23708,16 @@ local function combatTick()
                             pursuit.lastCombatFaceAt = os.clock()
                             mq.cmd('/face fast')
                         end
-                        if ctrl.combat_style == 'Ranged' and runtime.serverAttackMode == 'Ranged' and not isCasting() then
+                        -- Edited By: NeroMorte - Temporary melee applies to direct style comparisons too.
+                        if (runtime.trashMode and 'Melee' or ctrl.combat_style) == 'Ranged' and runtime.serverAttackMode == 'Ranged' and not isCasting() then
                             -- Me.Combat() reading true doesn't mean we're firing
                             -- at THIS id (e.g. a fresh adjacent mob picked up as
                             -- the previous one died) -- route through the ranged
                             -- engage so a target change still gets its retoggle.
                             runtime.ensureRangedAutoAttack(id)
                         end
-                    elseif (ctrl.combat_style or 'Melee') == 'Melee' and isXTargetId(id)
+                    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                    elseif ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' and isXTargetId(id)
                         and distToId(id) <= (ctrl.xtar_nav_dist or 150) and hasLoS(id) then
                         -- Melee keeps its old behaviour: engaged while closing
                         -- on an XTarget so hybrids can cast on the way in.
@@ -23655,10 +23733,13 @@ local function combatTick()
                         -- auto-attacks -- its first gem cast is the tag.
                         engage = true
                         mq.cmd('/face fast')
-                        if ctrl.combat_style ~= 'Spell' and (mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking()) then mq.cmd('/stand') end
-                        if (ctrl.combat_style or 'Melee') == 'Melee' then
+                        -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                        if (runtime.trashMode and 'Melee' or ctrl.combat_style) ~= 'Spell' and (mq.TLO.Me.Sitting() or mq.TLO.Me.Ducking()) then mq.cmd('/stand') end
+                        -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                        if ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' then
                             runtime.meleeAttackOn()
-                        elseif ctrl.combat_style == 'Ranged' then
+                        -- Edited By: NeroMorte - Temporary melee applies to direct style comparisons too.
+                        elseif (runtime.trashMode and 'Melee' or ctrl.combat_style) == 'Ranged' then
                             if not isCasting() then runtime.engageRangedAttack(id) end
                         end
                     elseif pullStyle == 'Spell' then
@@ -23687,7 +23768,8 @@ local function combatTick()
                         runtime.pullTagRangedAttack(id)
                     end
                 elseif isXTargetId(id) then
-                    if (ctrl.combat_style or 'Melee') == 'Melee' then
+                    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                    if ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' then
                         if distToId(id) <= (ctrl.xtar_nav_dist or 150) and hasLoS(id) then
                             engage = true
                         end
@@ -23726,7 +23808,8 @@ local function combatTick()
                     -- Backline never closes on the mob, so "in reach" has to be
                     -- judged by the active style: bow/caster reach for
                     -- Ranged/Spell, melee reach otherwise.
-                    local reach = ((ctrl.combat_style or 'Melee') == 'Melee') and maxMeleeDistance(id) or (ctrl.ranged_dist or 40)
+                    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+                    local reach = (((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee') and maxMeleeDistance(id) or (ctrl.ranged_dist or 40)
                     if distToId(id) <= reach and hasLoS(id) then
                         engage = true
                     end
@@ -23828,7 +23911,8 @@ local function combatTick()
         local moving = isMoveActive()
         print(string.format(
             '\ao[DEBUG]\ax Mode:%s Style:%s AtkMode:%s | Tgt:%s(#%d HP:%d%% Hostile:%s) | Dist:%.1f Reach:%.1f LoS:%s | Nav:%s Stick:%s Mov:%s | Eng:%s Combat:%s Cast:%s | XTar:%d',
-            tostring(ctrl.mode), tostring(ctrl.combat_style or 'Melee'), tostring(runtime.serverAttackMode or 'Melee'), tostring(tname), tonumber(tid) or 0, tonumber(thp) or 0, tostring(isHostile), tonumber(dist) or 0, tonumber(reach) or 18, tostring(los),
+            -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+            tostring(ctrl.mode), tostring((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'), tostring(runtime.serverAttackMode or 'Melee'), tostring(tname), tonumber(tid) or 0, tonumber(thp) or 0, tostring(isHostile), tonumber(dist) or 0, tonumber(reach) or 18, tostring(los),
             tostring(navActive), tostring(stickActive), tostring(moving), tostring(engage), tostring(combat), tostring(casting), tonumber(numXtar) or 0))
     end
 
@@ -23843,9 +23927,11 @@ local function combatTick()
     --   Ranged -> server #attackmode ranged + /attack on at ranged_dist (see runtime.engageRangedAttack)
     --   Spell  -> never auto-attacks; just holds ranged_dist, faces, and re-closes if the mob drifts
     local xtarActive = anyXtarAlive()
-    local style = ctrl and ctrl.combat_style or 'Melee'
+    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
+    local style = ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'
     local tid = mq.TLO.Target.ID() or 0
-    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and (ctrl.pull_style or 'Melee') ~= 'Melee')
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    local isPullStandBack = (ctrl.mode == 'Puller' and ctrl.pull_stand_back and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') ~= 'Melee')
     local autoAttackOk = false
     -- Edited By: NeroMorte - Gathering is never permission for the player to attack.
     if runtime.petCampActive() then
@@ -23991,7 +24077,8 @@ local function combatTick()
     -- Puller Camp Mode: Keep pets on HOLD while traveling to mob or dragging mob back to camp,
     -- until the mob is brought within camp fight range.
     local isPullingToCamp = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState ~= 'FIGHTING')
-    if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and (ctrl.pull_style or 'Melee') == 'Pet' and runtime.pullState == 'TO_MOB' then
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') == 'Pet' and runtime.pullState == 'TO_MOB' then
         isPullingToCamp = false
     end
     if isPullingToCamp and ctrl.camp_loc then
@@ -24018,7 +24105,8 @@ local function combatTick()
     -- mob. Covers Hunt (any pre-engage state) and Camp while in TO_MOB; before
     -- Camp was included, pullerTick sent "attack all" and this block sent
     -- "hold all" on the same tick, flip-flopping the pets until the tag landed.
-    local isHuntPetApproach = (ctrl.mode == 'Puller' and (ctrl.pull_style or 'Melee') == 'Pet'
+    -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
+    local isHuntPetApproach = (ctrl.mode == 'Puller' and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') == 'Pet'
         and haveNPC and not engage
         and (ctrl.submode == 'Hunt' or (ctrl.submode == 'Camp' and runtime.pullState == 'TO_MOB')))
 
@@ -24101,7 +24189,8 @@ local function combatTick()
     -- Walked in AAs-tab order so exclusion groups (runtime.aaGroupBusy) give
     -- the first-listed AA its turn first; once it fires, its siblings see the
     -- effect timer and wait.
-    if combatReady then
+    -- Edited By: NeroMorte - Do not resolve or target blocked AA actions.
+    if combatReady and not runtime.trashMode then
         for _, e in ipairs(runtime.sortedAAEntries()) do
             local name, a = e.name, e.entry
             local aPct = tonumber(a.pct)
@@ -24227,7 +24316,8 @@ local function combatTick()
     pcall(function() isBrdMe = (mq.TLO.Me.Class.ShortName() == 'BRD') end)
     local canCastMove = isBrdMe or not isMoving
 
-    if combatReady and not isCasting() and not isMoveActive() and canCastMove and loadout.clickies and #loadout.clickies > 0 then
+    -- Edited By: NeroMorte - Skip blocked clickie scans before target resolution.
+    if combatReady and not runtime.trashMode and not isCasting() and not isMoveActive() and canCastMove and loadout.clickies and #loadout.clickies > 0 then
         if not isCasting() and runtime.restoreTargetId ~= nil then
             local rId = runtime.restoreTargetId
             runtime.restoreTargetId = nil
@@ -24280,7 +24370,8 @@ local function combatTick()
                 runtime.clearTarget()
             end
         end
-        if loadout.gems then
+        -- Edited By: NeroMorte - Preserve restoration, but skip all spell selection in Trash Mode.
+        if not runtime.trashMode and loadout.gems then
             local gemOrder = {}
             for i = 1, #loadout.gems do
                 local g = loadout.gems[i]
@@ -24512,6 +24603,8 @@ local function triuneCommand(...)
         if MODES.SUBMODES[ctrl.mode] then modeStr = modeStr .. ' (' .. ctrl.submode .. ')' end
         print(string.format('\ag[Triune]\ax status: %s, mode: %s, burn: %s', ctrl.running and 'running' or 'paused',
             modeStr, ctrl.burn and 'ON' or 'OFF'))
+        -- Edited By: NeroMorte - Report temporary trash state separately from saved mode/style.
+        print('\ag[Triune]\ax Trash Mode: ' .. (runtime.trashMode and 'ON' or 'OFF'))
     elseif cmd == 'burn' or cmd == 'burnon' or cmd == 'burnoff' or cmd == 'burn1' or cmd == 'burn0' or cmd == 'burntoggle' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or cmd == 'burnon' or cmd == 'burn1' then
@@ -24524,6 +24617,13 @@ local function triuneCommand(...)
             ctrl.burn = not ctrl.burn
             print(string.format('\ag[Triune]\ax Burn mode %s.', ctrl.burn and 'ENABLED!' or 'DISABLED.'))
         end
+    -- Edited By: NeroMorte - /ac trash [on|off|toggle] never saves a temporary override.
+    elseif cmd == 'trash' then
+        local sub = args[2] and tostring(args[2]):lower() or ''
+        if sub == 'on' or sub == '1' then runtime.setTrashMode(true)
+        elseif sub == 'off' or sub == '0' then runtime.setTrashMode(false)
+        elseif sub == '' or sub == 'toggle' then runtime.setTrashMode(not runtime.trashMode)
+        else print('\ay[Triune]\ax Usage: /ac trash [on|off|toggle]') end
     elseif cmd == 'debug' or cmd == 'debugmode' or cmd == 'diag' then
         ctrl.debug_mode = not ctrl.debug_mode
         print(string.format('\ag[Triune]\ax Debug Mode: %s', ctrl.debug_mode and '\agENABLED (live combat telemetry)\ax' or '\arDISABLED\ax'))
@@ -24599,6 +24699,8 @@ local function triuneCommand(...)
         print('  \ag/ac winpos [save|restore|reset]\ax - Save or restore window positions & layout')
         print(
             '  \ag/ac <mode> [submode]\ax - Switch combat mode (manual, puller [hunt|camp], assist [chase|camp|backline])')
+        -- Edited By: NeroMorte - Advertise the temporary trash override.
+        print('  \ag/ac trash [on|off|toggle]\ax - Temporary melee clearing; no spells, AAs or clickies')
         print('  \ag/triunerun\ax - Quick keybind command to toggle run/pause')
     elseif cmd == 'pet' or cmd == 'petcmd' then
         local verb = args[2] and string.lower(args[2]) or 'status'
@@ -25571,12 +25673,23 @@ local function runMainLoop()
         local passT0 = os.clock()
         local evT0 = passT0
         mq.doevents()
+        -- Edited By: NeroMorte - Switch server attack mode safely from the main coroutine.
+        if runtime.trashStyleChanged then
+            runtime.trashStyleChanged = nil
+            runtime.lastRangedAttackTargetId = 0
+            if runtime.trashMode or ctrl.combat_style ~= 'Ranged' then
+                runtime.revertAttackModeToMelee()
+            end
+        end
         runtime.doeventsMs = (os.clock() - evT0) * 1000
         local nm = mq.TLO.Me.CleanName()
         if nm and nm ~= '' and nm ~= myName then
             -- Edited By: NeroMorte - Remove the previous character's camp marker.
             runtime.clearEqCampMap()
             myName = nm
+            -- Edited By: NeroMorte - Temporary Trash Mode must not leak to another character.
+            runtime.trashMode = false
+            runtime.trashStyleChanged = nil
             runtime.loadAll()
             runtime.onCharacterChanged()
             if runtime.pluginManager and runtime.pluginManager.restartAll then
