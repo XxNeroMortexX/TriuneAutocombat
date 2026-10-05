@@ -99,6 +99,8 @@ Each of these is a plugin in `lua/tac/`. Turn them on or off under **Settings ->
 
 ---
 
+Player Chase measures distance in 3D. When nearby with clear line of sight, swimming or levitating followers can use MoveUtils Stick UW for the final vertical approach. Nav continues to provide distant mesh routing; Chase and combat Nav commands use the selected GUI range without hidden approach padding; combat movement uses the same XYZ range checks and nearby UW handoff while retaining its existing engagement permissions.
+
 ## Commands you will actually use
 
 Type `/ac help` in game for the full list.
@@ -109,6 +111,7 @@ Type `/ac help` in game for the full list.
 | `/ac run` / `/ac pause` | Start / pause |
 | `/ac manual`, `/ac puller camp`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
 | `/ac ma <name>` | Set the Main Assist |
+| `/ac chasedist <0-100>` | Set player Chase distance in 3D; zero uses a one-unit arrival tolerance |
 | `/ac burn` | Toggle Burn mode |
 | `/ac trash [on\|off\|toggle]` | Temporarily block spells, AAs and clickies for melee trash clearing |
 | `/ac memall` | Memorize any missing spells |

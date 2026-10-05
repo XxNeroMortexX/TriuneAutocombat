@@ -88,16 +88,18 @@ jobs:
           done
 
       # Edited By: NeroMorte - Parse the Windows installer without touching a user checkout.
-      - name: Verify Trash Mode installer PowerShell syntax
+      - name: Verify test installers PowerShell syntax
         shell: pwsh
         run: |
           $tokens = $null
           $parseErrors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Join-Path $PWD 'tools/install_trash_mode_test.ps1'),
-            [ref]$tokens, [ref]$parseErrors) | Out-Null
-          if ($parseErrors.Count) { $parseErrors | ForEach-Object { Write-Error $_ }; exit 1 }
-          Write-Host 'Trash Mode installer syntax passed.'
+          # Edited By: NeroMorte - Validate every focused test installer.
+          foreach ($installer in Get-ChildItem 'tools/install_*_test.ps1') {
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $installer.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count) { $parseErrors | ForEach-Object { Write-Error $_ }; exit 1 }
+            Write-Host "$($installer.Name) syntax passed."
+          }
 
   theme-consistency:
     name: Theme consistency check
