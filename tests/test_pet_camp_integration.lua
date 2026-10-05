@@ -25,7 +25,9 @@ local signatures = { 'function runtime.castGem(i, g, id)', 'function runtime.fir
 runtime.petCampActionAllowed = function() return false end
 for _, signature in ipairs(signatures) do
     local start = assert(source:find(signature, 1, true))
-    local guardEnd = assert(source:find('then return false end', start, true)) + #'then return false end' - 1
+    -- Edited By: NeroMorte - Exercise the stationary gate after the independent Trash Mode guard.
+    local campGuard = assert(source:find('if not runtime.petCampActionAllowed', start, true))
+    local guardEnd = assert(source:find('then return false end', campGuard, true)) + #'then return false end' - 1
     local guard = source:sub(start, guardEnd) .. '\nerror("dispatcher escaped gate")\nend'
     assert(load(guard, 'dispatch', 't', env))()
 end

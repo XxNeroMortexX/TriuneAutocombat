@@ -2513,6 +2513,8 @@ end
 
 -- Edited By: NeroMorte - Summon only with an empty cursor and queue the selected item action.
 function AA.activateFireworks(aaId)
+    -- Edited By: NeroMorte - Trash Mode suppresses activations, not AA purchasing.
+    if rt and rt.trashMode then return false end
     -- Do not summon onto an occupied or unreadable cursor. In particular, the
     -- optional delete action must never operate on a pre-existing item.
     if AA.pendingFireworksCursor or AA.cursorItemId() ~= 0 then return false end
@@ -2542,6 +2544,8 @@ end
 
 -- Edited By: NeroMorte - Activate AA 17789 after a verified purchase with an equipped Power Source.
 function AA.processConsumeExperience()
+    -- Edited By: NeroMorte - Trash Mode suppresses activations, not AA purchasing.
+    if rt and rt.trashMode then return false end
     local job = AA.pendingConsumeExperience
     if not job then return end
     if not ctrl.auto_consume_experience or AA.isIgnored('Consume Experience') then
@@ -2587,6 +2591,8 @@ end
 
 -- Edited By: NeroMorte - Honor ignore/settings and use guarded cursor handling.
 function AA.processPendingFireworksSummon()
+    -- Edited By: NeroMorte - Pause pending activations without consuming their retry budget.
+    if rt and rt.trashMode then return false end
     local job = AA.pendingFireworksSummon
     if not job then return false end
     -- Edited By: NeroMorte - Cancel queued Fireworks when ignored or automatic summoning is disabled.
@@ -2622,6 +2628,8 @@ end
 
 -- Edited By: NeroMorte - Use guarded Fireworks activation and independent ownership checks.
 function AA.checkAutoSummonFireworks()
+    -- Edited By: NeroMorte - Pause pending activations without consuming their retry budget.
+    if rt and rt.trashMode then return false end
     if not ctrl.auto_summon_fireworks then return false end
     -- Edited By: NeroMorte - Honor Fireworks ignore and avoid overlapping cursor jobs.
     if AA.isIgnored('Alternately Advanced Fireworks') then return false end
