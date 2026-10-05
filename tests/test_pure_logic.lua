@@ -10075,8 +10075,7 @@ do
 
     -- 5. Style-aware engine paths
     assert_true(triuneContent:find("if style ~= 'Melee' then\n        return rangedApproachDist(ctrl.ranged_dist or 40)", 1, true) ~= nil,
-        'Suite 83: desiredRange approaches to just inside ranged_dist for non-Melee styles')
-    -- Ranged/Spell approach margin: moveToward accepts arrival at target + 3,
+        'Suite 83: desiredRange uses configured ranged_dist for non-Melee styles')
     -- Edited By: NeroMorte - XYZ arrival no longer adds padding, so the Nav range is the raw slider.
     do
         local fn = triuneContent:match('local function rangedApproachDist%(reach%)\n(.-)\nend')

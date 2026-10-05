@@ -19215,15 +19215,8 @@ local function maxMeleeDistance(id)
 end
 runtime.maxMeleeDistance = maxMeleeDistance
 
--- Approach distance for a Ranged/Spell reach (Combat Distance slider, or the
--- pull Stand Back distance): stop just inside it, mirroring the melee
--- "userDist - 2" margin in meleeDesiredRange below. moveToward accepts
--- arrival anywhere up to targetDist + 3, while combatTick's attack/cast reach
--- check is the raw slider value -- so navigating to the raw value let a bow
--- user or caster stop in the (slider, slider + 3] window: "arrived" as far as
--- movement was concerned, yet "out of reach" for the engage gate, which
--- re-called moveToward, which reported "arrived" again, forever, with nothing
--- Edited By: NeroMorte - XYZ arrival now checks the configured reach without extra padding.
+-- Edited By: NeroMorte - Ranged/Spell approach uses the configured range directly.
+-- Arrival and engagement now share XYZ distance, eliminating the old extra-tolerance gap.
 local function rangedApproachDist(reach)
     -- Edited By: NeroMorte - Nav's requested range matches the configured range in XYZ.
     return math.max(0, math.floor(tonumber(reach) or 40))
