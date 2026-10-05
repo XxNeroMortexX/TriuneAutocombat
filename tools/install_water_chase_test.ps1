@@ -61,7 +61,10 @@ foreach ($Relative in $Files) {
 $LocalTest = $null
 git -C $Dev show-ref --verify --quiet "refs/heads/$Branch"
 if ($LASTEXITCODE -eq 0) { $LocalTest = git -C $Dev rev-parse "refs/heads/$Branch" }
-if ($LocalTest -and $LocalTest -ne $Revision) { throw 'Existing local test branch differs; stopped without resetting it.' }
+if ($LocalTest) {
+    git -C $Dev merge-base --is-ancestor $LocalTest $Revision
+    if ($LASTEXITCODE -ne 0) { throw 'Existing test branch diverged; stopped without resetting it.' }
+}
 $Backup = Join-Path $BackupRoot ('water-chase-test-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6))
 New-Item -ItemType Directory -Path $Backup -Force | Out-Null
 foreach ($Relative in $Files) {
@@ -75,7 +78,11 @@ foreach ($Relative in $Files) {
 git -c core.autocrlf=false -c core.eol=lf -C $Dev archive --format=zip "--output=$(Join-Path $Backup 'test-source.zip')" $Revision -- @Files
 if ($LASTEXITCODE -ne 0) { throw 'Could not save the test archive; live files remain unchanged.' }
 try {
-    if ($LocalTest) { git -C $Dev switch $Branch }
+    if ($LocalTest) {
+        git -C $Dev switch $Branch
+        if ($LASTEXITCODE -ne 0) { throw 'Test branch switch failed.' }
+        git -C $Dev merge --ff-only --no-edit $Revision
+    }
     else { git -C $Dev switch -c $Branch --track "origin/$Branch" }
     if ($LASTEXITCODE -ne 0) { throw 'Test branch switch failed.' }
     if ((git -C $Dev rev-parse HEAD) -ne $Revision) { throw 'HEAD verification failed.' }
@@ -90,7 +97,10 @@ try {
     }
 } catch {
     $Reason = $_
-    git -C $Dev switch $BeforeBranch
+    if ($BeforeBranch -eq $Branch -and (git -C $Dev rev-parse HEAD) -ne $BeforeCommit) {
+        $RollbackBranch = 'nero/water-chase-rollback-' + [guid]::NewGuid().ToString('N').Substring(0,8)
+        git -C $Dev switch -c $RollbackBranch $BeforeCommit
+    } else { git -C $Dev switch $BeforeBranch }
     if ($LASTEXITCODE -ne 0) { throw "Install failed and rollback failed. Triune must stay stopped. Backup: $Backup. $Reason" }
     throw "Install failed; previous branch restored. Backup: $Backup. $Reason"
 }
@@ -98,4 +108,7 @@ Write-Host "Verified water/air movement test: $Revision"
 Write-Host "Backups: $Backup"
 Write-Host 'Existing Lua links and untracked updater files were preserved. No stash was applied.'
 Write-Host 'Now start Triune in game with /lua run triune. Trash Mode starts OFF.'
-Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch '$BeforeBranch'"
+if ($BeforeBranch -eq $Branch -and $BeforeCommit -ne $Revision) {
+    $RollbackBranch = 'nero/water-chase-rollback-' + [guid]::NewGuid().ToString('N').Substring(0,8)
+    Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch -c '$RollbackBranch' '$BeforeCommit'"
+} else { Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch '$BeforeBranch'" }

@@ -2,6 +2,8 @@
 
 ## 2026-10-05
 
+- **Edited By: NeroMorte — Preserve current Chase/combat approaches during idle attack cleanup** so Stick UW is not cancelled and restarted every tick. Renew movement ownership per tick, release it on actual movement stops, poll eligible Chase at least every 500 ms when the main loop is available, and show Chase distance in `/ac status`.
+
 - **Edited By: NeroMorte — Correct player Chase arrival above/below the MA** with XYZ distance instead of horizontal-only arrival. Hand nearby swimming/levitating followers to Stick UW with clear line of sight, and avoid NPC-facing commands overwriting vertical steering. Allow Chase distance 0–100 (zero uses a one-unit arrival tolerance); count Z displacement as movement in stuck detection; match Nav approach distance to the configured range without hidden padding; apply XYZ spawn range and the same nearby UW handoff to eligible combat movement while retaining engagement permissions.
 
 - **Edited By: NeroMorte — Add session-only Trash Mode** beside Burn in full/compact views and `/ac trash [on|off|toggle]`. Suppress automated spells, AA activations and clickies (including healing/buffing, Buffbot and repeatable-AA activations); preserve skills, disciplines, existing pets, modes and saved loadouts. Use temporary melee positioning and melee fallback for spell pulls; turning it off restores saved styles, and restarting resets it off. Already-issued casts can finish.

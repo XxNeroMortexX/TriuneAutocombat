@@ -2328,6 +2328,8 @@ local function isMoveActive()
 end
 
 local function stopMoving()
+    -- Edited By: NeroMorte - A real movement stop releases the current approach lease.
+    runtime.approachActive = false
     if navLoaded() then
         local navActive = false
         pcall(function() navActive = mq.TLO.Navigation.Active() or false end)
@@ -19820,6 +19822,8 @@ function runtime.tryUwApproach(id, targetDist, info, los)
             pursuit.lastNavTargetId = uwKey
             pursuit.lastStickDist = stickDist
         end
+        -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+        runtime.approachActive = true
         return true, true
     end
 
@@ -19864,12 +19868,16 @@ function runtime.followPlayer(id, dist)
                 pursuit.lastNavTargetId = id
                 pursuit.lastFollowDist = targetDist
             end
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
             return false, verticalMovement
         end
         local loaded = false
         pcall(function() loaded = mq.TLO.Navigation.MeshLoaded() == true end)
         if loaded then
             runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
             return false, verticalMovement
         end
     end
@@ -19882,6 +19890,8 @@ function runtime.followPlayer(id, dist)
             pursuit.lastNavTargetId = id
             pursuit.lastStickDist = stickDist
         end
+        -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+        runtime.approachActive = true
         return false, verticalMovement
     end
     -- Preserve the existing native movement fallback when neither plugin can drive.
@@ -20080,13 +20090,19 @@ function runtime.moveToward(id, dist, followOnly)
                 pursuit.lastNavTargetId = id
                 pursuit.lastMovementDistance = targetDist
             end
+            -- Edited By: NeroMorte - Cleanup must preserve a current Nav approach.
+            runtime.approachActive = true
             return false
         elseif meshOk and meshLoaded and (d > effectiveArrivalDist or not losOk) then
             -- Zone mesh is loaded but there is no path from here -- typically we
             -- landed in a hole. Stick toward the spawn so we can step back onto
             -- the mesh; the `if ok` branch remaps /nav as soon as PathExists.
             pursuit.noPathFails = (pursuit.noPathFails or 0) + 1
-            return runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Recovery movement also retains ownership this tick.
+            local result = runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
+            return result
         end
     end
 
@@ -20098,6 +20114,8 @@ function runtime.moveToward(id, dist, followOnly)
             pursuit.lastNavTargetId = id
             pursuit.lastStickDist = targetDist
         end
+        -- Edited By: NeroMorte - Keep fallback Stick running while closing on a mob.
+        runtime.approachActive = true
         return false
     end
 
@@ -23139,6 +23157,8 @@ local function manualMovePolicy(engaged, approaching)
 end
 
 local function combatTick()
+    -- Edited By: NeroMorte - Movement ownership must be renewed by an approach this tick.
+    runtime.approachActive = false
     runtime.wpBeginTick()
     local fullStop = runtime.fullStop
     local anyXtarAlive = runtime.anyXtarAlive
@@ -24125,7 +24145,8 @@ local function combatTick()
             if mq.TLO.Me.AutoFire() then
                 mq.cmd('/autofire off')
             end
-            if stickLoaded() then
+            -- Edited By: NeroMorte - Idle attack cleanup must not cancel player/mob approaches.
+            if stickLoaded() and not runtime.approachActive then
                 pcall(function()
                     if mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON' then
                         mq.cmd('/stick off')
@@ -24702,6 +24723,8 @@ local function triuneCommand(...)
             modeStr, ctrl.burn and 'ON' or 'OFF'))
         -- Edited By: NeroMorte - Report temporary trash state separately from saved mode/style.
         print('\ag[Triune]\ax Trash Mode: ' .. (runtime.trashMode and 'ON' or 'OFF'))
+        -- Edited By: NeroMorte - Make active follow distance visible during in-game verification.
+        print(string.format('\\ag[Triune]\\ax Chase: %s, distance: %d units', ctrl.chase and 'ON' or 'OFF', ctrl.chase_dist or 15))
     elseif cmd == 'burn' or cmd == 'burnon' or cmd == 'burnoff' or cmd == 'burn1' or cmd == 'burn0' or cmd == 'burntoggle' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or cmd == 'burnon' or cmd == 'burn1' then
@@ -24786,7 +24809,8 @@ local function triuneCommand(...)
         print('  \ag/ac petassist [1-100]\ax - Set mob HP % threshold for sending pets to attack')
         print('  \ag/ac ma [target|clear|<name>|<id>]\ax - Configure Main Assist player ID or name')
         print('  \ag/ac xtardist [25-300]\ax - Set max XTarget chase / engagement distance')
-        print('  \ag/ac chasedist [5-100]\ax - Set following distance to stay back from Main Assist')
+        -- Edited By: NeroMorte - Help matches the zero-inclusive GUI and command range.
+        print('  \ag/ac chasedist [0-100]\ax - Set following distance to stay back from Main Assist')
         print('  \ag/ac selfdefense [on|off]\ax - Toggle Assist mode self-defense when attacked')
         print('  \ag/ac assistbehind [on|off]\ax - Toggle positioning behind NPC in Assist mode')
         print('  \ag/ac manualstick [on|off]\ax - Manual mode: stick to the NPC being fought (off = you drive)')
@@ -25868,7 +25892,11 @@ local function runMainLoop()
                 memmed = true
             end
         end
-        if ctrl.running and not runtime.petCamp.probe and not memmed and (os.clock() - runtime.lastTick) > 0.4 then
+        -- Edited By: NeroMorte - Follow polling uses elapsed milliseconds, independent of CPU-clock timing.
+        runtime.followPollDue = ctrl.mode == 'Assist' and ctrl.chase
+            and (mq.gettime() - (runtime.lastFollowPollAt or 0)) >= 500
+        if ctrl.running and not runtime.petCamp.probe and not memmed
+            and ((os.clock() - runtime.lastTick) > 0.4 or runtime.followPollDue) then
             local ctT0 = os.clock()
             local ok, err = pcall(combatTick)
             local ctMs = (os.clock() - ctT0) * 1000
@@ -25884,6 +25912,8 @@ local function runMainLoop()
                     runtime.pluginManager.onCombatTick(tId)
                 end)
             end
+            -- Edited By: NeroMorte - Record the wall-clock sample after combat/follow processing.
+            runtime.lastFollowPollAt = mq.gettime()
             runtime.lastTick = os.clock()
             runtime.wasRunning = true
         elseif not ctrl.running then

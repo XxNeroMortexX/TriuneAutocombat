@@ -33,7 +33,7 @@ runtime.checkProactiveDoorAndLev = function() end
 runtime.tryOffMeshRecovery = function() commands[#commands + 1] = 'recovery' end
 local stops = 0
 local function stopMoving()
-    stops = stops + 1; nav.active = false; stick.active = false; pursuit.lastNavTargetId = 0
+    stops = stops + 1; runtime.approachActive = false; nav.active = false; stick.active = false; pursuit.lastNavTargetId = 0
 end
 local env = setmetatable({ runtime = runtime, pursuit = pursuit, ctrl = ctrl, mq = mq,
     stopMoving = stopMoving, hasLoS = function() return los end,
@@ -148,4 +148,33 @@ end
 assert(recovered == 0)
 for _ = 1, 4 do stuck.checkAt = -100; runtime.checkStuck() end
 assert(recovered > 0) -- A stationary failed approach must still trigger recovery.
+-- Execute actual attack cleanup after following: no restart/off churn across successive ticks.
+local cleanupStart = assert(source:find('    if not isPullStandBack then', source:find('local function combatTick()', 1, true), true))
+local cleanupEnd = assert(source:find('\n    -- Pet classes on this server', cleanupStart, true))
+local cleanupChunk = assert(loadstring(source:sub(cleanupStart, cleanupEnd - 1)))
+setfenv(cleanupChunk, env)
+env.haveNPC, env.autoAttackOk, env.isPullStandBack = false, false, false
+mq.TLO.Me.Combat = function() return false end
+mq.TLO.Me.AutoFire = function() return false end
+me.z, me.wet, me.lev = 0, true, false
+leader.x, leader.z = 0, -100
+pursuit.lastNavTargetId = 0
+runtime.approachActive = false
+assert(runtime.followPlayer(99, 5) == false and stick.active)
+cleanupChunk(); assert(stick.active, 'idle attack cleanup cancelled active player UW approach')
+count = #commands
+for _ = 1, 4 do
+    runtime.approachActive = false -- exactly the per-tick reset in combatTick
+    runtime.followPlayer(99, 5); cleanupChunk()
+    assert(stick.active and #commands == count, 'follow repeatedly restarted Stick UW')
+end
+-- Same cleanup must preserve a mob approach even before attack engagement is allowed.
+env.haveNPC = true
+runtime.approachActive = false
+assert(runtime.moveToward(99, 5, false) == false)
+cleanupChunk(); assert(stick.active)
+-- No current approach renews ownership: cleanup must still release obsolete Stick.
+runtime.approachActive = false
+cleanupChunk(); assert(not stick.active and last() == '/stick off')
+assert(source:find('(mq.gettime() - (runtime.lastFollowPollAt or 0)) >= 500', 1, true))
 print('PASS: XYZ Chase arrival, zero range, UW down/up/levitation, steering ownership, LoS/distance handoff missing-coordinate safety, mob UW, anchor permission and exact configured arrival')
