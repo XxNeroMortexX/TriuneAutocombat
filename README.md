@@ -53,6 +53,10 @@ Set the Main Assist with `/ac ma <name>` or from the Control tab.
 
 **Pulling** options live on the Control tab: pull with melee, a spell, your pet or a bow; an **Include list** (only pull these) and an **Ignore list** (never pull these); faction filters so you never pull a guard; and **waypoint routes** for patrolling a path (`/ac wp add` while walking).
 
+**Waypoint combat anchors** are optional in Puller - Hunt. Enable **Use Combat Anchors at Waypoints** to give nodes Travel or Hunt behavior. Hunt nodes have their own combat radius, no-target wait, and roam setting; leaving the option off keeps the existing patrol behavior. Stationary pet camp pulling remains a separate Camp-mode option.
+
+**Ordered group targets** for spells, disciplines, and clickies offer **Me, then Group** or **Group, then Me**. Triune chooses the first living, in-range recipient whose condition is met. True Self spells keep your selected target unchanged.
+
 **Burn mode** (`/ac burn`) fires anything you marked *Burn Only* - flip it on for named mobs.
 
 ---

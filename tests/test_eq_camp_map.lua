@@ -2,7 +2,7 @@
 local f = assert(io.open('TAC/lua/triune.lua', 'r'))
 local source = f:read('*a'); f:close()
 assert(loadfile('TAC/lua/triune.lua'))
-local helpers = assert(source:match('(function runtime%.eqCampMapLoaded.-)\nfunction UI%.startEngine'))
+local helpers = assert(source:match('(function runtime%.eqCampMapLoaded.-\nend)\n\n%-%- Edited By: NeroMorte %- Preserve native camp overlays'))
 local commands, loaded, zone, character = {}, true, 'testzone', 'Tester'
 local plugin = setmetatable({ IsLoaded = function() return loaded end }, { __call = function() return 'mq2map' end })
 local runtime = {}
