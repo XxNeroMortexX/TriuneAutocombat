@@ -125,4 +125,27 @@ chunk = assert(loadstring(source:sub(rangeStart, rangeEnd - 1) .. '\nreturn mele
 setfenv(chunk, env); local meleeRange = chunk()
 ctrl.melee_dist = 1; assert(meleeRange(99) == 1)
 ctrl.melee_dist = 30; assert(meleeRange(99) == 30)
+-- Actual stuck detector: purely vertical motion must not invoke ground recovery.
+local stuckStart = assert(source:find('function runtime.checkStuck()', 1, true))
+local stuckEnd = assert(source:find('\n-- ============================================================================', stuckStart, true))
+chunk = assert(loadstring(source:sub(stuckStart, stuckEnd - 1))); setfenv(chunk, env); chunk()
+local stuck = { checkAt = -100, counter = 0, lastX = 0, lastY = 0, lastZ = 0 }
+env.stuckState = stuck
+pursuit.meshIso = { active = false }
+env.isMoveActive = function() return true end
+env.isCasting = function() return false end
+for _, key in ipairs({ 'Sitting', 'Ducking', 'Stunned', 'Rooted' }) do mq.TLO.Me[key] = function() return false end end
+mq.TLO.Target.Dead = function() return false end
+local recovered = 0
+runtime.performUnstuck = function() recovered = recovered + 1 end
+runtime.tryOpenNearbyDoor = function() return false end
+leader.x, leader.z = 0, -200
+me.x, me.y, me.z = 0, 0, 0
+for _ = 1, 5 do
+    me.z = me.z - 3; stuck.checkAt = -100
+    runtime.checkStuck(); assert(stuck.counter == 0)
+end
+assert(recovered == 0)
+for _ = 1, 4 do stuck.checkAt = -100; runtime.checkStuck() end
+assert(recovered > 0) -- A stationary failed approach must still trigger recovery.
 print('PASS: XYZ Chase arrival, zero range, UW down/up/levitation, steering ownership, LoS/distance handoff missing-coordinate safety, mob UW, anchor permission and exact configured arrival')

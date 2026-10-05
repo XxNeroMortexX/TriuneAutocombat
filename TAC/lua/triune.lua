@@ -21062,7 +21062,8 @@ function runtime.checkStuck()
     local trying = isMoveActive()
     if not trying then
         stuckState.counter = 0
-        stuckState.lastX, stuckState.lastY = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
+        -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+        stuckState.lastX, stuckState.lastY, stuckState.lastZ = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
         return
     end
 
@@ -21071,7 +21072,8 @@ function runtime.checkStuck()
     if me() then
         if isCasting() or me.Sitting() or me.Ducking() or me.Stunned() or me.Rooted() or runtime.medBreakActive then
             stuckState.counter = 0
-            stuckState.lastX, stuckState.lastY = me.X() or 0, me.Y() or 0
+            -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+            stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
             return
         end
     end
@@ -21085,7 +21087,8 @@ function runtime.checkStuck()
                 runtime.tryOpenNearbyDoor() -- close to target but blocked by door/wall; try opening doors
             else
                 stuckState.counter = 0
-                stuckState.lastX, stuckState.lastY = me.X() or 0, me.Y() or 0
+                -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+                stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
                 return
             end
         end
@@ -21099,20 +21102,24 @@ function runtime.checkStuck()
     -- same as the other legitimate-progress cases above.
     if isClimbingLadder() then
         stuckState.counter = 0
-        stuckState.lastX, stuckState.lastY = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
+        -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+        stuckState.lastX, stuckState.lastY, stuckState.lastZ = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
         return
     end
 
     runtime.tryOpenNearbyDoor() -- open any door we're walking past, before we ever stall on it
-    local x, y = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
-    local dist = math.sqrt((x - stuckState.lastX) ^ 2 + (y - stuckState.lastY) ^ 2)
+    -- Edited By: NeroMorte - Vertical swimming/levitation is real movement, not a stuck event.
+    local x, y, z = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
+    local dist = math.sqrt((x - stuckState.lastX) ^ 2 + (y - stuckState.lastY) ^ 2
+        + (z - (stuckState.lastZ or z)) ^ 2)
     if dist < 2 then
         stuckState.counter = stuckState.counter + 1
         if stuckState.counter > 2 then runtime.performUnstuck() end
     else
         stuckState.counter = 0
     end
-    stuckState.lastX, stuckState.lastY = x, y
+    -- Edited By: NeroMorte - Keep Z for the next progress sample.
+    stuckState.lastX, stuckState.lastY, stuckState.lastZ = x, y, z
 end
 
 -- ============================================================================
