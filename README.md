@@ -186,3 +186,7 @@ Morte.6 includes the game-tested NeroMorte MQ2Nav 1.3.3.5 integration. Triune pr
 `MQ2Nav/source/` preserves the reviewed custom Nav sources and `MQ2Nav/Install.ps1` builds a new DLL from the installed 1.3.3.4 test. `tools/install_nav_integration_test.ps1` builds Nav first and switches the Lua test checkout through the existing runtime links. Stop Triune and unload Nav in every client before installation. Backups and exact restore commands are printed.
 
 The verified Windows DLL is published at `MQ2Nav/MQ2Nav.dll`. The Update Manager adds the MQ2Nav mapping to enabled NeroMorte repository profiles automatically. Existing user mappings are retained; no manual repository or file-mapping setup is needed. Download/apply and DLL unload/reload still use the normal updater flow. The binary targets the verified **RoF2 Win32 MacroQuest build**; other client/ABI builds require their own compatible compilation. The published DLL matches its SHA256 release metadata. Future changes must pass game testing and PR checks before main merge. See [Nav build and distribution details](MQ2Nav/README.md).
+
+### Windows C++ build artifacts (focused local test)
+
+`tools/Configure-MQBuildArtifacts.ps1` configures shared MacroQuest and plugin project artifact paths under `build/artifacts`, preserves runtime destinations, and moves existing build-only files with rollback records. Run the read-only preflight first. See [the build-layout instructions](tools/README_mq_artifacts.md). This tool is separate from the Box Network EQBC game test.

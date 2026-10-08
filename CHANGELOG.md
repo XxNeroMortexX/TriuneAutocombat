@@ -8,6 +8,8 @@
 - **Created By: NeroMorte — Register the Nav updater mapping automatically after the verified RoF2/Win32 DLL is published**, using the existing NeroMorte profile and independent DLL handoff. Preserve custom/disabled mappings and wait for locked/staged updater work. Placeholder metadata cannot enable downloads. Include the verified DLL in first-install releases after publication.
 - **Created By: NeroMorte — Add backed-up isolated Windows build/install and test-branch publication tools**, preserving runtime links, untracked updater files, stashes and previous rollback records. The full Windows build passed with zero warnings/errors; NeroMorte confirmed flawless Triune Chase in game and approved main merge. Publish the exact tested Nav 1.3.3.5 DLL with verified SHA256 and release metadata.
 
+- **Created By: NeroMorte — Add a focused Windows build-artifact layout tool** to apply reviewed shared MQ project output paths, preserve runtime EXE/DLL destinations, retain debugging symbols, and relocate build-only files beneath one artifact parent. Re-evaluate the reviewed project settings before changes and verify effective paths before moving files; save configuration backups and rollback records. Existing failed legacy projects are outside this change. Windows evaluation and a later rebuild remain user verification steps.
+
 ---
 
 ## 2026-10-05
