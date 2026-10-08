@@ -30,7 +30,7 @@ Mesh routing remains required. Direct live XYZ steering applies to tracked spawn
 3. Load Nav, enable Auto XYZ, start Triune and test water/levitation Chase, close stalled arrival, moving leaders, ordinary ground routing, permitted combat movement and missing-path UW fallback.
 4. Run `tools/publish_nav_test.ps1 -Revision <installed commit> -BuildBackup <printed integration backup>`. It verifies the runtime/staged DLL hash, exact sources and MacroQuest commit, then commits the real DLL and matching SHA metadata to the test branch. It never writes main or uses Git LFS. Retest the updater mapping and handoff before main merge.
 
-`release.json` and Lua publication metadata remain disabled until step 4. Enabled metadata causes an add-only mapping migration for the existing NeroMorte updater profiles. Custom or disabled user mappings remain untouched. No new updater engine DLL is needed; use the existing independent Lua coordinator. Users still use their normal update controls, and Nav must be unloadable in every client sharing the DLL.
+The verified game-tested DLL is now published with matching `release.json` and Lua SHA256 metadata. For future builds, publication must follow the verification steps above. Enabled metadata causes an add-only mapping migration for the existing NeroMorte updater profiles. Custom or disabled user mappings remain untouched. No new updater engine DLL is needed; use the existing independent Lua coordinator. Users still use their normal update controls, and Nav must be unloadable in every client sharing the DLL.
 
 ## Validation
 
