@@ -99,6 +99,8 @@ Each of these is a plugin in `lua/tac/`. Turn them on or off under **Settings ->
 
 ---
 
+Player Chase measures distance in 3D. When nearby with clear line of sight, swimming or levitating followers can use MoveUtils Stick UW for the final vertical approach. Nav continues to provide distant mesh routing; Chase and combat Nav commands use the selected GUI range without hidden approach padding; combat movement uses the same XYZ range checks and nearby UW handoff while retaining its existing engagement permissions.
+
 ## Commands you will actually use
 
 Type `/ac help` in game for the full list.
@@ -109,6 +111,7 @@ Type `/ac help` in game for the full list.
 | `/ac run` / `/ac pause` | Start / pause |
 | `/ac manual`, `/ac puller camp`, `/ac puller hunt`, `/ac assist chase`, `/ac assist camp`, `/ac backline` | Switch mode |
 | `/ac ma <name>` | Set the Main Assist |
+| `/ac chasedist <0-100>` | Set player Chase distance in 3D; zero uses a one-unit arrival tolerance |
 | `/ac burn` | Toggle Burn mode |
 | `/ac trash [on\|off\|toggle]` | Temporarily block spells, AAs and clickies for melee trash clearing |
 | `/ac memall` | Memorize any missing spells |
@@ -174,3 +177,12 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 Current version: **3.1**
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
+
+### NeroMorte Nav integration
+
+Morte.6 includes the game-tested NeroMorte MQ2Nav 1.3.3.5 integration. Triune prefers valid Nav routes for Chase and permitted combat approaches. Nav's saved **Auto XYZ in water or while levitating** setting enables the native vertical steering; `/nav ... xyz=on` and `xyz=off` remain route overrides. Triune does not overwrite your Nav settings. A successful close stalled spawn arrival remains settled until the leader moves; cancelled routes do not count as arrival. When Nav cannot approach, clear nearby swimming/levitation approaches use persistent MoveUtils UW fallback.
+
+`MQ2Nav/source/` preserves the reviewed custom Nav sources and `MQ2Nav/Install.ps1` builds a new DLL from the installed 1.3.3.4 test. `tools/install_nav_integration_test.ps1` builds Nav first and switches the Lua test checkout through the existing runtime links. Stop Triune and unload Nav in every client before installation. Backups and exact restore commands are printed.
+
+The verified Windows DLL is published at `MQ2Nav/MQ2Nav.dll`. The Update Manager adds the MQ2Nav mapping to enabled NeroMorte repository profiles automatically. Existing user mappings are retained; no manual repository or file-mapping setup is needed. Download/apply and DLL unload/reload still use the normal updater flow. The binary targets the verified **RoF2 Win32 MacroQuest build**; other client/ABI builds require their own compatible compilation. The published DLL matches its SHA256 release metadata. Future changes must pass game testing and PR checks before main merge. See [Nav build and distribution details](MQ2Nav/README.md).

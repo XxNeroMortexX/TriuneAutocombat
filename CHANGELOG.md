@@ -1,6 +1,20 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-08 — 3.1-Morte.6
+
+- **Edited By: NeroMorte — Prefer MQ2Nav for valid Chase and combat paths**, inherit saved XYZ settings, and use the tested persistent `/stick uw <distance> id <spawn>` fallback when Nav cannot approach. Retain configured ranges and combat/camp permissions.
+- **Edited By: NeroMorte — Accept Nav's close stalled arrival without restarting it** only for Triune's own tagged completed route. Cancellation, unrelated routes, changed targets/ranges/zones and moving leaders cannot satisfy that approach. Let Nav finish its final vertical stall window before ground stuck recovery.
+- **Edited By: NeroMorte — Preserve the tested MQ2Nav XYZ implementation in `MQ2Nav/`**, version 1.3.3.5, with per-route overrides, saved settings/UI, live water/levitation steering, smoothing/braking and bounded five-second spawn stall arrival. Add authoritative completion TLOs for integration; no location/door arrival relaxation.
+- **Created By: NeroMorte — Register the Nav updater mapping automatically after the verified RoF2/Win32 DLL is published**, using the existing NeroMorte profile and independent DLL handoff. Preserve custom/disabled mappings and wait for locked/staged updater work. Placeholder metadata cannot enable downloads. Include the verified DLL in first-install releases after publication.
+- **Created By: NeroMorte — Add backed-up isolated Windows build/install and test-branch publication tools**, preserving runtime links, untracked updater files, stashes and previous rollback records. The full Windows build passed with zero warnings/errors; NeroMorte confirmed flawless Triune Chase in game and approved main merge. Publish the exact tested Nav 1.3.3.5 DLL with verified SHA256 and release metadata.
+
+---
+
 ## 2026-10-05
+
+- **Edited By: NeroMorte — Preserve current Chase/combat approaches during idle attack cleanup** so Stick UW is not cancelled and restarted every tick. Renew movement ownership per tick, release it on actual movement stops, poll eligible Chase at least every 500 ms when the main loop is available, and show Chase distance in `/ac status`.
+
+- **Edited By: NeroMorte — Correct player Chase arrival above/below the MA** with XYZ distance instead of horizontal-only arrival. Hand nearby swimming/levitating followers to Stick UW with clear line of sight, and avoid NPC-facing commands overwriting vertical steering. Allow Chase distance 0–100 (zero uses a one-unit arrival tolerance); count Z displacement as movement in stuck detection; match Nav approach distance to the configured range without hidden padding; apply XYZ spawn range and the same nearby UW handoff to eligible combat movement while retaining engagement permissions.
 
 - **Edited By: NeroMorte — Add session-only Trash Mode** beside Burn in full/compact views and `/ac trash [on|off|toggle]`. Suppress automated spells, AA activations and clickies (including healing/buffing, Buffbot and repeatable-AA activations); preserve skills, disciplines, existing pets, modes and saved loadouts. Use temporary melee positioning and melee fallback for spell pulls; turning it off restores saved styles, and restarting resets it off. Already-issued casts can finish.
 

@@ -2131,7 +2131,8 @@ runtime.updatePetTracking = updatePetTracking
 local function distToId(id)
     if not id or id <= 0 then return 9999 end
     local d = 9999
-    pcall(function() d = mq.TLO.Spawn(id).Distance() or 9999 end)
+    -- Edited By: NeroMorte - Spawn range/arrival checks must include vertical separation.
+    pcall(function() d = mq.TLO.Spawn(id).Distance3D() or 9999 end)
     return d
 end
 
@@ -2326,7 +2327,11 @@ local function isMoveActive()
     return navActive or moveActive or moveToActive or nativeActive
 end
 
-local function stopMoving()
+local function stopMoving(preserveNavArrival)
+    -- Edited By: NeroMorte - A real movement stop releases the current approach lease.
+    runtime.approachActive = false
+    -- Edited By: NeroMorte - Intentional stops discard pending results; accepted arrival retains its bounded latch.
+    if runtime.navCompletion and not preserveNavArrival then runtime.navCompletion:clear() end
     if navLoaded() then
         local navActive = false
         pcall(function() navActive = mq.TLO.Navigation.Active() or false end)
@@ -12841,9 +12846,11 @@ function UI.drawControlTab()
         end
 
         ImGui.SetNextItemWidth(UI.px(180))
-        ctrl.chase_dist = ImGui.SliderInt('Chase Distance (Follow MA)##assistChaseDist', ctrl.chase_dist or 15, 5, 100, '%d ft')
+        -- Edited By: NeroMorte - Allow close Chase settings down to zero.
+        ctrl.chase_dist = ImGui.SliderInt('Chase Distance (Follow MA)##assistChaseDist', ctrl.chase_dist or 15, 0, 100, '%d ft')
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('How far to stay back from the Main Assist when following (feet/units).\nWhen moving with the MA, the character will follow and hold position at this distance.')
+            -- Edited By: NeroMorte - Explain XYZ arrival and practical zero-distance tolerance.
+            ImGui.SetTooltip('How far to stay back from the Main Assist in 3D (game units).\nZero approaches as closely as possible, with a one-unit arrival tolerance.\nNearby swimming/levitating follows use Stick UW when available and line of sight is clear.')
         end
 
         ctrl.assist_self_defense = ImGui.Checkbox('Self-Defense When Attacked##assistSelfDefense', ctrl.assist_self_defense ~= false)
@@ -19212,48 +19219,19 @@ local function maxMeleeDistance(id)
 end
 runtime.maxMeleeDistance = maxMeleeDistance
 
--- Approach distance for a Ranged/Spell reach (Combat Distance slider, or the
--- pull Stand Back distance): stop just inside it, mirroring the melee
--- "userDist - 2" margin in meleeDesiredRange below. moveToward accepts
--- arrival anywhere up to targetDist + 3, while combatTick's attack/cast reach
--- check is the raw slider value -- so navigating to the raw value let a bow
--- user or caster stop in the (slider, slider + 3] window: "arrived" as far as
--- movement was concerned, yet "out of reach" for the engage gate, which
--- re-called moveToward, which reported "arrived" again, forever, with nothing
--- ever firing. Approaching to slider - 3 keeps every accepted arrival inside
--- the reach the engage gate actually checks.
+-- Edited By: NeroMorte - Ranged/Spell approach uses the configured range directly.
+-- Arrival and engagement now share XYZ distance, eliminating the old extra-tolerance gap.
 local function rangedApproachDist(reach)
-    return math.max(2, math.floor((tonumber(reach) or 40) - 3))
+    -- Edited By: NeroMorte - Nav's requested range matches the configured range in XYZ.
+    return math.max(0, math.floor(tonumber(reach) or 40))
 end
 runtime.rangedApproachDist = rangedApproachDist
 
 -- Melee approach distance (the Melee style branch of desiredRange).
-local function meleeDesiredRange(id)
-    local NAV_CONST = pursuit.NAV_CONST
-    local userDist = (ctrl and ctrl.melee_dist) or NAV_CONST.MELEE_RANGE
-    local spawnReach = 0
-    if id and id > 0 then
-        pcall(function()
-            local s = mq.TLO.Spawn(id)
-            if s and s() then
-                spawnReach = tonumber(s.MaxRangeTo()) or tonumber(s.MaxMeleeTo()) or 0
-            end
-        end)
-        if spawnReach <= 0 then
-            pcall(function()
-                local t = mq.TLO.Target
-                if t() and t.ID() == id then
-                    spawnReach = tonumber(t.MaxRangeTo()) or tonumber(t.MaxMeleeTo()) or 0
-                end
-            end)
-        end
-    end
-    -- For oversized mobs with hitboxes exceeding user distance, position near the outer edge
-    if spawnReach > 18 and spawnReach > userDist then
-        return math.max(userDist, math.floor(spawnReach - 3))
-    end
-    -- Position slightly inside user's max melee distance to avoid edge jitter
-    return math.max(4, math.floor(userDist - 2))
+local function meleeDesiredRange(_)
+    -- Edited By: NeroMorte - Honor the configured Melee distance without hidden approach padding.
+    local userDist = (ctrl and ctrl.melee_dist) or pursuit.NAV_CONST.MELEE_RANGE
+    return math.max(0, math.floor(tonumber(userDist) or 14))
 end
 runtime.meleeDesiredRange = meleeDesiredRange
 
@@ -19807,9 +19785,157 @@ function runtime.tryOffMeshRecovery(id, targetDist)
     return false
 end
 
+-- Edited By: NeroMorte - Shared XYZ geometry for water/air movement to players and mobs.
+function runtime.followGeometry(id)
+    if not id or id <= 0 then return nil end
+    local info
+    local ok = pcall(function()
+        local me, leader = mq.TLO.Me, mq.TLO.Spawn(id)
+        if not me() or not leader() then return end
+        local mx, my, mz = me.X(), me.Y(), me.Z()
+        local lx, ly, lz = leader.X(), leader.Y(), leader.Z()
+        if not mx or not my or not mz or not lx or not ly or not lz then return end
+        local dx, dy, dz = lx - mx, ly - my, lz - mz
+        info = { horizontal = math.sqrt(dx * dx + dy * dy),
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz), vertical = math.abs(dz),
+            x = lx, y = ly, z = lz }
+    end)
+    return ok and info or nil
+end
+
+-- Edited By: NeroMorte - Share authoritative Nav result ownership across player and mob approaches.
+function runtime.navCompletionDriver()
+    if not runtime.navCompletion then
+        runtime.navCompletion = require('TAC_support_modules.nav_xyz_completion').new(mq)
+    end
+    return runtime.navCompletion
+end
+
+-- Edited By: NeroMorte - Nearby clear swimming/levitation approaches share one UW driver.
+function runtime.tryUwApproach(id, targetDist, info, los)
+    local verticalMovement = false
+    pcall(function() verticalMovement = mq.TLO.Me.Underwater() == true end)
+    pcall(function() verticalMovement = verticalMovement or mq.TLO.Me.Levitating() == true end)
+    local arrival = math.max(1, targetDist)
+    local uwKey = 'verticaluw_' .. id
+    -- Direct UW steering is a close-in handoff, never a replacement for distant mesh routing.
+    if verticalMovement and info.vertical > math.min(2, arrival) and info.horizontal <= math.max(20, targetDist + 3)
+        and los and stickLoaded() then
+        -- Edited By: NeroMorte - Keep the failure record during the UW handoff; do not bounce straight back to Nav.
+        if pursuit.lastNavTargetId ~= uwKey then stopMoving(true) end
+        if navLoaded() then
+            pcall(function() if mq.TLO.Navigation.Active() then mq.cmd('/nav stop') end end)
+        end
+        local active = false
+        pcall(function() active = mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON' end)
+        local stickDist = math.max(1, math.floor(targetDist))
+        if pursuit.lastNavTargetId ~= uwKey or pursuit.lastStickDist ~= stickDist or not active then
+            mq.cmdf('/stick uw %d id %d', stickDist, id)
+            pursuit.lastNavTargetId = uwKey
+            pursuit.lastStickDist = stickDist
+        end
+        -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+        runtime.approachActive = true
+        return true, true
+    end
+
+    if tostring(pursuit.lastNavTargetId or ''):find('^verticaluw_') then
+        if stickLoaded() then mq.cmd('/stick off') end
+        pursuit.lastNavTargetId = 0
+    end
+    return false, verticalMovement
+end
+
+-- Edited By: NeroMorte - Player Chase measures XYZ and owns vertical steering near the MA.
+-- Combat and Chase share XYZ distance and the nearby UW driver; engagement permissions stay with callers.
+function runtime.followPlayer(id, dist)
+    if not id or id <= 0 then return false end
+    local info = runtime.followGeometry(id)
+    if not info then stopMoving(); return false end
+    local targetDist = math.max(0, tonumber(dist) or 15)
+    -- Zero means approach as closely as possible: one unit prevents collision jitter.
+    local arrival = math.max(1, targetDist)
+    local los = hasLoS(id)
+    if info.distance <= arrival and (los or info.distance <= pursuit.NAV_CONST.LOS_TRUST_RANGE) then
+        stopMoving()
+        return true
+    end
+
+    -- Edited By: NeroMorte - Recognize only this approach's verified stalled arrival; do not reissue Nav.
+    local completion = runtime.navCompletionDriver()
+    local verticalMovement = completion:isVertical()
+    if completion:arrived(id, targetDist, 'chase', info, los) then
+        stopMoving(true)
+        return true, verticalMovement
+    end
+    runtime.checkProactiveDoorAndLev()
+    -- Edited By: NeroMorte - Nav owns valid paths before any nearby UW fallback.
+    if navLoaded() then
+        local path = false
+        pcall(function() path = mq.TLO.Navigation.PathExists('id ' .. id)() == true end)
+        if path and completion:canUseNav(id, targetDist, 'chase', info) then
+            if tostring(pursuit.lastNavTargetId or ''):find('^native_') then stopMoving() end
+            -- Ensure only one movement driver is active when handing back to Nav.
+            if stickLoaded() then
+                pcall(function() if mq.TLO.Stick.Active() then mq.cmd('/stick off') end end)
+            end
+            local active = false
+            pcall(function() active = mq.TLO.Navigation.Active() == true end)
+            if pursuit.lastNavTargetId ~= id or pursuit.lastFollowDist ~= targetDist or not active then
+                -- Edited By: NeroMorte - Tag our route so other Nav commands cannot satisfy this approach.
+                local tag = completion:start(id, targetDist, 'chase')
+                mq.cmdf('/nav id %d distance=%d tag=%s', id, math.floor(targetDist), tag)
+                pursuit.lastNavTargetId = id
+                pursuit.lastFollowDist = targetDist
+            end
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
+            return false, verticalMovement
+        end
+        local loaded = false
+        pcall(function() loaded = mq.TLO.Navigation.MeshLoaded() == true end)
+        if loaded then
+            -- Edited By: NeroMorte - Use the tested persistent UW command only when Nav has no path.
+            local uwHandled = runtime.tryUwApproach(id, targetDist, info, los)
+            if uwHandled then return false, true end
+            runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
+            return false, verticalMovement
+        end
+    end
+    -- Edited By: NeroMorte - No Nav path/plugin: retain the UW driver when fallback is enabled.
+    if ctrl.nav_fallback_stick then
+        local uwHandled = runtime.tryUwApproach(id, targetDist, info, los)
+        if uwHandled then return false, true end
+    end
+    if stickLoaded() and ctrl.nav_fallback_stick then
+        local stickDist = math.max(1, math.floor(targetDist))
+        local active = false
+        pcall(function() active = mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON' end)
+        if pursuit.lastNavTargetId ~= id or pursuit.lastStickDist ~= stickDist or not active then
+            mq.cmdf('/stick id %d %d%s', id, stickDist, verticalMovement and ' uw' or '')
+            pursuit.lastNavTargetId = id
+            pursuit.lastStickDist = stickDist
+        end
+        -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+        runtime.approachActive = true
+        return false, verticalMovement
+    end
+    -- Preserve the existing native movement fallback when neither plugin can drive.
+    mq.cmd('/face fast id ' .. id)
+    local moving = false
+    pcall(function() moving = mq.TLO.Me.Moving() == true end)
+    if not moving then mq.cmd('/keypress forward hold') end
+    pursuit.lastNavTargetId = 'native_spawn_' .. id
+    return false
+end
+
 function runtime.moveToward(id, dist, followOnly)
     -- Edited By: NeroMorte - Range checks stay useful, but this mode never chases.
     if runtime.petCampActive() then return id and id > 0 and distToId(id) <= (dist or desiredRange(id)) and hasLoS(id) end
+    -- Edited By: NeroMorte - Isolate player following from combat-target arrival checks.
+    if followOnly then return runtime.followPlayer(id, dist) end
     local NAV_CONST = pursuit.NAV_CONST
     if not id or id <= 0 then return false end
     local d = distToId(id)
@@ -19878,19 +20004,12 @@ function runtime.moveToward(id, dist, followOnly)
         end
     end
 
-    -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
-    local isMelee = (not followOnly and (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee')
     local targetDist = dist or desiredRange(id)
-    local effectiveArrivalDist = targetDist + (isMelee and 2 or 3)
+    -- Edited By: NeroMorte - Honor the selected movement distance in XYZ, including zero.
+    local effectiveArrivalDist = math.max(1, targetDist)
 
-    -- Update pursuit tracking for stall detection. `d` (distToId) is MQ's 2D
-    -- Distance -- X/Y only -- so climbing a ladder toward a target mostly
-    -- above/below us shows as zero progress here even while we're actually
-    -- closing in via Z. Left unhandled, PURSUIT_STALL_TIMEOUT below would
-    -- eventually give up and markUnreachable() a target we're mid-climb
-    -- toward, purely because the ladder segment isn't meshed. Treat active
-    -- climbing as progress too so the stall timer keeps getting refreshed
-    -- for as long as we're genuinely climbing.
+    -- Edited By: NeroMorte - XYZ progress keeps vertical swimming from appearing stalled.
+    -- Climbing remains an additional progress signal for ladder handling.
     if pursuit.id ~= id then
         pursuit.id = id; pursuit.bestDist = d; pursuit.improvedAt = os.clock()
         pursuit.navStalls = 0; pursuit.wasNavActive = false
@@ -19932,8 +20051,18 @@ function runtime.moveToward(id, dist, followOnly)
         return false
     end
 
+    -- Edited By: NeroMorte - A tagged accepted arrival is distinct from cancellation or unrelated Nav.
+    local geometry = runtime.followGeometry(id)
+    local completion = runtime.navCompletionDriver()
+    if completion:arrived(id, targetDist, 'combat', geometry, losNow) then
+        stopMoving(true)
+        if mq.TLO.Target.ID() ~= id then runtime.setTarget(id) end
+        return true
+    end
+
     if (os.clock() - pursuit.improvedAt) > NAV_CONST.PURSUIT_STALL_TIMEOUT or pursuit.navStalls >= 3 then
-        if d <= effectiveArrivalDist + 12 and losOk then
+        -- Edited By: NeroMorte - A stalled approach is not permission to ignore configured range.
+        if d <= effectiveArrivalDist and losOk then
             stopMoving()
             if not followOnly then
                 if mq.TLO.Target.ID() ~= id then runtime.setTarget(id) end
@@ -19966,7 +20095,7 @@ function runtime.moveToward(id, dist, followOnly)
         local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
         local ok = false
         pcall(function() ok = mq.TLO.Navigation.PathExists('id ' .. id)() end)
-        if ok then
+        if ok and completion:canUseNav(id, targetDist, 'combat', geometry) then
             if pursuit.meshRecoverId == id then
                 print(string.format(
                     '\ag[Triune]\ax Remapped nav path to #%d after off-mesh stick recovery.', id))
@@ -19988,20 +20117,34 @@ function runtime.moveToward(id, dist, followOnly)
                 pursuit.navStalls = pursuit.navStalls + 1
             end
             pursuit.wasNavActive = navActiveNow
-            if pursuit.lastNavTargetId ~= id or not navActiveNow then
-                mq.cmdf('/nav id %d distance=%d', id, math.floor(targetDist))
+            -- Edited By: NeroMorte - A GUI range change updates even an active Nav command.
+            if pursuit.lastNavTargetId ~= id or pursuit.lastMovementDistance ~= targetDist or not navActiveNow then
+                -- Edited By: NeroMorte - Tag combat approaches and inherit Nav's saved XYZ setting.
+                local tag = completion:start(id, targetDist, 'combat')
+                mq.cmdf('/nav id %d distance=%d tag=%s', id, math.floor(targetDist), tag)
                 pursuit.lastNavTargetId = id
+                pursuit.lastMovementDistance = targetDist
             end
+            -- Edited By: NeroMorte - Cleanup must preserve a current Nav approach.
+            runtime.approachActive = true
             return false
         elseif meshOk and meshLoaded and (d > effectiveArrivalDist or not losOk) then
             -- Zone mesh is loaded but there is no path from here -- typically we
             -- landed in a hole. Stick toward the spawn so we can step back onto
             -- the mesh; the `if ok` branch remaps /nav as soon as PathExists.
             pursuit.noPathFails = (pursuit.noPathFails or 0) + 1
-            return runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Recovery movement also retains ownership this tick.
+            -- Edited By: NeroMorte - Direct UW is fallback only, after a missing Nav path.
+            if geometry and runtime.tryUwApproach(id, targetDist, geometry, losNow) then return false end
+            local result = runtime.tryOffMeshRecovery(id, targetDist)
+            -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
+            runtime.approachActive = true
+            return result
         end
     end
 
+    -- Edited By: NeroMorte - Use the persistent UW fallback before ordinary melee Stick when applicable.
+    if ctrl.nav_fallback_stick and geometry and runtime.tryUwApproach(id, targetDist, geometry, losNow) then return false end
     -- Movement Stage 2: MQ2Stick / MoveUtils
     if stickLoaded() and ctrl.nav_fallback_stick then
         if pursuit.lastNavTargetId ~= id or pursuit.lastStickDist ~= targetDist then
@@ -20010,6 +20153,8 @@ function runtime.moveToward(id, dist, followOnly)
             pursuit.lastNavTargetId = id
             pursuit.lastStickDist = targetDist
         end
+        -- Edited By: NeroMorte - Keep fallback Stick running while closing on a mob.
+        runtime.approachActive = true
         return false
     end
 
@@ -20974,7 +21119,8 @@ function runtime.checkStuck()
     local trying = isMoveActive()
     if not trying then
         stuckState.counter = 0
-        stuckState.lastX, stuckState.lastY = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
+        -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+        stuckState.lastX, stuckState.lastY, stuckState.lastZ = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
         return
     end
 
@@ -20983,7 +21129,18 @@ function runtime.checkStuck()
     if me() then
         if isCasting() or me.Sitting() or me.Ducking() or me.Stunned() or me.Rooted() or runtime.medBreakActive then
             stuckState.counter = 0
-            stuckState.lastX, stuckState.lastY = me.X() or 0, me.Y() or 0
+            -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+            stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
+            return
+        end
+    end
+
+    -- Edited By: NeroMorte - Let Nav's explicit final XYZ stall window finish before ground recovery intervenes.
+    if runtime.navCompletion and runtime.navCompletion.pending then
+        local pendingId = runtime.navCompletion.pending.id
+        if runtime.navCompletion:waitingNear(runtime.followGeometry(pendingId), hasLoS(pendingId)) then
+            stuckState.counter = 0
+            stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
             return
         end
     end
@@ -20997,7 +21154,8 @@ function runtime.checkStuck()
                 runtime.tryOpenNearbyDoor() -- close to target but blocked by door/wall; try opening doors
             else
                 stuckState.counter = 0
-                stuckState.lastX, stuckState.lastY = me.X() or 0, me.Y() or 0
+                -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+                stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
                 return
             end
         end
@@ -21011,20 +21169,24 @@ function runtime.checkStuck()
     -- same as the other legitimate-progress cases above.
     if isClimbingLadder() then
         stuckState.counter = 0
-        stuckState.lastX, stuckState.lastY = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
+        -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+        stuckState.lastX, stuckState.lastY, stuckState.lastZ = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
         return
     end
 
     runtime.tryOpenNearbyDoor() -- open any door we're walking past, before we ever stall on it
-    local x, y = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0
-    local dist = math.sqrt((x - stuckState.lastX) ^ 2 + (y - stuckState.lastY) ^ 2)
+    -- Edited By: NeroMorte - Vertical swimming/levitation is real movement, not a stuck event.
+    local x, y, z = mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0, mq.TLO.Me.Z() or 0
+    local dist = math.sqrt((x - stuckState.lastX) ^ 2 + (y - stuckState.lastY) ^ 2
+        + (z - (stuckState.lastZ or z)) ^ 2)
     if dist < 2 then
         stuckState.counter = stuckState.counter + 1
         if stuckState.counter > 2 then runtime.performUnstuck() end
     else
         stuckState.counter = 0
     end
-    stuckState.lastX, stuckState.lastY = x, y
+    -- Edited By: NeroMorte - Keep Z for the next progress sample.
+    stuckState.lastX, stuckState.lastY, stuckState.lastZ = x, y, z
 end
 
 -- ============================================================================
@@ -21673,12 +21835,14 @@ function runtime.chaseMA()
     if not ctrl.chase then return end
     local id = runtime.maPcId()
     if not id then return end
-    runtime.moveToward(id, ctrl.chase_dist or 15, true) -- follow position only; id here is the MA player, not a combat target
+    -- Edited By: NeroMorte - Do not overwrite Nav/Stick UW pitch with an NPC-facing command.
+    local _, verticalFollow = runtime.moveToward(id, ctrl.chase_dist or 15, true) -- MA player, not a combat target
     -- Face whatever NPC target is already set (from the Assist/Tank block
     -- above) while following along, so the character isn't left facing the
     -- MA player instead of the actual target it's supposed to be watching.
     local t = mq.TLO.Target
-    if t() and t.Type() == 'NPC' then mq.cmd('/face fast') end
+    -- Edited By: NeroMorte - Keep the movement driver's vertical look angle while following.
+    if not verticalFollow and t() and t.Type() == 'NPC' then mq.cmd('/face fast') end
 end
 
 -- Assist/Tank's idle behavior (nothing to assist right now): if a camp spot
@@ -23042,6 +23206,8 @@ local function manualMovePolicy(engaged, approaching)
 end
 
 local function combatTick()
+    -- Edited By: NeroMorte - Movement ownership must be renewed by an approach this tick.
+    runtime.approachActive = false
     runtime.wpBeginTick()
     local fullStop = runtime.fullStop
     local anyXtarAlive = runtime.anyXtarAlive
@@ -24028,7 +24194,8 @@ local function combatTick()
             if mq.TLO.Me.AutoFire() then
                 mq.cmd('/autofire off')
             end
-            if stickLoaded() then
+            -- Edited By: NeroMorte - Idle attack cleanup must not cancel player/mob approaches.
+            if stickLoaded() and not runtime.approachActive then
                 pcall(function()
                     if mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON' then
                         mq.cmd('/stick off')
@@ -24605,6 +24772,8 @@ local function triuneCommand(...)
             modeStr, ctrl.burn and 'ON' or 'OFF'))
         -- Edited By: NeroMorte - Report temporary trash state separately from saved mode/style.
         print('\ag[Triune]\ax Trash Mode: ' .. (runtime.trashMode and 'ON' or 'OFF'))
+        -- Edited By: NeroMorte - Make active follow distance visible during in-game verification.
+        print(string.format('\\ag[Triune]\\ax Chase: %s, distance: %d units', ctrl.chase and 'ON' or 'OFF', ctrl.chase_dist or 15))
     elseif cmd == 'burn' or cmd == 'burnon' or cmd == 'burnoff' or cmd == 'burn1' or cmd == 'burn0' or cmd == 'burntoggle' then
         local sub = args[2] and string.lower(args[2]) or ''
         if sub == 'on' or sub == '1' or cmd == 'burnon' or cmd == 'burn1' then
@@ -24689,7 +24858,8 @@ local function triuneCommand(...)
         print('  \ag/ac petassist [1-100]\ax - Set mob HP % threshold for sending pets to attack')
         print('  \ag/ac ma [target|clear|<name>|<id>]\ax - Configure Main Assist player ID or name')
         print('  \ag/ac xtardist [25-300]\ax - Set max XTarget chase / engagement distance')
-        print('  \ag/ac chasedist [5-100]\ax - Set following distance to stay back from Main Assist')
+        -- Edited By: NeroMorte - Help matches the zero-inclusive GUI and command range.
+        print('  \ag/ac chasedist [0-100]\ax - Set following distance to stay back from Main Assist')
         print('  \ag/ac selfdefense [on|off]\ax - Toggle Assist mode self-defense when attacked')
         print('  \ag/ac assistbehind [on|off]\ax - Toggle positioning behind NPC in Assist mode')
         print('  \ag/ac manualstick [on|off]\ax - Manual mode: stick to the NPC being fought (off = you drive)')
@@ -24968,7 +25138,8 @@ local function triuneCommand(...)
         local arg2 = args[2] and string.lower(args[2]) or ''
         local val = tonumber(arg2)
         if val then
-            ctrl.chase_dist = math.max(5, math.min(100, math.floor(val)))
+            -- Edited By: NeroMorte - Match the Chase slider zero minimum.
+            ctrl.chase_dist = math.max(0, math.min(100, math.floor(val)))
             runtime.saveLoadout(true)
             print(string.format('\ag[Triune]\ax Chase Distance from Main Assist set to %d ft.', ctrl.chase_dist))
         elseif arg2 == 'on' or arg2 == '1' or arg2 == 'true' then
@@ -24980,7 +25151,8 @@ local function triuneCommand(...)
             runtime.saveLoadout(true)
             print('\ag[Triune]\ax Chase MA (Auto-Follow): \arDISABLED\ax.')
         else
-            print(string.format('\ag[Triune]\ax Chase MA is %s (Chase Distance: %d ft). Usage: /ac chasedist [5-100] or /ac chase [on|off|<dist>]',
+            -- Edited By: NeroMorte - Document the new zero-inclusive Chase range.
+            print(string.format('\ag[Triune]\ax Chase MA is %s (Chase Distance: %d ft). Usage: /ac chasedist [0-100] or /ac chase [on|off|<dist>]',
                 ctrl.chase and '\agENABLED\ax' or '\arDISABLED\ax', ctrl.chase_dist or 15))
         end
     elseif cmd == 'clearcursor' or cmd == 'autoinv' or cmd == 'cursor' then
@@ -25769,7 +25941,11 @@ local function runMainLoop()
                 memmed = true
             end
         end
-        if ctrl.running and not runtime.petCamp.probe and not memmed and (os.clock() - runtime.lastTick) > 0.4 then
+        -- Edited By: NeroMorte - Follow polling uses elapsed milliseconds, independent of CPU-clock timing.
+        runtime.followPollDue = ctrl.mode == 'Assist' and ctrl.chase
+            and (mq.gettime() - (runtime.lastFollowPollAt or 0)) >= 500
+        if ctrl.running and not runtime.petCamp.probe and not memmed
+            and ((os.clock() - runtime.lastTick) > 0.4 or runtime.followPollDue) then
             local ctT0 = os.clock()
             local ok, err = pcall(combatTick)
             local ctMs = (os.clock() - ctT0) * 1000
@@ -25785,6 +25961,8 @@ local function runMainLoop()
                     runtime.pluginManager.onCombatTick(tId)
                 end)
             end
+            -- Edited By: NeroMorte - Record the wall-clock sample after combat/follow processing.
+            runtime.lastFollowPollAt = mq.gettime()
             runtime.lastTick = os.clock()
             runtime.wasRunning = true
         elseif not ctrl.running then

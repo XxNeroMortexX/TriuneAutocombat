@@ -10075,27 +10075,25 @@ do
 
     -- 5. Style-aware engine paths
     assert_true(triuneContent:find("if style ~= 'Melee' then\n        return rangedApproachDist(ctrl.ranged_dist or 40)", 1, true) ~= nil,
-        'Suite 83: desiredRange approaches to just inside ranged_dist for non-Melee styles')
-    -- Ranged/Spell approach margin: moveToward accepts arrival at target + 3,
-    -- while the engage gate's reach is the raw slider, so the approach must
-    -- sit at least 3 inside the slider or a character can stop "arrived" yet
-    -- "out of reach" and never fire.
+        'Suite 83: desiredRange uses configured ranged_dist for non-Melee styles')
+    -- Edited By: NeroMorte - XYZ arrival no longer adds padding, so the Nav range is the raw slider.
     do
         local fn = triuneContent:match('local function rangedApproachDist%(reach%)\n(.-)\nend')
         assert_true(fn ~= nil, 'Suite 83: rangedApproachDist located')
         local rangedApproachDist = load('return function(reach)\n' .. fn .. '\nend')()
-        assert_eq(rangedApproachDist(40), 37, 'Suite 83: 40-unit slider approaches to 37')
-        assert_eq(rangedApproachDist(200), 197, 'Suite 83: 200-unit slider approaches to 197')
-        assert_eq(rangedApproachDist(5), 2, 'Suite 83: 5-unit slider still keeps the +3 arrival inside reach')
-        assert_eq(rangedApproachDist(nil), 37, 'Suite 83: nil slider falls back to the 40 default')
+        -- Edited By: NeroMorte - Requested approach distance now matches XYZ range selected in the GUI.
+        assert_eq(rangedApproachDist(40), 40, 'Suite 83: 40-unit slider approaches to 40')
+        assert_eq(rangedApproachDist(200), 200, 'Suite 83: 200-unit slider approaches to 200')
+        assert_eq(rangedApproachDist(5), 5, 'Suite 83: 5-unit slider approaches to 5')
+        assert_eq(rangedApproachDist(nil), 40, 'Suite 83: nil slider falls back to the 40 default')
         for _, reach in ipairs({ 5, 12, 40, 75, 200 }) do
-            assert_true(rangedApproachDist(reach) + 3 <= reach,
-                'Suite 83: arrival tolerance stays inside reach ' .. reach)
+            assert_true(rangedApproachDist(reach) == reach,
+                'Suite 83: approach matches configured reach ' .. reach)
         end
     end
-    -- Edited By: NeroMorte - Check the effective style including the temporary override.
-    assert_true(triuneContent:find("local isMelee = (not followOnly and (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee')", 1, true) ~= nil,
-        'Suite 83: moveToward arrival tolerance is style-aware')
+    -- Edited By: NeroMorte - XYZ arrival honors the configured distance rather than adding style padding.
+    assert_true(triuneContent:find("local effectiveArrivalDist = math.max(1, targetDist)", 1, true) ~= nil,
+        'Suite 83: moveToward arrival honors configured range with minimum one-unit tolerance')
     -- Edited By: NeroMorte - Check the effective style including the temporary override.
     assert_true(triuneContent:find("if ctrl.mode == 'Puller' and ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' and not mq.TLO.Me.Combat() then", 1, true) ~= nil,
         'Suite 83: Puller FIGHTING /attack on is Melee-only')
