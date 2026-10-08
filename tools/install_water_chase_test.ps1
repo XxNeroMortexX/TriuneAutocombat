@@ -7,7 +7,7 @@ param(
     [string]$BackupRoot = 'E:\MQ2Next\TriuneGUIBackups'
 )
 $ErrorActionPreference = 'Stop'
-$Branch = 'nero/chase-water-test'
+$Branch = 'nero/nav-integration-test'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Supply the exact test commit SHA.' }
 $Remote = git -C $Dev remote get-url origin
 if ($LASTEXITCODE -ne 0 -or $Remote -notmatch '(?i)github\.com[:/]XxNeroMortexX/TriuneAutocombat(?:\.git)?/?$') {
@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Tracked working files have changes; stopped. N
 git -C $Dev diff --cached --quiet
 if ($LASTEXITCODE -ne 0) { throw 'There are staged changes; stopped.' }
 $BeforeBranch = git -C $Dev branch --show-current
-if ($LASTEXITCODE -ne 0 -or $BeforeBranch -notin @('main', 'nero/trash-mode-test', $Branch)) { throw 'Start on main, the Trash Mode test branch, or the water/air movement test branch.' }
+if ($LASTEXITCODE -ne 0 -or $BeforeBranch -notin @('main', 'nero/trash-mode-test', 'nero/chase-water-test', $Branch)) { throw 'Start on main, the Trash Mode test branch, or the water/air movement test branch.' }
 $BeforeCommit = git -C $Dev rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read current HEAD.' }
 git -C $Dev fetch origin $Branch

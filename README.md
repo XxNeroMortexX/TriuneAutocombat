@@ -181,7 +181,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ### NeroMorte Nav integration test
 
-The `nero/chase-water-test` branch contains the Morte.6 integration test. Triune prefers valid Nav routes for Chase and permitted combat approaches. Nav's saved **Auto XYZ in water or while levitating** setting enables the native vertical steering; `/nav ... xyz=on` and `xyz=off` remain route overrides. Triune does not overwrite your Nav settings. A successful close stalled spawn arrival remains settled until the leader moves; cancelled routes do not count as arrival. When Nav cannot approach, clear nearby swimming/levitation approaches use persistent MoveUtils UW fallback.
+The `nero/nav-integration-test` branch contains the Morte.6 integration test. Triune prefers valid Nav routes for Chase and permitted combat approaches. Nav's saved **Auto XYZ in water or while levitating** setting enables the native vertical steering; `/nav ... xyz=on` and `xyz=off` remain route overrides. Triune does not overwrite your Nav settings. A successful close stalled spawn arrival remains settled until the leader moves; cancelled routes do not count as arrival. When Nav cannot approach, clear nearby swimming/levitation approaches use persistent MoveUtils UW fallback.
 
 `MQ2Nav/source/` preserves the reviewed custom Nav sources and `MQ2Nav/Install.ps1` builds a new DLL from the installed 1.3.3.4 test. `tools/install_nav_integration_test.ps1` builds Nav first and switches the Lua test checkout through the existing runtime links. Stop Triune and unload Nav in every client before installation. Backups and exact restore commands are printed.
 

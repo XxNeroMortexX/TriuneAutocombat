@@ -5,7 +5,7 @@ param(
     [string]$Dev='E:\MQ2Next\TriuneAutocombat'
 )
 $ErrorActionPreference='Stop'
-$Branch='nero/chase-water-test'
+$Branch='nero/nav-integration-test'
 if ($Revision -notmatch '^[0-9a-f]{40}$') { throw 'Supply the installed Triune test commit.' }
 if ((git -C $Dev branch --show-current) -ne $Branch -or (git -C $Dev rev-parse HEAD) -ne $Revision) { throw 'Expected the exact installed test branch/revision.' }
 $Remote=git -C $Dev remote get-url origin

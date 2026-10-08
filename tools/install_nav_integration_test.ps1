@@ -13,7 +13,7 @@ git -C $Dev diff --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Tracked changes exist; stopped without stashing.' }
 git -C $Dev diff --cached --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Staged changes exist; stopped.' }
-git -C $Dev fetch origin nero/chase-water-test
+git -C $Dev fetch origin nero/nav-integration-test
 if ($LASTEXITCODE -ne 0 -or (git -C $Dev rev-parse FETCH_HEAD) -ne $Revision) { throw 'Remote test revision changed; stopped.' }
 $Package=Join-Path $BackupRoot ('triune-nav-package-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Package | Out-Null
