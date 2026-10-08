@@ -1,5 +1,15 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-08 — 3.1-Morte.6 test
+
+- **Edited By: NeroMorte — Prefer MQ2Nav for valid Chase and combat paths**, inherit saved XYZ settings, and use the tested persistent `/stick uw <distance> id <spawn>` fallback when Nav cannot approach. Retain configured ranges and combat/camp permissions.
+- **Edited By: NeroMorte — Accept Nav's close stalled arrival without restarting it** only for Triune's own tagged completed route. Cancellation, unrelated routes, changed targets/ranges/zones and moving leaders cannot satisfy that approach. Let Nav finish its final vertical stall window before ground stuck recovery.
+- **Edited By: NeroMorte — Preserve the tested MQ2Nav XYZ implementation in `MQ2Nav/`**, version 1.3.3.5, with per-route overrides, saved settings/UI, live water/levitation steering, smoothing/braking and bounded five-second spawn stall arrival. Add authoritative completion TLOs for integration; no location/door arrival relaxation.
+- **Created By: NeroMorte — Register the Nav updater mapping automatically after the verified RoF2/Win32 DLL is published**, using the existing NeroMorte profile and independent DLL handoff. Preserve custom/disabled mappings and wait for locked/staged updater work. Placeholder metadata cannot enable downloads. Include the verified DLL in first-install releases after publication.
+- **Created By: NeroMorte — Add backed-up isolated Windows build/install and test-branch publication tools**, preserving runtime links, untracked updater files, stashes and previous rollback records. Native DLL build and in-game confirmation remain required before main merge.
+
+---
+
 ## 2026-10-05
 
 - **Edited By: NeroMorte — Preserve current Chase/combat approaches during idle attack cleanup** so Stick UW is not cancelled and restarted every tick. Renew movement ownership per tick, release it on actual movement stops, poll eligible Chase at least every 500 ms when the main loop is available, and show Chase distance in `/ac status`.

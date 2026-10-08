@@ -18,12 +18,13 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    version = 'Morte.5',
+    -- Edited By: NeroMorte - Nav integration test release; engine version remains independent.
+    version = 'Morte.6',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
 
-    channel = 'stable',
+    channel = 'test',
 }
 
 ---------------------------------------------------------------------------

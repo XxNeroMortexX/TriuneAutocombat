@@ -6,6 +6,8 @@ local plugin = {
     id = 'update_manager', name = 'Update Manager', author = 'NeroMorte',
     description = 'Production update planning, staging, apply, policy, and diagnostics frontend.',
     version = '4.1.6',
+    -- Edited By: NeroMorte - Run profile registration from the plugin fiber, outside ImGui.
+    tickInterval = 1,
     window = {
         label = 'Updates', tooltip = 'Open the MQ2WebUpdate Update Manager.',
         flag = 'show_update_manager', desc = 'Check, stage, apply, and diagnose updates',
@@ -1748,15 +1750,30 @@ function plugin.onInit(coreApi)
     state.pendingDllTicket = nil
     state.restartTriuneAfterApply = false
     state.applyRefreshStarted = 0
+    -- Edited By: NeroMorte - Add-only registration is gated on real published DLL metadata.
+    state.navUpdatePolicy = require('TAC_support_modules.nav_update_policy').new(
+        require('TAC_support_modules.nav_plugin_release'))
+    state.navPolicyPoll = 0
     loadMetadata(); state.initialized = true
     addLog('Production Update Manager initialized.')
 end
 
 function plugin.onDestroy() state.initialized = false end
+function plugin.onTick()
+    -- Edited By: NeroMorte - Bootstrap a verified published Nav mapping once, before startup checks.
+    if state.navUpdatePolicy and not state.navUpdatePolicy.done
+        and os.time() - (state.navPolicyPoll or 0) >= 1 then
+        state.navPolicyPoll = os.time()
+        state.navUpdatePolicy:step(readEngine(), ctrl, runCommand, commandEncode,
+            function() core.saveLoadout(true) end, addLog)
+    end
+end
+
 function plugin.onDrawUI()
     processPendingDllTicket()
     refreshAfterSuccessfulApply()
-    processTriuneStartupChecks()
+    -- Edited By: NeroMorte - Keep UI/recovery available while migration waits for a locked backend.
+    if not state.navUpdatePolicy or state.navUpdatePolicy.done then processTriuneStartupChecks() end
     drawTriuneStartupPopup()
     drawWindow()
 end

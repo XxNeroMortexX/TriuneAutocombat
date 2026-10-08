@@ -257,6 +257,20 @@ config.payloads = {
         },
     },
 
+    -- Edited By: NeroMorte - The shipped Nav payload uses the generic plugin handoff.
+    -- nav_update_policy registers its file mapping once the verified DLL is published.
+    {
+        id = 'mq2nav', source = 'morte', type = 'mq_plugin',
+        remote = 'MQ2Nav/MQ2Nav.dll', destinationRoot = 'plugins', destination = 'MQ2Nav.dll',
+        pluginName = 'MQ2Nav', required = false, selfUpdate = false,
+        lifecycle = {
+            stopDependents = true, unloadBeforeReplace = true, confirmUnloaded = true,
+            backupBeforeReplace = true, loadAfterReplace = true, confirmLoaded = true,
+            rollbackOnFailure = true,
+        },
+        verification = { requirePE = true, sha256 = 'remote_manifest' },
+    },
+
     -- Example capability definition retained as disabled configuration.
     -- It demonstrates that ZIP/package deployment does not require a new
     -- C++ design when we need it later.

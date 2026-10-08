@@ -46,13 +46,31 @@ function Resolve-LinkPath([string]$Path, [ref]$Linked, [int]$Depth = 0) {
     $ResolvedParent = Resolve-LinkPath $Parent $Linked ($Depth + 1)
     return [IO.Path]::GetFullPath((Join-Path $ResolvedParent (Split-Path -Leaf $Full)))
 }
-$Files = @('TAC/lua/triune.lua', 'TAC/lua/tac/buffbot.lua', 'TAC/lua/tac/auto_aa.lua')
+# Edited By: NeroMorte - Include updater support and the Nav completion adapter in link verification/backups.
+$Files = @('TAC/lua/triune.lua', 'TAC/lua/tac/buffbot.lua', 'TAC/lua/tac/auto_aa.lua',
+    'TAC/lua/tac/update_manager.lua', 'TAC/lua/TAC_support_modules/update_config.lua',
+    'TAC/lua/TAC_support_modules/morte_version.lua', 'TAC/lua/TAC_support_modules/nav_xyz_completion.lua',
+    'TAC/lua/TAC_support_modules/nav_update_policy.lua', 'TAC/lua/TAC_support_modules/nav_plugin_release.lua')
+$NewLinks = @()
+$CreatedLinks = @()
 $Links = @()
 foreach ($Relative in $Files) {
     $Dest = Join-Path $Dev $Relative
     $Live = Join-Path $RuntimeLua $Relative.Substring('TAC/lua/'.Length)
     $Linked = $false
-    $Resolved = Resolve-LinkPath $Live ([ref]$Linked)
+    # Edited By: NeroMorte - A linked support directory exposes new files automatically.
+    # Otherwise create only missing individual links after the branch switch.
+    if (!(Test-Path -LiteralPath $Live)) {
+        $Parent = Split-Path -Parent $Live
+        $ResolvedParent = Resolve-LinkPath $Parent ([ref]$Linked)
+        if ($Linked -and $ResolvedParent -ieq (Split-Path -Parent $Dest)) {
+            $Resolved = [IO.Path]::GetFullPath($Dest)
+        } elseif (!$Linked -and $Relative -match '/nav_(xyz_completion|update_policy|plugin_release)\.lua$') {
+            if (Get-Item -LiteralPath $Live -Force -ErrorAction SilentlyContinue) { throw "Existing dangling link: $Live" }
+            $NewLinks += [pscustomobject]@{ Live=$Live; Dest=$Dest }
+            $Resolved = [IO.Path]::GetFullPath($Dest); $Linked = $true
+        } else { throw "Missing runtime link: $Live" }
+    } else { $Resolved = Resolve-LinkPath $Live ([ref]$Linked) }
     if (!$Linked -or $Resolved -ine [IO.Path]::GetFullPath($Dest)) {
         throw "Runtime does not link to the expected development file: $Live -> $Resolved"
     }
@@ -70,9 +88,9 @@ New-Item -ItemType Directory -Path $Backup -Force | Out-Null
 foreach ($Relative in $Files) {
     $Copy = Join-Path $Backup $Relative
     New-Item -ItemType Directory -Path (Split-Path -Parent $Copy) -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $Dev $Relative) -Destination $Copy
+    if (Test-Path -LiteralPath (Join-Path $Dev $Relative)) { Copy-Item -LiteralPath (Join-Path $Dev $Relative) -Destination $Copy }
 }
-[pscustomobject]@{ BeforeBranch = $BeforeBranch; BeforeCommit = $BeforeCommit; TestCommit = $Revision; Links = $Links } |
+[pscustomobject]@{ BeforeBranch = $BeforeBranch; BeforeCommit = $BeforeCommit; TestCommit = $Revision; Links = $Links; NewLinks = $NewLinks } |
     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Backup 'restore-info.json') -Encoding UTF8
 # Save canonical source bytes for inspection even with Windows CRLF checkout conversion.
 git -c core.autocrlf=false -c core.eol=lf -C $Dev archive --format=zip "--output=$(Join-Path $Backup 'test-source.zip')" $Revision -- @Files
@@ -86,6 +104,11 @@ try {
     else { git -C $Dev switch -c $Branch --track "origin/$Branch" }
     if ($LASTEXITCODE -ne 0) { throw 'Test branch switch failed.' }
     if ((git -C $Dev rev-parse HEAD) -ne $Revision) { throw 'HEAD verification failed.' }
+    # Edited By: NeroMorte - Preserve existing links; create only the missing support-module links.
+    foreach ($Entry in $NewLinks) {
+        New-Item -ItemType SymbolicLink -Path $Entry.Live -Target $Entry.Dest | Out-Null
+        $CreatedLinks += $Entry.Live
+    }
     foreach ($Entry in $Links) {
         $Linked = $false
         $Resolved = Resolve-LinkPath $Entry.Live ([ref]$Linked)
@@ -97,6 +120,7 @@ try {
     }
 } catch {
     $Reason = $_
+    foreach ($Live in $CreatedLinks) { Remove-Item -LiteralPath $Live -Force }
     if ($BeforeBranch -eq $Branch -and (git -C $Dev rev-parse HEAD) -ne $BeforeCommit) {
         $RollbackBranch = 'nero/water-chase-rollback-' + [guid]::NewGuid().ToString('N').Substring(0,8)
         git -C $Dev switch -c $RollbackBranch $BeforeCommit

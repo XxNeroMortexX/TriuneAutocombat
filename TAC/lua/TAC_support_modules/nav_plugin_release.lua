@@ -1,0 +1,3 @@
+-- Created By: NeroMorte - Filled with the verified Windows build when publishing the Nav test payload.
+return { enabled=false, version='1.3.3.5', remote='MQ2Nav/MQ2Nav.dll', sha256='',
+    client='RoF2', architecture='Win32', macroquestCommit='8d97fa3c78d549fc0849aec332f0e25413a74293' }

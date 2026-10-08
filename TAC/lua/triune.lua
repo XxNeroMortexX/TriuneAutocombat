@@ -2327,9 +2327,11 @@ local function isMoveActive()
     return navActive or moveActive or moveToActive or nativeActive
 end
 
-local function stopMoving()
+local function stopMoving(preserveNavArrival)
     -- Edited By: NeroMorte - A real movement stop releases the current approach lease.
     runtime.approachActive = false
+    -- Edited By: NeroMorte - Intentional stops discard pending results; accepted arrival retains its bounded latch.
+    if runtime.navCompletion and not preserveNavArrival then runtime.navCompletion:clear() end
     if navLoaded() then
         local navActive = false
         pcall(function() navActive = mq.TLO.Navigation.Active() or false end)
@@ -19795,9 +19797,18 @@ function runtime.followGeometry(id)
         if not mx or not my or not mz or not lx or not ly or not lz then return end
         local dx, dy, dz = lx - mx, ly - my, lz - mz
         info = { horizontal = math.sqrt(dx * dx + dy * dy),
-            distance = math.sqrt(dx * dx + dy * dy + dz * dz), vertical = math.abs(dz) }
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz), vertical = math.abs(dz),
+            x = lx, y = ly, z = lz }
     end)
     return ok and info or nil
+end
+
+-- Edited By: NeroMorte - Share authoritative Nav result ownership across player and mob approaches.
+function runtime.navCompletionDriver()
+    if not runtime.navCompletion then
+        runtime.navCompletion = require('TAC_support_modules.nav_xyz_completion').new(mq)
+    end
+    return runtime.navCompletion
 end
 
 -- Edited By: NeroMorte - Nearby clear swimming/levitation approaches share one UW driver.
@@ -19810,7 +19821,8 @@ function runtime.tryUwApproach(id, targetDist, info, los)
     -- Direct UW steering is a close-in handoff, never a replacement for distant mesh routing.
     if verticalMovement and info.vertical > math.min(2, arrival) and info.horizontal <= math.max(20, targetDist + 3)
         and los and stickLoaded() then
-        if pursuit.lastNavTargetId ~= uwKey then stopMoving() end
+        -- Edited By: NeroMorte - Keep the failure record during the UW handoff; do not bounce straight back to Nav.
+        if pursuit.lastNavTargetId ~= uwKey then stopMoving(true) end
         if navLoaded() then
             pcall(function() if mq.TLO.Navigation.Active() then mq.cmd('/nav stop') end end)
         end
@@ -19818,7 +19830,7 @@ function runtime.tryUwApproach(id, targetDist, info, los)
         pcall(function() active = mq.TLO.Stick.Active() or mq.TLO.Stick.Status() == 'ON' end)
         local stickDist = math.max(1, math.floor(targetDist))
         if pursuit.lastNavTargetId ~= uwKey or pursuit.lastStickDist ~= stickDist or not active then
-            mq.cmdf('/stick id %d %d uw', id, stickDist)
+            mq.cmdf('/stick uw %d id %d', stickDist, id)
             pursuit.lastNavTargetId = uwKey
             pursuit.lastStickDist = stickDist
         end
@@ -19849,13 +19861,19 @@ function runtime.followPlayer(id, dist)
         return true
     end
 
+    -- Edited By: NeroMorte - Recognize only this approach's verified stalled arrival; do not reissue Nav.
+    local completion = runtime.navCompletionDriver()
+    local verticalMovement = completion:isVertical()
+    if completion:arrived(id, targetDist, 'chase', info, los) then
+        stopMoving(true)
+        return true, verticalMovement
+    end
     runtime.checkProactiveDoorAndLev()
-    local uwHandled, verticalMovement = runtime.tryUwApproach(id, targetDist, info, los)
-    if uwHandled then return false, true end
+    -- Edited By: NeroMorte - Nav owns valid paths before any nearby UW fallback.
     if navLoaded() then
         local path = false
         pcall(function() path = mq.TLO.Navigation.PathExists('id ' .. id)() == true end)
-        if path then
+        if path and completion:canUseNav(id, targetDist, 'chase', info) then
             if tostring(pursuit.lastNavTargetId or ''):find('^native_') then stopMoving() end
             -- Ensure only one movement driver is active when handing back to Nav.
             if stickLoaded() then
@@ -19864,7 +19882,9 @@ function runtime.followPlayer(id, dist)
             local active = false
             pcall(function() active = mq.TLO.Navigation.Active() == true end)
             if pursuit.lastNavTargetId ~= id or pursuit.lastFollowDist ~= targetDist or not active then
-                mq.cmdf('/nav id %d distance=%d', id, math.floor(targetDist))
+                -- Edited By: NeroMorte - Tag our route so other Nav commands cannot satisfy this approach.
+                local tag = completion:start(id, targetDist, 'chase')
+                mq.cmdf('/nav id %d distance=%d tag=%s', id, math.floor(targetDist), tag)
                 pursuit.lastNavTargetId = id
                 pursuit.lastFollowDist = targetDist
             end
@@ -19875,11 +19895,19 @@ function runtime.followPlayer(id, dist)
         local loaded = false
         pcall(function() loaded = mq.TLO.Navigation.MeshLoaded() == true end)
         if loaded then
+            -- Edited By: NeroMorte - Use the tested persistent UW command only when Nav has no path.
+            local uwHandled = runtime.tryUwApproach(id, targetDist, info, los)
+            if uwHandled then return false, true end
             runtime.tryOffMeshRecovery(id, targetDist)
             -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
             runtime.approachActive = true
             return false, verticalMovement
         end
+    end
+    -- Edited By: NeroMorte - No Nav path/plugin: retain the UW driver when fallback is enabled.
+    if ctrl.nav_fallback_stick then
+        local uwHandled = runtime.tryUwApproach(id, targetDist, info, los)
+        if uwHandled then return false, true end
     end
     if stickLoaded() and ctrl.nav_fallback_stick then
         local stickDist = math.max(1, math.floor(targetDist))
@@ -20023,9 +20051,14 @@ function runtime.moveToward(id, dist, followOnly)
         return false
     end
 
-    -- Edited By: NeroMorte - Mob approaches use the same nearby UW handoff as player Chase.
+    -- Edited By: NeroMorte - A tagged accepted arrival is distinct from cancellation or unrelated Nav.
     local geometry = runtime.followGeometry(id)
-    if geometry and runtime.tryUwApproach(id, targetDist, geometry, losNow) then return false end
+    local completion = runtime.navCompletionDriver()
+    if completion:arrived(id, targetDist, 'combat', geometry, losNow) then
+        stopMoving(true)
+        if mq.TLO.Target.ID() ~= id then runtime.setTarget(id) end
+        return true
+    end
 
     if (os.clock() - pursuit.improvedAt) > NAV_CONST.PURSUIT_STALL_TIMEOUT or pursuit.navStalls >= 3 then
         -- Edited By: NeroMorte - A stalled approach is not permission to ignore configured range.
@@ -20062,7 +20095,7 @@ function runtime.moveToward(id, dist, followOnly)
         local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
         local ok = false
         pcall(function() ok = mq.TLO.Navigation.PathExists('id ' .. id)() end)
-        if ok then
+        if ok and completion:canUseNav(id, targetDist, 'combat', geometry) then
             if pursuit.meshRecoverId == id then
                 print(string.format(
                     '\ag[Triune]\ax Remapped nav path to #%d after off-mesh stick recovery.', id))
@@ -20086,7 +20119,9 @@ function runtime.moveToward(id, dist, followOnly)
             pursuit.wasNavActive = navActiveNow
             -- Edited By: NeroMorte - A GUI range change updates even an active Nav command.
             if pursuit.lastNavTargetId ~= id or pursuit.lastMovementDistance ~= targetDist or not navActiveNow then
-                mq.cmdf('/nav id %d distance=%d', id, math.floor(targetDist))
+                -- Edited By: NeroMorte - Tag combat approaches and inherit Nav's saved XYZ setting.
+                local tag = completion:start(id, targetDist, 'combat')
+                mq.cmdf('/nav id %d distance=%d tag=%s', id, math.floor(targetDist), tag)
                 pursuit.lastNavTargetId = id
                 pursuit.lastMovementDistance = targetDist
             end
@@ -20099,6 +20134,8 @@ function runtime.moveToward(id, dist, followOnly)
             -- the mesh; the `if ok` branch remaps /nav as soon as PathExists.
             pursuit.noPathFails = (pursuit.noPathFails or 0) + 1
             -- Edited By: NeroMorte - Recovery movement also retains ownership this tick.
+            -- Edited By: NeroMorte - Direct UW is fallback only, after a missing Nav path.
+            if geometry and runtime.tryUwApproach(id, targetDist, geometry, losNow) then return false end
             local result = runtime.tryOffMeshRecovery(id, targetDist)
             -- Edited By: NeroMorte - Renew movement ownership before idle attack cleanup.
             runtime.approachActive = true
@@ -20106,6 +20143,8 @@ function runtime.moveToward(id, dist, followOnly)
         end
     end
 
+    -- Edited By: NeroMorte - Use the persistent UW fallback before ordinary melee Stick when applicable.
+    if ctrl.nav_fallback_stick and geometry and runtime.tryUwApproach(id, targetDist, geometry, losNow) then return false end
     -- Movement Stage 2: MQ2Stick / MoveUtils
     if stickLoaded() and ctrl.nav_fallback_stick then
         if pursuit.lastNavTargetId ~= id or pursuit.lastStickDist ~= targetDist then
@@ -21091,6 +21130,16 @@ function runtime.checkStuck()
         if isCasting() or me.Sitting() or me.Ducking() or me.Stunned() or me.Rooted() or runtime.medBreakActive then
             stuckState.counter = 0
             -- Edited By: NeroMorte - Reset the full XYZ movement snapshot.
+            stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
+            return
+        end
+    end
+
+    -- Edited By: NeroMorte - Let Nav's explicit final XYZ stall window finish before ground recovery intervenes.
+    if runtime.navCompletion and runtime.navCompletion.pending then
+        local pendingId = runtime.navCompletion.pending.id
+        if runtime.navCompletion:waitingNear(runtime.followGeometry(pendingId), hasLoS(pendingId)) then
+            stuckState.counter = 0
             stuckState.lastX, stuckState.lastY, stuckState.lastZ = me.X() or 0, me.Y() or 0, me.Z() or 0
             return
         end

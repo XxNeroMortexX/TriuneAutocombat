@@ -94,12 +94,24 @@ jobs:
           $tokens = $null
           $parseErrors = $null
           # Edited By: NeroMorte - Validate every focused test installer.
-          foreach ($installer in Get-ChildItem 'tools/install_*_test.ps1') {
+          foreach ($installer in @((Get-ChildItem 'tools/*.ps1') + (Get-ChildItem 'MQ2Nav/*.ps1'))) {
             [System.Management.Automation.Language.Parser]::ParseFile(
               $installer.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count) { $parseErrors | ForEach-Object { Write-Error $_ }; exit 1 }
             Write-Host "$($installer.Name) syntax passed."
           }
+
+  # Edited By: NeroMorte - Exercise the shipped native methods/settings without EQ or Windows.
+  nav-regressions:
+    name: Nav XYZ logic regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and execute actual source methods against MQ test doubles
+        run: |
+          python3 MQ2Nav/test_movement.py
+          python3 MQ2Nav/test_settings.py
+          python3 tests/test_nav_release.py
 
   theme-consistency:
     name: Theme consistency check

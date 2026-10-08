@@ -1,3 +1,4 @@
+package.path = './TAC/lua/?.lua;' .. package.path
 -- Created By: NeroMorte - Execute real player-follow routing against vertical Chase regressions.
 local file = assert(io.open('TAC/lua/triune.lua', 'r'))
 local source = file:read('*a'); file:close()
@@ -26,7 +27,7 @@ function mq.cmd(command)
     if command == '/nav stop' then nav.active = false end
     if command == '/stick off' then stick.active = false end
     if command:find('^/nav id') then nav.active = true end
-    if command:find('^/stick id') then stick.active = true end
+    if command:find('^/stick id') or command:find('^/stick uw') then stick.active = true end
 end
 function mq.cmdf(fmt, ...) mq.cmd(string.format(fmt, ...)) end
 runtime.checkProactiveDoorAndLev = function() end
@@ -40,20 +41,20 @@ local env = setmetatable({ runtime = runtime, pursuit = pursuit, ctrl = ctrl, mq
     navLoaded = function() return true end, stickLoaded = function() return haveStick end }, { __index = _G })
 local chunk = assert(loadstring(source:sub(start, finish - 1)))
 setfenv(chunk, env); chunk()
-local function last() return commands[#commands] end
+local function last() return (commands[#commands] or ''):gsub(' tag=[%w_]+$', '') end
 -- Directly above leader on land: XY=0 must not report arrival or stop the route.
 assert(runtime.followPlayer(99, 15) == false and last() == '/nav id 99 distance=15')
 assert(stops == 0)
--- Follower enters water: hand Nav to UW without changing the selected target.
+-- Edited By: NeroMorte - Valid water/air paths keep Nav ownership and inherit its saved setting.
 me.wet = true
 local reached, pitch = runtime.followPlayer(99, 1)
-assert(not reached and pitch and last() == '/stick id 99 1 uw' and not nav.active)
+assert(not reached and pitch and last() == '/nav id 99 distance=1' and nav.active and not stick.active)
 local count = #commands; runtime.followPlayer(99, 1); assert(#commands == count)
--- Near-Z gap at 1.5 units still needs UW at a one-unit setting.
-leader.z = -1.5; assert(runtime.followPlayer(99, 1) == false and stick.active)
-leader.z = -0.5; assert(runtime.followPlayer(99, 1) == true and not stick.active)
+-- Edited By: NeroMorte - A near Z gap must keep the existing Nav approach, without an early UW handoff.
+leader.z = -1.5; assert(runtime.followPlayer(99, 1) == false and nav.active)
+leader.z = -0.5; assert(runtime.followPlayer(99, 1) == true and not nav.active)
 -- Reverse direction and levitation both retain vertical steering.
-leader.z = 80; assert(runtime.followPlayer(99, 0) == false and last() == '/stick id 99 1 uw')
+leader.z = 80; assert(runtime.followPlayer(99, 0) == false and last() == '/nav id 99 distance=0')
 me.wet = false; me.lev = true; assert(select(2, runtime.followPlayer(99, 0)) == true)
 -- Blocked LoS and distant horizontal separation return to mesh routing, never direct UW.
 los = false; assert(runtime.followPlayer(99, 0) == false and last() == '/nav id 99 distance=0')
@@ -105,7 +106,7 @@ leader.x, leader.z = 0, -80
 haveStick, los = true, true
 pursuit.lastNavTargetId, pursuit.id = 0, 0
 assert(env.distToId(99) == 80)
-assert(runtime.moveToward(99, 1, false) == false and last() == '/stick id 99 1 uw')
+assert(runtime.moveToward(99, 1, false) == false and last() == '/nav id 99 distance=1')
 -- Existing anchor permission must be respected before any UW approach.
 leashed = true; leader.z = -60; pursuit.lastNavTargetId = 0
 count = #commands; assert(runtime.moveToward(99, 1, false) == false)
@@ -160,21 +161,33 @@ me.z, me.wet, me.lev = 0, true, false
 leader.x, leader.z = 0, -100
 pursuit.lastNavTargetId = 0
 runtime.approachActive = false
-assert(runtime.followPlayer(99, 5) == false and stick.active)
-cleanupChunk(); assert(stick.active, 'idle attack cleanup cancelled active player UW approach')
+assert(runtime.followPlayer(99, 5) == false and nav.active)
+cleanupChunk(); assert(nav.active, 'idle attack cleanup cancelled active player Nav approach')
 count = #commands
 for _ = 1, 4 do
     runtime.approachActive = false -- exactly the per-tick reset in combatTick
     runtime.followPlayer(99, 5); cleanupChunk()
-    assert(stick.active and #commands == count, 'follow repeatedly restarted Stick UW')
+    assert(nav.active and #commands == count, 'follow repeatedly restarted Nav')
 end
 -- Same cleanup must preserve a mob approach even before attack engagement is allowed.
 env.haveNPC = true
 runtime.approachActive = false
 assert(runtime.moveToward(99, 5, false) == false)
-cleanupChunk(); assert(stick.active)
+cleanupChunk(); assert(nav.active)
 -- No current approach renews ownership: cleanup must still release obsolete Stick.
 runtime.approachActive = false
+stick.active = true
 cleanupChunk(); assert(not stick.active and last() == '/stick off')
 assert(source:find('(mq.gettime() - (runtime.lastFollowPollAt or 0)) >= 500', 1, true))
-print('PASS: XYZ Chase arrival, zero range, UW down/up/levitation, steering ownership, LoS/distance handoff missing-coordinate safety, mob UW, anchor permission and exact configured arrival')
+-- Edited By: NeroMorte - No-path fallback uses the macro command once and remains active.
+nav.path = false; nav.active = false; runtime.navCompletion:clear()
+pursuit.lastNavTargetId = 0; leader.x, leader.z = 0, -80
+me.z, me.wet, me.lev = 0, true, false
+assert(runtime.followPlayer(99, 1) == false and last() == '/stick uw 1 id 99')
+assert(stick.active and not nav.active)
+count = #commands
+for _ = 1, 4 do runtime.followPlayer(99, 1); assert(#commands == count) end
+-- A restored path hands ownership back to Nav and releases UW.
+nav.path = true; runtime.followPlayer(99, 1)
+assert(nav.active and not stick.active and last() == '/nav id 99 distance=1')
+print('PASS: XYZ Chase arrival, zero range, UW down/up/levitation, steering ownership, LoS/distance handoff missing-coordinate safety, mob Nav-first, anchor permission and exact configured arrival')

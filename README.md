@@ -177,3 +177,12 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 Current version: **3.1**
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
+
+### NeroMorte Nav integration test
+
+The `nero/chase-water-test` branch contains the Morte.6 integration test. Triune prefers valid Nav routes for Chase and permitted combat approaches. Nav's saved **Auto XYZ in water or while levitating** setting enables the native vertical steering; `/nav ... xyz=on` and `xyz=off` remain route overrides. Triune does not overwrite your Nav settings. A successful close stalled spawn arrival remains settled until the leader moves; cancelled routes do not count as arrival. When Nav cannot approach, clear nearby swimming/levitation approaches use persistent MoveUtils UW fallback.
+
+`MQ2Nav/source/` preserves the reviewed custom Nav sources and `MQ2Nav/Install.ps1` builds a new DLL from the installed 1.3.3.4 test. `tools/install_nav_integration_test.ps1` builds Nav first and switches the Lua test checkout through the existing runtime links. Stop Triune and unload Nav in every client before installation. Backups and exact restore commands are printed.
+
+After a verified Windows build is published with `tools/publish_nav_test.ps1`, the Update Manager adds the MQ2Nav mapping to enabled NeroMorte repository profiles automatically. Existing user mappings are retained; no manual repository or file-mapping setup is needed. Download/apply and DLL unload/reload still use the normal updater flow. The binary targets the verified **RoF2 Win32 MacroQuest build**; other client/ABI builds require their own compatible compilation. Publication metadata stays disabled until the real DLL exists. Main remains unchanged until game testing and PR checks pass. See [Nav build and distribution details](MQ2Nav/README.md).
