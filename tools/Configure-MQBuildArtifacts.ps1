@@ -191,7 +191,7 @@ try {
         & $MSBuild $Project.FullName /nologo /v:minimal /t:NeroMorteInspectArtifacts '/p:Configuration=Release' "/p:Platform=$Platform" '/p:MQ_BUILD_SEPARATE=0' "/p:NeroMorteInspectFile=$Output" *> $Log
         if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $Output)) { throw "MSBuild evaluation failed: $($Project.FullName). Details: $Log" }
         $Values=@{}
-        foreach ($Line in Get-Content -LiteralPath $Output) { $Pair=$Line.Split(@('='),2); if ($Pair.Count -eq 2) { $Values[$Pair[0]]=$Pair[1] } }
+        foreach ($Line in Get-Content -LiteralPath $Output) { $Pair=($Line -split '=', 2); if ($Pair.Count -eq 2) { $Values[$Pair[0]]=$Pair[1] } }
         foreach ($Key in @('Root','IntDir','Libraries','PDB','ImportLibrary')) {
             if (!$Values[$Key] -or !([IO.Path]::GetFullPath($Values[$Key])).StartsWith($Artifacts+'\',[StringComparison]::OrdinalIgnoreCase)) { throw "Project artifact path escaped the new folder: $($Project.BaseName) $Key=$($Values[$Key])" }
         }
