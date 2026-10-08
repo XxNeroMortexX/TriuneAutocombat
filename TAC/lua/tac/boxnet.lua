@@ -2,11 +2,11 @@
 -- ============================================================================
 -- TAC/lua/tac/boxnet.lua — Triune Box Network Plugin (MacroQuest Actors)
 -- ============================================================================
+-- Edited By: NeroMorte — selectable EQBC transport extends the existing protocol across PCs.
 -- Inter-box communication for players running several characters on one
--- computer. Built on MacroQuest's native `actors` module: every eqgame
--- process's post office talks over a named pipe to the MacroQuest.exe
--- launcher, which routes messages between clients. No extra plugin, no
--- EQBC server, no DanNet.
+-- computer via native Actors, or across PCs via a connected MQ2EQBC plugin.
+-- The saved transport is explicit and exclusive. EQBC reuses the same plain
+-- message protocol and receiver permissions; it does not require a custom DLL.
 --
 -- What it does (Phase 1):
 --   * Peer roster: every box running Triune broadcasts a 1s heartbeat with
@@ -48,9 +48,11 @@
 local plugin = {
     id                 = 'boxnet',
     name               = 'Box Network',
-    version            = '1.0.0',
+    -- Edited By: NeroMorte — EQBC transport test.
+    version            = '1.1.0-eqbc-test',
     author             = 'Triune',
-    description        = 'Actors-based communication between your boxed characters: peer roster with live vitals, remote /ac commands, Camp Here, and a message API for other plugins.',
+    -- Edited By: NeroMorte — describe both supported transports.
+    description        = 'Local Actors or cross-PC EQBC communication: peer roster, remote commands, Camp Here, and a message API for other plugins.',
     defaultEnabled     = true,
     tickInterval       = 0.1,
     runOutOfCombatOnly = false,
@@ -84,6 +86,8 @@ local SCOPES             = { 'all', 'zone', 'group' }
 -- Persisted settings
 -- ----------------------------------------------------------------------------
 local cfg = {
+    -- Edited By: NeroMorte — preserve Actors by default; explicitly opt into EQBC.
+    transport       = 'actors',
     acceptCommands  = true,     -- run /ac commands sent by peers
     acceptSlash     = true,     -- also run other slash commands (/camp, /dzquit ...) sent by peers
     trust           = 'all',    -- 'all' (any box on this launcher) | 'allow' (allowlist only)
@@ -266,7 +270,42 @@ local function onMessage(message)
     net.inbox[n + 1] = message
 end
 
+-- Edited By: NeroMorte — guard MQ2EQBC reads and reuse the existing inbox/RPC pipeline.
+local function eqbcConnected()
+    return tlo(function() return mq.TLO.EQBC.Connected() end, false) == true
+end
+
+local function resetTransport()
+    local reg = registry()
+    if reg.sink == onMessage then reg.sink = nil end
+    if net.eqbc then net.eqbc:close(); net.eqbc = nil end
+    net.actor, net.available, net.err = nil, false, nil
+    net.inbox, net.rpcInbox, net.peers = {}, {}, {}
+    net.transport = cfg.transport
+    net.wasEqbcConnected = false
+    net.lastRegisterAt, net.lastHeartbeatAt, net.lastFingerprint = -1e9, -1e9, nil
+    net.generation = (net.generation or 0) + 1
+    net.probe = { state = 'pending', at = -1e9, sentAt = nil }
+end
+
 local function registerActor()
+    -- Edited By: NeroMorte — use one transport, never Actors plus EQBC together.
+    if cfg.transport == 'eqbc' then
+        if not net.eqbc then
+            local ok, adapter = pcall(require, 'TAC_support_modules.boxnet_eqbc')
+            if not ok then net.err = 'EQBC adapter unavailable: ' .. tostring(adapter); return false end
+            net.eqbc = adapter.new({
+                clock = nowSec, name = myName, connected = eqbcConnected,
+                server = function() return tlo(function() return mq.TLO.EverQuest.Server() end, '') end,
+                command = function(line) mq.cmd(line) end, deliver = onMessage,
+            })
+            net.actor = net.eqbc
+            net.actorsModule = nil
+        end
+        net.available = net.eqbc:connected()
+        net.err = net.available and nil or 'MQ2EQBC is not connected; /bccmd connect <host> <port>'
+        return net.available
+    end
     if net.actor then return true end
     local reg = registry()
     reg.sink = onMessage
@@ -321,6 +360,8 @@ end
 
 -- Detach this instance; the dropbox itself stays registered (see header).
 local function detachActor()
+    -- Edited By: NeroMorte — close pending EQBC requests on plugin shutdown.
+    if net.eqbc then net.eqbc:close(); net.eqbc = nil end
     local reg = registry()
     if reg.sink == onMessage then reg.sink = nil end
     net.actor = nil
@@ -388,7 +429,8 @@ end
 -- Raw send. `address` nil = broadcast to every box with this mailbox.
 -- `cb(status, message)` makes the message an RPC (receiver must reply).
 local function rawSend(address, kind, data, cb)
-    if not net.actor then return false end
+    -- Edited By: NeroMorte — wait for a transport change to apply before forwarding.
+    if not net.actor or net.transport ~= cfg.transport then return false end
     local payload = envelope(kind, data)
     if cb then cb = queueResponse(cb) end
     local ok, err
@@ -521,7 +563,8 @@ local function isSelf(sender, payload)
     local me = lower(myName())
     if sender then
         local pid = myPid()
-        if pid and sender.pid and sender.pid == pid then return true end
+        -- Edited By: NeroMorte — remote PCs may use the same PID.
+        if sender.transport ~= 'eqbc' and pid and sender.pid and sender.pid == pid then return true end
         if me ~= '' and sender.character and lower(sender.character) == me then return true end
     end
     if payload and payload.from and me ~= '' and lower(payload.from) == me and not (sender and sender.character) then
@@ -760,12 +803,16 @@ local function sendCommand(scope, lines)
 
     local kind, name = resolveScope(scope)
     local summary = table.concat(clean, '; ')
+    -- Edited By: NeroMorte — make pending transport changes explicit.
+    if net.transport ~= cfg.transport then return false, 'transport change is pending; retry after the next tick' end
     if kind == 'all' then
-        rawSend(nil, 'cmd', { lines = clean, scope = 'all' })
+        -- Edited By: NeroMorte — propagate transport failures instead of reporting success.
+        if not rawSend(nil, 'cmd', { lines = clean, scope = 'all' }) then return false, net.err or 'transport send failed' end
         logEvent('-> all: ' .. summary)
         return true
     elseif kind == 'zone' then
-        rawSend(nil, 'cmd', { lines = clean, scope = 'zone', zone = myZone() })
+        -- Edited By: NeroMorte — propagate transport failures.
+        if not rawSend(nil, 'cmd', { lines = clean, scope = 'zone', zone = myZone() }) then return false, net.err or 'transport send failed' end
         logEvent('-> zone: ' .. summary)
         return true
     elseif kind == 'group' then
@@ -773,7 +820,8 @@ local function sendCommand(scope, lines)
         for _, p in ipairs(peerList()) do
             if isGroupMember(p.name) then
                 local pname = p.name
-                rawSend({ character = pname }, 'cmd', { lines = clean, scope = 'group', rpc = true }, function(status, reply)
+                -- Edited By: NeroMorte — count only successful send attempts.
+                local sent = rawSend({ character = pname }, 'cmd', { lines = clean, scope = 'group', rpc = true }, function(status, reply)
                     if noteStatus(status, 'cmd -> ' .. pname) then
                         local r = reply and reply.content
                         if r and r.data and r.data.ok == false then
@@ -781,7 +829,7 @@ local function sendCommand(scope, lines)
                         end
                     end
                 end)
-                sentTo = sentTo + 1
+                if sent then sentTo = sentTo + 1 end
             end
         end
         if sentTo == 0 then return false, 'no known peers in your group' end
@@ -790,7 +838,8 @@ local function sendCommand(scope, lines)
     else
         local peer = findPeer(name)
         local target = peer and peer.name or name
-        rawSend({ character = target }, 'cmd', { lines = clean, scope = 'name', rpc = true }, function(status, reply)
+        -- Edited By: NeroMorte — propagate named send failures.
+        local sent = rawSend({ character = target }, 'cmd', { lines = clean, scope = 'name', rpc = true }, function(status, reply)
             if noteStatus(status, 'cmd -> ' .. target) then
                 local r = reply and reply.content
                 if r and r.data and r.data.ok == false then
@@ -798,6 +847,7 @@ local function sendCommand(scope, lines)
                 end
             end
         end)
+        if not sent then return false, net.err or 'transport send failed' end
         logEvent('-> ' .. target .. ': ' .. summary)
         return true
     end
@@ -1169,8 +1219,26 @@ end
 -- ----------------------------------------------------------------------------
 -- Tick
 -- ----------------------------------------------------------------------------
+-- Edited By: NeroMorte — preserve the Actors loop and add EQBC reconnect/timeout handling.
 local function tick()
-    if not net.actor then
+    if net.transport ~= cfg.transport then resetTransport() end
+    if cfg.transport == 'eqbc' then
+        registerActor()
+        if net.eqbc then
+            net.eqbc:tick()
+            local connected = net.eqbc:connected()
+            if connected and not net.wasEqbcConnected then
+                net.lastHeartbeatAt, net.lastFingerprint = -1e9, nil
+                rawSend(nil, 'hello', {})
+                sendHeartbeat(true)
+                sendProbe()
+            elseif not connected and net.wasEqbcConnected then
+                net.peers, net.inbox = {}, {}
+                logEvent('EQBC disconnected', 'warn')
+            end
+            net.wasEqbcConnected = connected
+        end
+    elseif not net.actor then
         if registerActor() then
             net.startedAt = nowSec()
             rawSend(nil, 'hello', {})
@@ -1180,9 +1248,9 @@ local function tick()
     end
     drainInbox()
     drainResponses()
-    if net.actor then sendHeartbeat(false) end
+    if net.actor and (cfg.transport ~= 'eqbc' or net.available) then sendHeartbeat(false) end
     pruneExpired()
-    tickProbe()
+    if cfg.transport ~= 'eqbc' or net.available then tickProbe() end
 end
 
 -- ----------------------------------------------------------------------------
@@ -1190,7 +1258,8 @@ end
 -- ----------------------------------------------------------------------------
 local api = {}
 
-function api.available() return net.actor ~= nil end
+-- Edited By: NeroMorte — disconnected EQBC is not an available transport.
+function api.available() return net.actor ~= nil and net.transport == cfg.transport and (cfg.transport ~= 'eqbc' or eqbcConnected()) end
 function api.myName() return myName() end
 function api.peers() return peerList() end
 function api.peer(name) return findPeer(name) end
@@ -1308,7 +1377,15 @@ local function scopeLabel(scope)
     return scope
 end
 
+-- Edited By: NeroMorte — surface command button send failures.
+local function sendUICommand(scope, lines)
+    local ok, why = sendCommand(scope, lines)
+    if not ok then chat('Command not sent: %s', tostring(why)); logEvent('Command not sent: ' .. tostring(why), 'error') end
+    return ok
+end
+
 local function drawQuickButtons(MUTED)
+    -- Edited By: NeroMorte — report command transport errors from quick controls.
     local scope = cfg.defaultScope or 'all'
     ImGui.TextDisabled('Send to:')
     ImGui.SameLine()
@@ -1323,22 +1400,22 @@ local function drawQuickButtons(MUTED)
         ImGui.EndCombo()
     end
     ImGui.SameLine()
-    if ImGui.Button('Run##bnRun', core.px(60), core.px(22)) then sendCommand(scope, 'run') end
+    if ImGui.Button('Run##bnRun', core.px(60), core.px(22)) then sendUICommand(scope, 'run') end
     if ImGui.IsItemHovered() then core.setTooltip('Start auto-combat on the selected boxes (/ac run).') end
     ImGui.SameLine()
-    if ImGui.Button('Pause##bnPause', core.px(60), core.px(22)) then sendCommand(scope, 'pause') end
+    if ImGui.Button('Pause##bnPause', core.px(60), core.px(22)) then sendUICommand(scope, 'pause') end
     if ImGui.IsItemHovered() then core.setTooltip('Pause auto-combat on the selected boxes (/ac pause).') end
     ImGui.SameLine()
-    if ImGui.Button('Burn On##bnBurnOn', core.px(70), core.px(22)) then sendCommand(scope, 'burn on') end
+    if ImGui.Button('Burn On##bnBurnOn', core.px(70), core.px(22)) then sendUICommand(scope, 'burn on') end
     ImGui.SameLine()
-    if ImGui.Button('Burn Off##bnBurnOff', core.px(70), core.px(22)) then sendCommand(scope, 'burn off') end
+    if ImGui.Button('Burn Off##bnBurnOff', core.px(70), core.px(22)) then sendUICommand(scope, 'burn off') end
     ImGui.SameLine()
     if ImGui.Button('Follow Me##bnFollow', core.px(80), core.px(22)) then
-        sendCommand(scope, { 'ma ' .. myName(), 'assist chase' })
+        sendUICommand(scope, { 'ma ' .. myName(), 'assist chase' })
     end
     if ImGui.IsItemHovered() then core.setTooltip('Make the selected boxes set you as Main Assist and switch to Assist (Chase).') end
     ImGui.SameLine()
-    if ImGui.Button('Set Me as MA##bnMA', core.px(100), core.px(22)) then sendCommand(scope, 'ma ' .. myName()) end
+    if ImGui.Button('Set Me as MA##bnMA', core.px(100), core.px(22)) then sendUICommand(scope, 'ma ' .. myName()) end
     if ImGui.IsItemHovered() then core.setTooltip('Set this character as the Main Assist on the selected boxes (mode unchanged).') end
     ImGui.SameLine()
     if ImGui.Button('Buff Me##bnBuffMe', core.px(70), core.px(22)) then sendBuffRequest(scope) end
@@ -1353,7 +1430,7 @@ local function drawQuickButtons(MUTED)
     if type(txt) == 'string' then net.cmdInput = txt end
     ImGui.SameLine()
     if ImGui.Button('Send##bnSend', core.px(60), core.px(22)) then
-        local ok, why = sendCommand(scope, net.cmdInput)
+        local ok, why = sendUICommand(scope, net.cmdInput)
         if not ok then logEvent('not sent: ' .. tostring(why), 'warn') end
     end
     ImGui.SameLine()
@@ -1361,6 +1438,7 @@ local function drawQuickButtons(MUTED)
 end
 
 local function drawPeerTable(GOOD, WARN, ERR, MUTED, ARC)
+    -- Edited By: NeroMorte — report peer action command transport errors.
     local peers = peerList()
     local tableFlags = ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingFixedFit + ImGuiTableFlags.Resizable + ImGuiTableFlags.ScrollY
     if not ImGui.BeginTable('BoxNetPeers', 12, tableFlags, ImVec2(0, 200)) then return end
@@ -1448,11 +1526,11 @@ local function drawPeerTable(GOOD, WARN, ERR, MUTED, ARC)
         ImGui.TableSetColumnIndex(11)
         local rowId = '##bn_' .. lower(p.name)
         if ImGui.SmallButton((hb.running and 'Pause' or 'Run') .. rowId) then
-            sendCommand(p.name, hb.running and 'pause' or 'run')
+            sendUICommand(p.name, hb.running and 'pause' or 'run')
         end
         ImGui.SameLine()
         if ImGui.SmallButton((hb.burn and 'Burn Off' or 'Burn On') .. rowId) then
-            sendCommand(p.name, hb.burn and 'burn off' or 'burn on')
+            sendUICommand(p.name, hb.burn and 'burn off' or 'burn on')
         end
         ImGui.SameLine()
         if ImGui.SmallButton('Buff Me' .. rowId) then sendBuffRequest(p.name) end
@@ -1464,23 +1542,34 @@ local function drawPeerTable(GOOD, WARN, ERR, MUTED, ARC)
 end
 
 local function drawStatusLine(GOOD, WARN, ERR, MUTED)
-    if not net.actor then
-        ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], 'Actors: unavailable')
+    -- Edited By: NeroMorte — report selected transport availability accurately.
+    if not api.available() then
+        -- Edited By: NeroMorte — identify the selected transport.
+        ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], cfg.transport .. ': unavailable')
         ImGui.SameLine()
         ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], tostring(net.err or 'registering...'))
         return
     end
     local n = peerCount()
-    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], 'Actors: connected')
+    ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], cfg.transport .. ': connected')
     ImGui.SameLine()
     ImGui.TextDisabled(string.format('| %s | %d peer%s | sent %d | recv %d%s', myName(), n, n == 1 and '' or 's',
         net.sent, net.received, net.dropped > 0 and string.format(' | dropped %d', net.dropped) or ''))
     local pst = net.probe.state
     local pc = (pst == 'ok') and GOOD or ((pst == 'pending') and MUTED or ERR)
-    ImGui.TextColored(pc[1], pc[2], pc[3], pc[4], string.format('Launcher check: %s%s', pst == 'ok' and 'OK' or pst,
+    ImGui.TextColored(pc[1], pc[2], pc[3], pc[4], string.format((cfg.transport == 'eqbc' and 'EQBC check: %s%s' or 'Launcher check: %s%s'), pst == 'ok' and 'OK' or pst,
         (pst == 'ok' and net.probe.rttMs) and string.format(' (%d ms)', net.probe.rttMs) or ''))
-    local warn = probeHint()
-    if not warn and (net.lastSendStatus == -2 or net.lastSendStatus == -1) then
+    -- Edited By: NeroMorte — distinguish EQBC control/routing failures from local launcher failures.
+    local warn = cfg.transport == 'actors' and probeHint() or nil
+    if cfg.transport == 'eqbc' then
+        if tlo(function() return mq.TLO.EQBC.Setting('control') end, false) ~= true then
+            warn = 'EQBC remote control is off on this box: /bccmd set control on'
+        elseif pst ~= 'ok' and pst ~= 'pending' then
+            warn = 'EQBC loopback did not answer. Check the EQBC connection and remote control on each box.'
+        elseif n == 0 and pst == 'ok' then
+            warn = 'EQBC routing works. Start Triune and select EQBC transport on the other boxes.'
+        end
+    elseif not warn and (net.lastSendStatus == -2 or net.lastSendStatus == -1) then
         warn = 'The MacroQuest launcher (MacroQuest.exe) does not appear to be running - it routes messages between boxes.'
     elseif not warn and n == 0 and pst == 'ok' and (nowSec() - (net.startedAt or 0)) > LAUNCHER_HINT_SEC then
         warn = 'Launcher routing works but no other box has answered: make sure Triune (with this plugin) is running on them.'
@@ -1558,6 +1647,8 @@ function plugin.onInit(coreApi)
     core = coreApi
     refresh()
     if ctrl and ctrl.show_boxnet == nil then ctrl.show_boxnet = false end
+    -- Edited By: NeroMorte — reset per-transport state while preserving actor registry subscriptions.
+    resetTransport()
     net.inbox = {}
     net.rpcInbox = {}
     net.peers = {}
@@ -1582,6 +1673,8 @@ function plugin.onInit(coreApi)
         rawSend(nil, 'hello', {})
         sendHeartbeat(true)
         sendProbe()
+        -- Edited By: NeroMorte — avoid duplicate initial EQBC announcements on first tick.
+        if cfg.transport == 'eqbc' then net.wasEqbcConnected = true end
     end
 end
 
@@ -1621,6 +1714,8 @@ function plugin.onSaveSettings()
     local allow = {}
     for i, n in ipairs(cfg.allowlist or {}) do allow[i] = tostring(n) end
     return {
+        -- Edited By: NeroMorte — persist the explicit transport choice.
+        transport      = cfg.transport,
         acceptCommands = cfg.acceptCommands == true,
         acceptSlash    = cfg.acceptSlash == true,
         trust          = cfg.trust == 'allow' and 'allow' or 'all',
@@ -1634,6 +1729,8 @@ end
 
 function plugin.onLoadSettings(s)
     if type(s) ~= 'table' then return end
+    -- Edited By: NeroMorte — absent settings retain legacy local Actors.
+    if s.transport == 'actors' or s.transport == 'eqbc' then cfg.transport = s.transport end
     if s.acceptCommands ~= nil then cfg.acceptCommands = (s.acceptCommands == true) end
     if s.acceptSlash ~= nil then cfg.acceptSlash = (s.acceptSlash == true) end
     if s.trust == 'allow' or s.trust == 'all' then cfg.trust = s.trust end
@@ -1662,7 +1759,18 @@ function plugin.onDrawSettings()
     if not core then return end
     refresh()
     local GOLD = (core.colors and core.colors.GOLD) or { 1.0, 0.70, 0.54, 1 }
-    core.accent(GOLD, 'Box Network (MacroQuest Actors)')
+    -- Edited By: NeroMorte — select and save a single network transport.
+    core.accent(GOLD, 'Box Network')
+    if ImGui.BeginCombo('Transport##bnTransport', cfg.transport == 'eqbc' and 'EQBC (network)' or 'Actors (this PC)') then
+        for _, choice in ipairs({ 'actors', 'eqbc' }) do
+            if ImGui.Selectable(choice == 'eqbc' and 'EQBC (network)' or 'Actors (this PC)', cfg.transport == choice) then
+                cfg.transport = choice
+                core.saveLoadout(true)
+            end
+        end
+        ImGui.EndCombo()
+    end
+    if ImGui.IsItemHovered() then core.setTooltip('Use the same transport on each Triune box. EQBC requires MQ2EQBC connected and remote control enabled. No automatic fallback or duplicate forwarding.') end
     local isWinOpen = (ctrl.show_boxnet == true)
     if ImGui.Button((isWinOpen and 'Window: Visible (Click to Hide)' or 'Window: Hidden (Click to Show)') .. '##bnToggleWin', core.px(250), core.px(24)) then
         ctrl.show_boxnet = not isWinOpen
@@ -1687,7 +1795,7 @@ function plugin.onDrawSettings()
         cfg.trust = newTrust
         core.saveLoadout(true)
     end
-    if ImGui.IsItemHovered() then core.setTooltip('Default: any box connected to this MacroQuest launcher is trusted. Turn on to restrict to named characters.') end
+    if ImGui.IsItemHovered() then core.setTooltip('Default: any box on the selected transport is trusted. Turn on to restrict to named characters.') end
     if net.allowInput == nil then net.allowInput = table.concat(cfg.allowlist or {}, ', ') end
     ImGui.SetNextItemWidth(core.px(320))
     local txt = ImGui.InputTextWithHint('Allowlist##bnAllow', 'Names, comma separated', net.allowInput or '')
@@ -1718,7 +1826,8 @@ function plugin.onDrawSettings()
         core.saveLoadout(true)
     end
 
-    if net.actor then
+    -- Edited By: NeroMorte — disconnected EQBC must not appear connected.
+    if api.available() then
         ImGui.TextDisabled(string.format('Connected as %s | %d peer(s) | sent %d | received %d', myName(), peerCount(), net.sent, net.received))
     else
         ImGui.TextDisabled('Not connected: ' .. tostring(net.err or 'registering...'))
@@ -1739,6 +1848,24 @@ function plugin.onCommand(cmd, args)
     args = rest
     local sub = tostring(args[1] or '')
     local subl = lower(sub)
+    -- Edited By: NeroMorte — transport selection and bounded encoded network frames.
+    if subl == '_eqbc' then
+        if cfg.transport ~= 'eqbc' or not net.eqbc then return true end
+        local ok, why = net.eqbc:receive(tostring(args[2] or ''))
+        if not ok then net.dropped = net.dropped + 1; net.lastDrop = why; logEvent(why, 'warn') end
+        return true
+    end
+    if subl == 'transport' then
+        local choice = lower(args[2])
+        if choice ~= 'actors' and choice ~= 'eqbc' then
+            chat('Transport: %s. Usage: /ac net transport actors|eqbc', cfg.transport)
+        else
+            cfg.transport = choice
+            core.saveLoadout(true)
+            chat('Transport set to %s; use the same choice on every box.', choice)
+        end
+        return true
+    end
     if sub == '' then
         ctrl.show_boxnet = not ctrl.show_boxnet
         core.saveLoadout(true)
@@ -1771,11 +1898,13 @@ function plugin.onCommand(cmd, args)
     if subl == 'debug' or subl == 'diag' then
         local pid = myPid()
         chat('Box Network diagnostics:')
+        -- Edited By: NeroMorte — show EQBC connection/control alongside the legacy diagnostics.
+        print(string.format('  transport: %s EQBC connected: %s control: %s', cfg.transport, tostring(eqbcConnected()), tostring(tlo(function() return mq.TLO.EQBC.Setting('control') end, false))))
         print(string.format('  me: %s  pid: %s  zone: %s  script mailbox: %s', myName(), tostring(pid), myZone(), MAILBOX))
         print(string.format('  actor: %s  available: %s  err: %s', tostring(net.actor), tostring(net.available), tostring(net.err)))
         print(string.format('  sent: %d  received: %d  dropped: %d  self-echo dropped: %d  inbox: %d  last drop: %s',
             net.sent, net.received, net.dropped, net.selfDropped or 0, #net.inbox, tostring(net.lastDrop)))
-        print(string.format('  launcher loopback: %s%s', tostring(net.probe.state), net.probe.rttMs and string.format(' (%d ms)', net.probe.rttMs) or ''))
+        print(string.format('  transport loopback: %s%s', tostring(net.probe.state), net.probe.rttMs and string.format(' (%d ms)', net.probe.rttMs) or ''))
         print(string.format('  last send status: %s  peers: %d  heartbeat: every %.2fs (last %.1fs ago)',
             net.lastSendStatus and statusName(net.lastSendStatus) or 'none', peerCount(), cfg.heartbeatSec,
             nowSec() - net.lastHeartbeatAt))
@@ -1816,6 +1945,8 @@ end
 plugin.help = {
     '  \ag/ac net\ax - Toggle the Box Network window (boxnet plugin)',
     '  \ag/ac net <all|zone|group|Name> <command>\ax - Run a command on other boxes: an /ac command (/ac net all burn on) or any slash command as typed (/ac net group /ac manual, /ac net all /camp)',
+    -- Edited By: NeroMorte — advertise cross-PC transport selection.
+    '  \ag/ac net transport actors|eqbc\ax - Select local Actors or connected EQBC',
     '  \ag/ac net peers | ping <Name> | camp [scope]\ax - List boxes, ping one, or push your location as their camp',
     '  \ag/ac net buffme [scope|Name]\ax - Ask your other boxes for the loadout buffs you are missing',
 }

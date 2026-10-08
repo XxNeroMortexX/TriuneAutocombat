@@ -83,7 +83,7 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Game Database | `/ac db` | Offline copy of the server's item, NPC and spell database. `/ac item`, `/ac npc`, `/ac spell` search it. |
 | Inventory & Bank | `/ac inv` | Search, sort and move items; see every box's bags; hand items between boxes. |
 | Hot Buttons | `/ac btn` | Button Master-style hotbars with cooldown overlays and share strings. |
-| Box Network | `/ac net` | See and steer your other boxes on this PC. `/ac net all burn on` runs a command on all of them. |
+| Box Network | `/ac net` | See and steer boxes using local Actors or connected EQBC across PCs. `/ac net all burn on` runs a command on all of them. |
 | NMS Loot | `/ac nms` | The server's `#nms` loot system as a window, shared across your boxes. |
 | DPS Parser | `/dps` | Per-fight damage for you and your pets, plus a group meter over the Box Network. |
 | Auto-Accept | `/ac autoaccept` | Auto-accepts group, trade and DZ invites by your rules. |
@@ -186,3 +186,36 @@ Morte.6 includes the game-tested NeroMorte MQ2Nav 1.3.3.5 integration. Triune pr
 `MQ2Nav/source/` preserves the reviewed custom Nav sources and `MQ2Nav/Install.ps1` builds a new DLL from the installed 1.3.3.4 test. `tools/install_nav_integration_test.ps1` builds Nav first and switches the Lua test checkout through the existing runtime links. Stop Triune and unload Nav in every client before installation. Backups and exact restore commands are printed.
 
 The verified Windows DLL is published at `MQ2Nav/MQ2Nav.dll`. The Update Manager adds the MQ2Nav mapping to enabled NeroMorte repository profiles automatically. Existing user mappings are retained; no manual repository or file-mapping setup is needed. Download/apply and DLL unload/reload still use the normal updater flow. The binary targets the verified **RoF2 Win32 MacroQuest build**; other client/ABI builds require their own compatible compilation. The published DLL matches its SHA256 release metadata. Future changes must pass game testing and PR checks before main merge. See [Nav build and distribution details](MQ2Nav/README.md).
+
+<!-- Edited By: NeroMorte -->
+### Box Network EQBC transport (test)
+
+Connect the standard MQ2EQBC plugin on each PC to the same EQBC server. Select
+**EQBC (network)** in Settings → Plugins → Box Network, or use
+`/ac net transport eqbc` on each Triune box. `/ac net transport actors` restores
+local-only Actors. Existing loadouts default to Actors. Only the selected
+transport sends/receives; there is no automatic fallback or duplicate bridging.
+
+Enable EQBC remote control (`/bccmd set control on`) on each participating box.
+Optional `/bccmd set silentcmd on` hides MQ2EQBC's incoming command-frame echo.
+The EQBC server must be one you trust: the standard EQBC plugin already allows
+its connected clients to issue remote commands. Triune's accept-command,
+accept-slash and character allowlist settings still apply inside Boxnet.
+
+Existing `/ac net all|zone|group|Name <command>` syntax, peer heartbeats,
+Camp Here and RPC ping work through EQBC. `all` excludes the sender; `group`
+uses the sender's current in-game group and discovered Triune peers. Other
+sections and subscriber messages use the same plain-data protocol. Frames are
+bounded and assembled without evaluating Lua; expired requests report routing
+failure. Unknown/disabled receivers cannot acknowledge a named command.
+
+Use `/ac net peers`, `/ac net ping Name`, and `/ac net debug` to inspect delivery.
+All participating clients need this test revision and the same transport.
+On reconnect, the EQBC transport re-announces the character and rebuilds peers.
+Local Actors subscribers and mailbox reuse are preserved when switching back.
+
+This transport test retains existing Follow Me behavior (MA + Assist/Chase,
+without starting a paused engine). Pure Follow is a separate pending change.
+
+New files: `TAC/lua/TAC_support_modules/boxnet_eqbc.lua`,
+`tests/test_boxnet_eqbc.lua`, `tools/install_boxnet_eqbc_test.ps1`.
