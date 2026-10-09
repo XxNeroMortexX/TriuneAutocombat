@@ -1,0 +1,10 @@
+; Created By: NeroMorte
+[Settings]
+Port=2113
+Password=
+Host=0.0.0.0
+Verbose=false
+NoTimestamp=false
+NoColor=false
+; Display Triune internal packets only when debugging.
+ShowInternalPackets=false

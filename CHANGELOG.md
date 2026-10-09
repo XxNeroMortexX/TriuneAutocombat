@@ -1,5 +1,12 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-09 — EQBC server updater test (pending Windows verification)
+
+- **Edited By: NeroMorte — Add a flat MQ runtime destination to MQ2WebUpdate 4.1.7**, persist it through profiles/staging/recovery, and reject running or locked EXEs before any Apply mutation.
+- **Created By: NeroMorte — Register optional RedGuides and Go server EXE mappings automatically**, place them beside MacroQuest, preserve existing/custom mappings and all user INIs, and create missing settings once without starting servers.
+- **Edited By: NeroMorte — Hide internal Triune packets by default in the Go server console**, with an explicit debug option, unchanged forwarding, visible ordinary output, version credits and embedded upstream license.
+
+
 ## 2026-10-08 — 3.1-Morte.6
 
 - **Edited By: NeroMorte — Prefer MQ2Nav for valid Chase and combat paths**, inherit saved XYZ settings, and use the tested persistent `/stick uw <distance> id <spawn>` fallback when Nav cannot approach. Retain configured ranges and combat/camp permissions.

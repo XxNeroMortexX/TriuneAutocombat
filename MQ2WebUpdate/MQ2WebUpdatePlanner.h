@@ -241,8 +241,9 @@ namespace mq2webupdate::planner
                     std::filesystem::path(mapping.destinationPath) /
                     std::filesystem::path(relativePath);
 
-                if (!mq2webupdate::profiles::IsSafeRelativePath(
-                        destinationRelative.generic_string()))
+                // Edited By: NeroMorte - runtime-root payloads stay flat and within their root.
+                if (!mq2webupdate::profiles::IsSafeDeploymentPath(
+                        mapping.destinationRoot, destinationRelative.generic_string()))
                 {
                     result.errors.push_back(
                         repositoryPath + " produced an unsafe destination.");
