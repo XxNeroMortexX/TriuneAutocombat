@@ -105,7 +105,7 @@ foreach ($Item in $Release.payloads) {
     if ((Get-FileHash -LiteralPath $Payload).Hash -ine $Item.sha256) { throw "Payload hash mismatch: $($Item.name)" }
 }
 $RuntimeRecords=@()
-foreach ($Name in @('plugins\MQ2WebUpdate.dll','EQBCS.exe','EQBCS-Go.exe')) {
+foreach ($Name in @('plugins\MQ2WebUpdate.dll','EQBCS.exe','EQBCS-Go.exe','config\MQ2WebUpdate.ini','config\MQ2WebUpdate.profiles.ini')) {
     $Path=Join-Path $Runtime $Name;$Save=Join-Path $Backup ('runtime\'+$Name)
     $Exists=Test-Path -LiteralPath $Path
     if ($Exists) { New-Item -ItemType Directory -Path (Split-Path -Parent $Save) -Force | Out-Null; Copy-Item -LiteralPath $Path -Destination $Save }
@@ -178,13 +178,15 @@ try {
     }
     throw "Installation stopped; previous files restored. Backup: $Backup. $Reason"
 }
+[pscustomobject]@{BeforeBranch=$BeforeBranch;BeforeCommit=$Before;Revision=$Revision;Sources=$SourceRecords;Runtime=$RuntimeRecords;GoBackup=$GoBackup;Build=$Build;Dev=$Dev;CreatedLinks=$Created} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$Backup\restore-info.json" -Encoding UTF8
 $DllHash=(Get-FileHash -LiteralPath $LiveDll).Hash.ToLowerInvariant()
 [pscustomobject]@{version='4.1.7';sha256=$DllHash;revision=$Revision;runtime_dll=$LiveDll;built_dll=$Built} | ConvertTo-Json | Set-Content -LiteralPath "$Backup\built-updater.json" -Encoding UTF8
 Write-Host "Installed EQBC server updater test: $Revision"
 Write-Host "Native/updater backup: $Backup"
 Write-Host "Go source backup: $GoBackup"
 Write-Host "Build artifacts: $Build"
-Write-Host 'No INIs were overwritten; neither server was started. Main is unchanged.'
+Write-Host 'No server INIs were overwritten; neither server was started. Main is unchanged.'
+Write-Host "Rollback: stop Triune, unload WebUpdate, stop servers, then run $Dev\tools\restore_eqbc_server_update_test.ps1 -BackupPath '$Backup'"
 Write-Host 'Load /plugin mq2webupdate load, then /lua run triune. Verify /echo ${WebUpdate.Version} is 4.1.7.'
 Write-Host 'Start EQBCS-Go.exe when ready. Its banner identifies 1.0-NeroMorte.2; internal Triune packets are hidden by default.'
 Write-Host 'Verify both server mappings point to MQ root. Existing INIs are preserved; missing defaults are created within 30 seconds.'
