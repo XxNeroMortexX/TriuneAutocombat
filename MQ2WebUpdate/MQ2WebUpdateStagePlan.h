@@ -149,7 +149,8 @@ namespace mq2webupdate::stageplan
                 !profiles::IsAsciiIdentifier(item.mappingId) ||
                 !profiles::IsSafeRelativePath(item.repositoryPath) || item.repositoryPath.empty() ||
                 !profiles::IsSafeRelativePath(item.stageRelativePath) || item.stageRelativePath.empty() ||
-                !profiles::IsSafeRelativePath(item.destinationRelativePath) || item.destinationRelativePath.empty())
+                // Edited By: NeroMorte - persisted MQ-root payloads cannot enter other managed roots.
+                !profiles::IsSafeDeploymentPath(*parsedRoot, item.destinationRelativePath))
             {
                 error = "Unsafe stage-plan item.";
                 return false;

@@ -188,7 +188,8 @@ size_t g_errorCount = 0;
 
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
-constexpr const char* kWebUpdateVersion = "4.1.6";
+// Edited By: NeroMorte - MQ-root standalone server payload support.
+constexpr const char* kWebUpdateVersion = "4.1.7";
 constexpr const char* kWebUpdateApiVersion = "4.0";
 // Legacy defaults retained for migration of older settings files. The active
 // main repository and every deployment mapping are loaded from the saved
@@ -4769,7 +4770,9 @@ bool g_restartRequired = false;
                 profilemodel::DestinationRoot::Macros,
                 profilemodel::DestinationRoot::Plugins,
                 profilemodel::DestinationRoot::Config,
-                profilemodel::DestinationRoot::Resources
+                profilemodel::DestinationRoot::Resources,
+                // Edited By: NeroMorte - include direct runtime files in recovery.
+                profilemodel::DestinationRoot::MQ
             };
 
             for (const auto root : allowedRoots)
@@ -4780,7 +4783,9 @@ bool g_restartRequired = false;
                 if (TryGetWindowsRelativePath(
                         candidateRoot,
                         normalizedLivePath,
-                        candidateRelative))
+                        candidateRelative) &&
+                    // Edited By: NeroMorte - recovery uses the same flat-root boundary.
+                    profilemodel::IsSafeDeploymentPath(root, candidateRelative.generic_string()))
                 {
                     matchedRoot = candidateRoot;
                     matchedRootName = profilemodel::DestinationRootName(root);
@@ -7307,6 +7312,30 @@ void RecoverInterruptedApplyTransactionAtStartup()
 
                 break;
             }
+
+            // Edited By: NeroMorte - do not start replacing any files while a
+            // standalone EXE is running/locked. The server is never stopped here.
+#ifdef _WIN32
+            if (existedBefore && stagedItem.destinationRoot == profilemodel::DestinationRoot::MQ)
+            {
+                std::string extension = livePath.extension().string();
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                if (extension == ".exe")
+                {
+                    HANDLE probe = CreateFileW(livePath.c_str(), GENERIC_WRITE | DELETE,
+                        FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    if (probe == INVALID_HANDLE_VALUE)
+                    {
+                        ++preflightErrorCount;
+                        WriteChatf("\ar[MQ2WebUpdate]\ax PREFLIGHT: close the running/locked server %s and retry Apply (Windows error %lu).",
+                            livePath.filename().string().c_str(), GetLastError());
+                        break;
+                    }
+                    CloseHandle(probe);
+                }
+            }
+#endif
 
             std::string stagedData;
 

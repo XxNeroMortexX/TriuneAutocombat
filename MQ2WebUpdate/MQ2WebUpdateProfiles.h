@@ -19,7 +19,9 @@ namespace mq2webupdate::profiles
         Macros,
         Plugins,
         Config,
-        Resources
+        Resources,
+        // Edited By: NeroMorte - standalone payloads beside MacroQuest.exe.
+        MQ
     };
 
     enum class ProfileRole
@@ -176,6 +178,8 @@ namespace mq2webupdate::profiles
         case DestinationRoot::Plugins: return "plugins";
         case DestinationRoot::Config: return "config";
         case DestinationRoot::Resources: return "resources";
+        // Edited By: NeroMorte - name the top-level runtime root.
+        case DestinationRoot::MQ: return "mq";
         }
 
         return "unknown";
@@ -227,6 +231,8 @@ namespace mq2webupdate::profiles
         if (value == "plugins") return DestinationRoot::Plugins;
         if (value == "config") return DestinationRoot::Config;
         if (value == "resources") return DestinationRoot::Resources;
+        // Edited By: NeroMorte - accept the explicit runtime-root mapping.
+        if (value == "mq") return DestinationRoot::MQ;
         return std::nullopt;
     }
 
@@ -241,9 +247,19 @@ namespace mq2webupdate::profiles
         case DestinationRoot::Plugins: return runtimeRoot / "plugins";
         case DestinationRoot::Config: return runtimeRoot / "config";
         case DestinationRoot::Resources: return runtimeRoot / "resources";
+        // Edited By: NeroMorte - preserve the actual MQ installation path.
+        case DestinationRoot::MQ: return runtimeRoot;
         }
 
         return {};
+    }
+
+    // Created By: NeroMorte - root payloads are flat files, so they cannot alias
+    // Lua/plugin/config mappings or internal updater transaction folders.
+    inline bool IsSafeDeploymentPath(DestinationRoot root, const std::string& path)
+    {
+        return !path.empty() && IsSafeRelativePath(path) &&
+            (root != DestinationRoot::MQ || path.find_first_of("/\\") == std::string::npos);
     }
 
     inline ValidationResult ValidateMapping(const Mapping& mapping)
@@ -261,6 +277,13 @@ namespace mq2webupdate::profiles
 
         if (!IsSafeRelativePath(mapping.destinationPath))
             result.Add("Mapping.DestinationPath", "Destination must remain relative to its allowed root.");
+
+        // Edited By: NeroMorte - reserve mq for direct runtime files only.
+        if (mapping.destinationRoot == DestinationRoot::MQ &&
+            (!mapping.destinationPath.empty() || mapping.recursive))
+        {
+            result.Add("Mapping.DestinationRoot", "MQ-root mappings must be nonrecursive with an empty destination path.");
+        }
 
         if (mapping.maximumFileBytes == 0 ||
             mapping.maximumFileBytes > 1024ull * 1024ull * 1024ull)

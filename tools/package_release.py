@@ -31,6 +31,26 @@ def nav_payload() -> tuple[Path, str] | None:
     return source, "plugins/MQ2Nav.dll"
 
 
+# Created By: NeroMorte - server EXEs are flat runtime files; user INIs are never archive payloads.
+def server_payloads() -> list[tuple[Path, str]]:
+    manifest = ROOT / "EQBCServers/release.json"
+    if not manifest.is_file():
+        return []
+    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+    if metadata.get("enabled") is not True:
+        return []
+    result = []
+    entries = metadata.get("payloads", [])
+    if len(entries) != 2 or {p.get("name") for p in entries} != {"EQBCS.exe", "EQBCS-Go.exe"}:
+        raise RuntimeError("Invalid EQBC server manifest")
+    for entry in entries:
+        source = ROOT / "EQBCServers" / entry["name"]
+        if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest() != entry.get("sha256"):
+            raise RuntimeError("Server binary differs from the published manifest")
+        result.append((source, entry["name"]))
+    return result
+
+
 def build() -> None:
     if not ASSET.is_file() or not DLL.is_file():
         raise RuntimeError("Create the TAC install archive first; DLL must exist")
@@ -44,6 +64,11 @@ def build() -> None:
             if nav[1] in archive.namelist():
                 raise RuntimeError("Nav DLL is already in the install archive")
             archive.write(*nav)
+        # Edited By: NeroMorte - keep server output beside MacroQuest.exe.
+        for source, destination in server_payloads():
+            if destination in archive.namelist():
+                raise RuntimeError("Server already present in install archive")
+            archive.write(source, destination)
 
 
 def verify() -> None:
@@ -73,6 +98,12 @@ def verify() -> None:
         nav = nav_payload()
         if nav and (nav[1] not in names or archive.read(nav[1]) != nav[0].read_bytes()):
             raise RuntimeError("Nav payload is missing or differs from the published DLL")
+        # Edited By: NeroMorte - require exact server bytes and exclude managed INIs.
+        for source, destination in server_payloads():
+            if destination not in names or archive.read(destination) != source.read_bytes():
+                raise RuntimeError("Server payload is missing or differs")
+        if any(name in names for name in ("EQBCS.ini", "EQBCS-Go.ini")):
+            raise RuntimeError("Existing server settings must not be overwritten by install archives")
         if archive.testzip() is not None:
             raise RuntimeError("Corrupt first-install archive")
     print(f"Verified {ASSET.name}: {ASSET.stat().st_size} bytes, {len(names)} root-relative entries")

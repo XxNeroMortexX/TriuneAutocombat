@@ -1,0 +1,9 @@
+{
+  "version": "4.1.7",
+  "sourceRevision": "500bc9f7b60603f3fe7ba71398a4ba794508b1b6",
+  "file": "MQ2WebUpdate.dll",
+  "bytes": 5572096,
+  "sha256": "98d39cbe4a79b98c5afb4076a216c44611543dd94b591bc6cd578fe6eba8419d",
+  "architecture": "Win32",
+  "client": "RoF2"
+}

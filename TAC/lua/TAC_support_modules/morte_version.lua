@@ -18,8 +18,8 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - Game-tested Nav integration release; engine version remains independent.
-    version = 'Morte.6',
+    -- Edited By: NeroMorte - EQBC transport and server updater release; engine version remains independent.
+    version = 'Morte.7',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
@@ -36,7 +36,8 @@ version.morte = {
 ---------------------------------------------------------------------------
 
 version.engine = {
-    expectedVersion = '4.1.6',
+    -- Edited By: NeroMorte - Publish the Windows-built MQ runtime root updater.
+    expectedVersion = '4.1.7',
     minimumVersion = '4.0.0',
 }
 

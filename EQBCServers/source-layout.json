@@ -1,0 +1,90 @@
+{
+  "files": [
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdate.cpp",
+      "base": "eac30dd6878f03c6967ec67d2a60e54528388b1bfeda6ade841c173f55c15fc7",
+      "updated": "6aa357c6bfd348bd092dae20810abee037f451680e7be3185546e0f89280d5eb",
+      "reviewedBases": [
+        "ade924013c0019ea72a65b4a36dcd3f44e6b2049a35ac1771a882fefaddff365"
+      ],
+      "reviewedBaseDescription": "Reviewed 1f7a7b0 source (4.0.0), with extra terminal blank lines only."
+    },
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdateProfiles.h",
+      "base": "42b31101b14c5d078c0fe0634f8c934a18e0ebf7cf5213f86adec2ba3f20e755",
+      "updated": "ce1dc3f0ae6509ce6f589a06bf7c9af00792bfbe7eefe84e0faa43650bbd2604"
+    },
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdatePlanner.h",
+      "base": "85c2d0b1b0ec3fdff373cc35b94946c190cd350ecbe13a0e00c6808138a89b9d",
+      "updated": "2cca753d83e22d2d93fb294f96f19c1def3b615681484fb5a2d539e82d86fbb1"
+    },
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdateStagePlan.h",
+      "base": "1549d809c4f10d52bccd64a42946fa50412a378f5ded6e71ec804631dddeef09",
+      "updated": "692ea70634500d6f6d00a013048432760918a3432efbf93c5390e065944211ab"
+    },
+    {
+      "group": "go",
+      "path": "eqbc.go",
+      "base": "ec8bbe4cf7eb5f98cc6ad13a9a8297ae637eb779e35cfea8bb9efe1dfdeef985",
+      "updated": "ea3a8ea54a3638677bf835e911adb092bb6d3c4459c21a6bbcb57c0d4858fd44"
+    },
+    {
+      "group": "go",
+      "path": "cmd/eqbc/config.go",
+      "base": "4dd4c49ab7c919dfaa85fdfd7f17615e42a5c7d514f12de1af8c87c96521e163",
+      "updated": "46c67e34383f71f50f8235a535d722f82084fb87b1f6216821443664c8d55e17"
+    },
+    {
+      "group": "go",
+      "path": "cmd/eqbc/main.go",
+      "base": "5180f014e5e1758f3aeb5428dcdc7f2de49ea5797d3fde6b06954b26dbeb2c21",
+      "updated": "adcd99effcc13240fe09586ffad7d776205f13d700b088c7c4491bd112c0470a"
+    },
+    {
+      "group": "go",
+      "path": "cmd/eqbc/config_test.go",
+      "base": "5005472f10bc3b595794ab0c3cb2cbb110472a0daa8eb47f81b33ecfed144a7f",
+      "updated": "456dd9920c57653b8fc2aeada9cafd8db715bbc0cae98cc1ed95dc1069b6c1ec"
+    },
+    {
+      "group": "go",
+      "path": "EQBCS.ini.example",
+      "base": "b5cf6dbad829175d2473682bb59daf7ab0a51ca115c5b673f407c020ed69e0f0",
+      "updated": "4eb6205f242f2c9c19c655e53d20d7f04fcde14bd41a554c6176307997b72714"
+    },
+    {
+      "group": "go",
+      "path": "packet_log.go",
+      "base": null,
+      "updated": "f797a1475104e33288e84612bbe27f836dd7ab1fef3577429737a7bd87583a98"
+    },
+    {
+      "group": "go",
+      "path": "packet_log_test.go",
+      "base": null,
+      "updated": "01be8d9e0144c715a1da6b72ec8f785c42c8230272ebab2e282fe894449ea02e"
+    },
+    {
+      "group": "go",
+      "path": "license.go",
+      "base": null,
+      "updated": "ea037fc29cf602a61af234a48479ed404b9271712c2b50154543a873f887828f"
+    },
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdateProfileStore.h",
+      "base": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57",
+      "updated": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57",
+      "reviewedBases": [
+        "46c0a212fbe4af0d4e2982e7580d59117e548c34c134b8a374cb3c8b26bbdb8c"
+      ],
+      "reviewedBaseDescription": "Reviewed prior version-3 profile serializer; upgrade to version-4-compatible serializer."
+    }
+  ]
+}

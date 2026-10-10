@@ -271,6 +271,14 @@ config.payloads = {
         verification = { requirePE = true, sha256 = 'remote_manifest' },
     },
 
+    -- Edited By: NeroMorte - add-only MQ-root registration requires the 4.1.7 backend.
+    { id='eqbcs_server', source='morte', type='executable', minimumBackend='4.1.7',
+      remote='EQBCServers/EQBCS.exe', destinationRoot='mq', destination='EQBCS.exe',
+      required=false, preserveSettings=true, startAfterUpdate=false },
+    { id='eqbcs_go_server', source='morte', type='executable', minimumBackend='4.1.7',
+      remote='EQBCServers/EQBCS-Go.exe', destinationRoot='mq', destination='EQBCS-Go.exe',
+      required=false, preserveSettings=true, startAfterUpdate=false },
+
     -- Example capability definition retained as disabled configuration.
     -- It demonstrates that ZIP/package deployment does not require a new
     -- C++ design when we need it later.

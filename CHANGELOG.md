@@ -1,5 +1,12 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-09 — 3.1-Morte.7
+
+- **Edited By: NeroMorte — Add a flat MQ runtime destination to MQ2WebUpdate 4.1.7**, persist it through profiles/staging/recovery, and reject running or locked EXEs before any Apply mutation.
+- **Created By: NeroMorte — Register optional RedGuides and Go server EXE mappings automatically**, place them beside MacroQuest, preserve existing/custom mappings and all user INIs, and create missing settings once without starting servers.
+- **Edited By: NeroMorte — Hide internal Triune packets by default in the Go server console**, with an explicit debug option, unchanged forwarding, visible ordinary output, version credits and embedded upstream license.
+
+
 ## 2026-10-08 — 3.1-Morte.6
 
 - **Edited By: NeroMorte — Prefer MQ2Nav for valid Chase and combat paths**, inherit saved XYZ settings, and use the tested persistent `/stick uw <distance> id <spawn>` fallback when Nav cannot approach. Retain configured ranges and combat/camp permissions.
@@ -7,6 +14,9 @@
 - **Edited By: NeroMorte — Preserve the tested MQ2Nav XYZ implementation in `MQ2Nav/`**, version 1.3.3.5, with per-route overrides, saved settings/UI, live water/levitation steering, smoothing/braking and bounded five-second spawn stall arrival. Add authoritative completion TLOs for integration; no location/door arrival relaxation.
 - **Created By: NeroMorte — Register the Nav updater mapping automatically after the verified RoF2/Win32 DLL is published**, using the existing NeroMorte profile and independent DLL handoff. Preserve custom/disabled mappings and wait for locked/staged updater work. Placeholder metadata cannot enable downloads. Include the verified DLL in first-install releases after publication.
 - **Created By: NeroMorte — Add backed-up isolated Windows build/install and test-branch publication tools**, preserving runtime links, untracked updater files, stashes and previous rollback records. The full Windows build passed with zero warnings/errors; NeroMorte confirmed flawless Triune Chase in game and approved main merge. Publish the exact tested Nav 1.3.3.5 DLL with verified SHA256 and release metadata.
+
+- **Edited By: NeroMorte — Add a focused Box Network EQBC transport test** with saved Actors/EQBC selection, cross-PC peer heartbeats, existing command scopes, Camp Here, RPC replies, reconnect diagnostics and receiver permission checks. Default to Actors and use one transport at a time. Report UI command send failures instead of silently ignoring them.
+- **Created By: NeroMorte — Add bounded EQBC plain-data framing and regression tests**, covering fragmented messages, replay suppression, timeouts and two-PC PID collisions. Preserve the existing local actor mailbox lifecycle and callbacks. Keep pure Follow implementation separate from this transport test.
 
 ---
 

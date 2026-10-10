@@ -5,7 +5,7 @@
 local plugin = {
     id = 'update_manager', name = 'Update Manager', author = 'NeroMorte',
     description = 'Production update planning, staging, apply, policy, and diagnostics frontend.',
-    version = '4.1.6',
+    version = '4.1.7',
     -- Edited By: NeroMorte - Run profile registration from the plugin fiber, outside ImGui.
     tickInterval = 1,
     window = {
@@ -1370,7 +1370,8 @@ local function drawProfileEditorTab()
     end
     ImGui.NewLine()
     ImGui.Text('Destination Root')
-    for index, root in ipairs({ 'lua', 'macros', 'plugins', 'config', 'resources' }) do
+    -- Edited By: NeroMorte - expose the flat runtime destination added by backend 4.1.7.
+    for index, root in ipairs({ 'lua', 'macros', 'plugins', 'config', 'resources', 'mq' }) do
         if index > 1 then ImGui.SameLine() end
         local isCurrentRoot = mapping.destinationRoot == root
         beginDisabled(isCurrentRoot)
@@ -1753,6 +1754,10 @@ function plugin.onInit(coreApi)
     -- Edited By: NeroMorte - Add-only registration is gated on real published DLL metadata.
     state.navUpdatePolicy = require('TAC_support_modules.nav_update_policy').new(
         require('TAC_support_modules.nav_plugin_release'))
+    -- Edited By: NeroMorte - Register root server payloads after backend capability checks.
+    state.serverUpdatePolicy = require('TAC_support_modules.eqbc_server_update_policy').new(
+        require('TAC_support_modules.eqbc_server_release'))
+    state.serverDefaultsPoll = 0
     state.navPolicyPoll = 0
     loadMetadata(); state.initialized = true
     addLog('Production Update Manager initialized.')
@@ -1760,12 +1765,23 @@ end
 
 function plugin.onDestroy() state.initialized = false end
 function plugin.onTick()
-    -- Edited By: NeroMorte - Bootstrap a verified published Nav mapping once, before startup checks.
-    if state.navUpdatePolicy and not state.navUpdatePolicy.done
-        and os.time() - (state.navPolicyPoll or 0) >= 1 then
-        state.navPolicyPoll = os.time()
-        state.navUpdatePolicy:step(readEngine(), ctrl, runCommand, commandEncode,
+    -- Edited By: NeroMorte - Serialize add-only migrations before startup checks.
+    if os.time() - (state.navPolicyPoll or 0) < 1 then return end
+    state.navPolicyPoll = os.time()
+    local engine = readEngine()
+    local policy = state.navUpdatePolicy
+    if not policy or policy.done then policy = state.serverUpdatePolicy end
+    if policy and not policy.done then
+        policy:step(engine, ctrl, runCommand, commandEncode,
             function() core.saveLoadout(true) end, addLog)
+    end
+    -- Edited By: NeroMorte - Check again after downloads; never replace existing settings.
+    if engine.available and not engine.busy and os.time() - (state.serverDefaultsPoll or 0) >= 30 then
+        state.serverDefaultsPoll = os.time()
+        local ok, root = pcall(function()
+            return tostring(mq.TLO.MacroQuest.Path('plugins') or ''):gsub('[\\/]+$', ''):match('^(.*)[\\/][^\\/]+$')
+        end)
+        if ok and root then require('TAC_support_modules.eqbc_server_defaults').ensure(root, addLog) end
     end
 end
 
@@ -1773,7 +1789,8 @@ function plugin.onDrawUI()
     processPendingDllTicket()
     refreshAfterSuccessfulApply()
     -- Edited By: NeroMorte - Keep UI/recovery available while migration waits for a locked backend.
-    if not state.navUpdatePolicy or state.navUpdatePolicy.done then processTriuneStartupChecks() end
+    if (not state.navUpdatePolicy or state.navUpdatePolicy.done)
+        and (not state.serverUpdatePolicy or state.serverUpdatePolicy.done) then processTriuneStartupChecks() end
     drawTriuneStartupPopup()
     drawWindow()
 end

@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "minimumUpdater": "4.1.7",
+  "payloads": [
+    {
+      "id": "eqbcs_server",
+      "name": "EQBCS.exe",
+      "remote": "EQBCServers/EQBCS.exe",
+      "version": "1.9",
+      "bytes": 300032,
+      "sha256": "a410a7ef9fe2860db3ddf8b3fe6a596e65e0098800d55afe9be7bc6ba3c97f2f"
+    },
+    {
+      "id": "eqbcs_go_server",
+      "name": "EQBCS-Go.exe",
+      "remote": "EQBCServers/EQBCS-Go.exe",
+      "version": "1.0-NeroMorte.2",
+      "bytes": 6430208,
+      "sha256": "c78b91894d024a64bc652f5f119c19150b53c4766bd613ad888a100fa6555ce3"
+    }
+  ]
+}
