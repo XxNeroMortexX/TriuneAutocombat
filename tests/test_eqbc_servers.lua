@@ -43,6 +43,11 @@ assert(#profile.mappings==2)
 for _,m in ipairs(profile.mappings) do assert(m.enabled and not m.recursive and m.destinationRoot=='mq' and m.destinationPath=='') end
 local callsBefore=#calls
 assert(policy.new(release):step(engine,prefs,command,tostring,function() end,log));assert(#calls==callsBefore)
+local monitor={id='monitor',enabled=true,role='monitor',owner='XxNeroMortexX',repository='TriuneAutocombat',mappings={}}
+local monitorPolicy=policy.new(release)
+local count=#calls
+assert(not monitorPolicy:step({available=true,version='4.1.7',managedProfiles={monitor}}, {},command,tostring,function() end,log))
+assert(#calls==count+1 and monitor.role=='monitor')
 local folder = os.tmpname(); os.remove(folder); assert(os.execute('mkdir "'..folder..'"')==0)
 local function write(name,data) local f=assert(io.open(folder..'/'..name,'wb')); f:write(data); f:close() end
 local function read(name) local f=io.open(folder..'/'..name,'rb'); if not f then return nil end local s=f:read('*a'); f:close(); return s end

@@ -27,7 +27,7 @@ function M.new(release)
         end
         prefs.eqbc_server_update_policy = prefs.eqbc_server_update_policy or {}
         for _, profile in ipairs(engine.managedProfiles or {}) do
-            if profile.enabled and profile.role == 'main' and tostring(profile.owner or ''):lower() == 'xxneromortexx'
+            if profile.enabled and tostring(profile.owner or ''):lower() == 'xxneromortexx'
                 and profile.repository == 'TriuneAutocombat' and tostring(profile.id or ''):match('^[%w_-]+$') then
                 local states = prefs.eqbc_server_update_policy[profile.id] or {}
                 prefs.eqbc_server_update_policy[profile.id] = states
