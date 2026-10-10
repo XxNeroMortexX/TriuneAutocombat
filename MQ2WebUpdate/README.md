@@ -18,6 +18,8 @@ stop the operation and show reset/retry timing; retry once that time passes. Ord
 transient errors retain bounded retries. Raw hosting also has limits. Other PCs and
 separate runtime folders do not share these local caches/cooldown files.
 
-The shipped DLL and `release.json` remain 4.1.7 until Windows verification and game
-testing finish. Use `tools/install_updater_rate_limit_test.ps1` for the candidate;
-it preserves settings, Lua links, stashes and untracked files.
+This test branch includes the exact Windows-built 4.1.8 DLL verified against its
+build record and confirmed by NeroMorte to load as 4.1.8. Full compare/stage/apply
+game testing remains pending. Main continues to ship 4.1.7 until approval and merge.
+Use `tools/install_updater_rate_limit_test.ps1` to rebuild the candidate; it preserves
+settings, Lua links, stashes and untracked files.

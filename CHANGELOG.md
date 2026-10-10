@@ -2,6 +2,8 @@
 
 ## 2026-10-10
 
+- **Created By: NeroMorte — Publish the exact Windows-built MQ2WebUpdate 4.1.8 DLL on the test branch** after verifying its source revision, Win32 architecture, size, SHA256 and Git blob SHA. NeroMorte confirms it loads as 4.1.8; full compare/stage/apply testing and main merge remain pending.
+
 - **Edited By: NeroMorte — Accept reviewed trailing blank lines in native updater project XML during installer verification**; retain exact checks of build settings and all other source files.
 
 - **Edited By: NeroMorte — MQ2WebUpdate 4.1.8 candidate reduces GitHub requests**: skip matching local Git blobs before staging and acquire only changed public files from commit-pinned raw URLs; private profiles retain authenticated contents requests. Verify downloaded size and Git blob hash before staging.
