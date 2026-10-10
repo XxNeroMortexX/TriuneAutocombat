@@ -85,7 +85,8 @@ foreach ($Entry in $Layout.files) {
     $Exists=Test-Path -LiteralPath $Path
     if ($Exists) {
         $Hash=Canonical-Hash $Path
-        if ($Hash -ne $Entry.base -and $Hash -ne $Entry.updated) { throw "Unreviewed local source changes: $Path. No files replaced." }
+        if ($Hash -ne $Entry.base -and $Hash -ne $Entry.updated -and $Hash -notin @($Entry.reviewedBases)) { throw "Unreviewed local source changes: $Path. No files replaced." }
+        if ($Hash -in @($Entry.reviewedBases)) { Write-Host "Accepted reviewed older source: $Path. It will be backed up before upgrade." }
     } elseif ($Entry.base) { throw "Required source missing: $Path" }
     $SourceRecords += [pscustomobject]@{Path=$Path;Save=(Join-Path $SaveRoot $Entry.path);Existed=$Exists;Entry=$Entry}
 }

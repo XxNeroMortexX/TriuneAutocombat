@@ -18,5 +18,14 @@ int main() {
  stageplan::Manifest parsed;std::string error;
  assert(stageplan::Parse(stageplan::Serialize(source),parsed,error));assert(parsed.items[0].destinationRoot==DestinationRoot::MQ);
  source.items[0].destinationRelativePath="plugins/EQBCS.exe";assert(!stageplan::Parse(stageplan::Serialize(source),parsed,error));
+ // Created By: NeroMorte - pair the source upgrade with the current profile serializer.
+ Profile profile; profile.role=ProfileRole::MainDownload; profile.id="morte";profile.name="Morte";profile.owner="XxNeroMortexX";profile.repository="TriuneAutocombat";
+ m.destinationPath.clear();profile.mappings.push_back(m);
+ auto store=SerializeProfiles({profile});
+ assert(store.find("Version=4\n")!=std::string::npos);
+ std::vector<Profile> loaded;
+ assert(ParseProfileStore(store,loaded,error));assert(loaded[0].mappings[0].destinationRoot==DestinationRoot::MQ);
+ const auto version=store.find("Version=4");store.replace(version,9,"Version=3");
+ assert(ParseProfileStore(store,loaded,error));
  std::cout << "MQ root and manifest tests passed\n";
 }

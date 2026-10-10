@@ -4,7 +4,11 @@
       "group": "updater",
       "path": "MQ2WebUpdate.cpp",
       "base": "eac30dd6878f03c6967ec67d2a60e54528388b1bfeda6ade841c173f55c15fc7",
-      "updated": "6aa357c6bfd348bd092dae20810abee037f451680e7be3185546e0f89280d5eb"
+      "updated": "6aa357c6bfd348bd092dae20810abee037f451680e7be3185546e0f89280d5eb",
+      "reviewedBases": [
+        "ade924013c0019ea72a65b4a36dcd3f44e6b2049a35ac1771a882fefaddff365"
+      ],
+      "reviewedBaseDescription": "Reviewed 1f7a7b0 source (4.0.0), with extra terminal blank lines only."
     },
     {
       "group": "updater",
@@ -71,6 +75,16 @@
       "path": "license.go",
       "base": null,
       "updated": "ea037fc29cf602a61af234a48479ed404b9271712c2b50154543a873f887828f"
+    },
+    {
+      "group": "updater",
+      "path": "MQ2WebUpdateProfileStore.h",
+      "base": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57",
+      "updated": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57",
+      "reviewedBases": [
+        "46c0a212fbe4af0d4e2982e7580d59117e548c34c134b8a374cb3c8b26bbdb8c"
+      ],
+      "reviewedBaseDescription": "Reviewed prior version-3 profile serializer; upgrade to version-4-compatible serializer."
     }
   ]
 }
