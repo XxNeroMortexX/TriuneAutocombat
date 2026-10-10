@@ -18,8 +18,8 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - EQBC transport and server updater release; engine version remains independent.
-    version = 'Morte.7',
+    -- Edited By: NeroMorte - Automatic EQBC connection and verified client release; engine version remains independent.
+    version = 'Morte.8',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',

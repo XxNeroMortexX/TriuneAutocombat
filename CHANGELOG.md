@@ -1,10 +1,13 @@
 # Triune AutoCombat Change Log
 
-## 2026-10-09 — 3.1-Morte.7
+## 2026-10-09 — 3.1-Morte.8
 
-- **Edited By: NeroMorte — BoxNet Connection tab (focused test)** automatically discovers one EQBCS-Go server, configures transport/control, remembers the endpoint and reconnects; multiple servers require a selection and local Actors remains available.
-- **Created By: NeroMorte — MQ2EQBC discovery client source** polls bounded IPv4 UDP replies, shows machine addresses and hides internal Triune packet echoes without changing EQBC forwarding or ordinary echo settings. The client also distinguishes the reconnect toggle from its numeric interval so BoxNet can own retry pacing. Windows DLL publication is pending.
-- **Edited By: NeroMorte — EQBCS-Go 1.0-NeroMorte.3** advertises the bound TCP port on UDP 2114 without exposing passwords. Updater/first-install coverage includes the matching client DLL only after verification.
+- **Edited By: NeroMorte — BoxNet Connection tab** automatically loads MQ2EQBC, discovers one reachable passwordless Go server, selects EQBC transport, enables control and remembers the connection. Multiple servers require selection; protected servers need a password once; local Actors remains available.
+- **Created By: NeroMorte — Publish verified MQ2EQBC 20.01-NeroMorte.1 for RoF2 Win32** with bounded UDP discovery and selective hiding of internal Triune packet echoes. Preserve normal EQBC forwarding and ordinary echo settings, and distinguish the reconnect toggle from its interval.
+- **Edited By: NeroMorte — EQBCS-Go 1.0-NeroMorte.3** advertises its actual TCP port on UDP 2114 without exposing passwords. Register the verified client DLL and both server EXEs through the existing updater and include their exact bytes in first-install packages; preserve user INIs and custom mappings.
+- **Edited By: NeroMorte — Verify automatic startup and command delivery on two PCs**: NeroMorte confirmed automatic plugin loading, connection, peer discovery and cross-PC echo delivery. Publish the exact Windows-built tested DLL with its SHA256 metadata. MQ2WebUpdate remains 4.1.7; running servers and loaded DLLs must be released before replacement.
+
+## 2026-10-09 — 3.1-Morte.7
 
 - **Edited By: NeroMorte — Add a flat MQ runtime destination to MQ2WebUpdate 4.1.7**, persist it through profiles/staging/recovery, and reject running or locked EXEs before any Apply mutation.
 - **Created By: NeroMorte — Register optional RedGuides and Go server EXE mappings automatically**, place them beside MacroQuest, preserve existing/custom mappings and all user INIs, and create missing settings once without starting servers.

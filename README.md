@@ -188,19 +188,11 @@ Morte.6 includes the game-tested NeroMorte MQ2Nav 1.3.3.5 integration. Triune pr
 The verified Windows DLL is published at `MQ2Nav/MQ2Nav.dll`. The Update Manager adds the MQ2Nav mapping to enabled NeroMorte repository profiles automatically. Existing user mappings are retained; no manual repository or file-mapping setup is needed. Download/apply and DLL unload/reload still use the normal updater flow. The binary targets the verified **RoF2 Win32 MacroQuest build**; other client/ABI builds require their own compatible compilation. The published DLL matches its SHA256 release metadata. Future changes must pass game testing and PR checks before main merge. See [Nav build and distribution details](MQ2Nav/README.md).
 
 <!-- Edited By: NeroMorte -->
-### Box Network EQBC transport (test)
+### Box Network EQBC transport
 
-Connect the standard MQ2EQBC plugin on each PC to the same EQBC server. Select
-**EQBC (network)** in Settings → Plugins → Box Network, or use
-`/ac net transport eqbc` on each Triune box. `/ac net transport actors` restores
-local-only Actors. Existing loadouts default to Actors. Only the selected
-transport sends/receives; there is no automatic fallback or duplicate bridging.
+Morte.8 provides automatic setup through **BoxNet → Connection**. Start the updated EQBCS-Go server on one LAN machine, then start Triune on each toon. Triune loads the matching MQ2EQBC client, discovers one reachable passwordless server and enables transport/control automatically. Local Actors remains available through `/ac net transport actors` or Disconnect / use Actors. Only the selected transport sends/receives; there is no duplicate bridging.
 
-Enable EQBC remote control (`/bccmd set control on`) on each participating box.
-Optional `/bccmd set silentcmd on` hides MQ2EQBC's incoming command-frame echo.
-The EQBC server must be one you trust: the standard EQBC plugin already allows
-its connected clients to issue remote commands. Triune's accept-command,
-accept-slash and character allowlist settings still apply inside Boxnet.
+Triune's accept-command, accept-slash and character allowlist settings still apply inside BoxNet. Normal EQBC chat and commands retain their existing echo settings; internal Triune packets are hidden automatically.
 
 Existing `/ac net all|zone|group|Name <command>` syntax, peer heartbeats,
 Camp Here and RPC ping work through EQBC. `all` excludes the sender; `group`
@@ -210,18 +202,18 @@ bounded and assembled without evaluating Lua; expired requests report routing
 failure. Unknown/disabled receivers cannot acknowledge a named command.
 
 Use `/ac net peers`, `/ac net ping Name`, and `/ac net debug` to inspect delivery.
-All participating clients need this test revision and the same transport.
+All participating clients need the current Lua files, compatible client DLL and the same transport.
 On reconnect, the EQBC transport re-announces the character and rebuilds peers.
 Local Actors subscribers and mailbox reuse are preserved when switching back.
 
-This transport test retains existing Follow Me behavior (MA + Assist/Chase,
+This transport retains existing Follow Me behavior (MA + Assist/Chase,
 without starting a paused engine). Pure Follow is a separate pending change.
 
 New files: `TAC/lua/TAC_support_modules/boxnet_eqbc.lua`,
 `tests/test_boxnet_eqbc.lua`, `tools/install_boxnet_eqbc_test.ps1`.
 
-### BoxNet Connection tab (focused test)
+### BoxNet Connection tab
 
 Start EQBCS-Go on one LAN machine and open Triune on each toon. The Connection tab discovers its actual address/port, automatically selects EQBC transport and enables command control. With several servers, select one; the choice is saved. Disconnect switches to local Actors and disables reconnect. Password-protected servers need a password once, saved by MQ2EQBC rather than Triune. Manual address/port entry supports the standard RedGuides server.
 
-LAN discovery requires the NeroMorte MQ2EQBC client and Go server 1.0-NeroMorte.3. Allow UDP 2114 and the server's TCP port through Windows Firewall for the intended network. Internal Triune frames are hidden automatically; ordinary EQBC chat/commands keep their existing settings. The client DLL is pending the focused Windows build and game test; main is unchanged. The updater uses its existing Check/Stage/Apply and verified DLL handoff for all published payloads; it does not replace a running server EXE.
+LAN discovery requires the NeroMorte MQ2EQBC client and Go server 1.0-NeroMorte.3. Allow UDP 2114 and the server's TCP port through Windows Firewall for the intended network. Internal Triune frames are hidden automatically; ordinary EQBC chat/commands keep their existing settings. The RoF2 Win32 client DLL is published with verified hashes after a Windows build and successful two-PC game testing. Triune registers updater mappings for the client DLL, both server EXEs and required Lua files automatically, preserving existing custom mappings and user INIs. The updater uses its existing Check/Stage/Apply and verified DLL handoff for all published payloads; it does not replace a running server EXE.
