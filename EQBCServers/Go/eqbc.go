@@ -16,11 +16,13 @@ type EQBC struct {
 	clients map[uint64]eqbcClient
 	// Edited By: NeroMorte - packet display is independent of forwarding and verbose logs.
 	showInternalPackets bool
-	verbose             bool
-	noTimestamp         bool
-	password            string
-	clientCounter       uint64
-	channelMembers      map[string][]string
+	// Edited By: NeroMorte - advertise the active IPv4 server for automatic BoxNet setup.
+	discovery      bool
+	verbose        bool
+	noTimestamp    bool
+	password       string
+	clientCounter  uint64
+	channelMembers map[string][]string
 }
 
 type eqbcClient struct {
@@ -29,6 +31,8 @@ type eqbcClient struct {
 }
 
 type ServerConfig struct {
+	// Edited By: NeroMorte - LAN discovery can be disabled through INI or CLI.
+	Discovery bool
 	// Edited By: NeroMorte - hide Triune transport packets unless explicitly requested.
 	ShowInternalPackets bool
 	Verbose             bool
@@ -38,7 +42,8 @@ type ServerConfig struct {
 
 func NewServer(cfg ServerConfig) *EQBC {
 	return &EQBC{
-		clients: make(map[uint64]eqbcClient),
+		clients:   make(map[uint64]eqbcClient),
+		discovery: cfg.Discovery,
 		// Edited By: NeroMorte - retain the opt-in packet logging preference.
 		showInternalPackets: cfg.ShowInternalPackets,
 		verbose:             cfg.Verbose,
@@ -49,11 +54,28 @@ func NewServer(cfg ServerConfig) *EQBC {
 }
 
 func (eqbc *EQBC) Listen(addr string) error {
-	l, err := net.Listen("tcp", addr)
+	// Edited By: NeroMorte - IPv4 discovery must bind an IPv4 TCP listener.
+	network := "tcp"
+	if eqbc.discovery {
+		host, _, _ := net.SplitHostPort(addr)
+		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.To4() != nil) {
+			network = "tcp4"
+		}
+	}
+	l, err := net.Listen(network, addr)
 	if err != nil {
 		return err
 	}
 	defer l.Close()
+	// Edited By: NeroMorte - no discovery reply is sent before a TCP listener exists.
+	if eqbc.discovery {
+		closeDiscovery, err := startDiscovery(l.Addr(), eqbc.password != "")
+		if err != nil {
+			eqbc.Log("LAN discovery unavailable: " + err.Error())
+		} else {
+			defer closeDiscovery()
+		}
+	}
 
 	for {
 		con, err := l.Accept()

@@ -14,9 +14,9 @@
       "id": "eqbcs_go_server",
       "name": "EQBCS-Go.exe",
       "remote": "EQBCServers/EQBCS-Go.exe",
-      "version": "1.0-NeroMorte.2",
-      "bytes": 6430208,
-      "sha256": "c78b91894d024a64bc652f5f119c19150b53c4766bd613ad888a100fa6555ce3"
+      "version": "1.0-NeroMorte.3",
+      "bytes": 6437888,
+      "sha256": "314a968f7beb766613ff6f11e9a03e0e9e6020e49001b7ae33219b6778179547"
     }
   ]
 }

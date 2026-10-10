@@ -14,6 +14,8 @@ import (
 )
 
 type options struct {
+	// Edited By: NeroMorte - discover on the fixed LAN port, advertise actual TCP port.
+	Discovery           bool   `help:"Enable IPv4 LAN discovery on UDP 2114." default:"true"`
 	License             bool   `help:"Show the upstream MIT license and exit."`
 	Version             bool   `help:"Show server build version and exit."`
 	Host                string `help:"Listen to host." default:"0.0.0.0"`
@@ -142,6 +144,7 @@ func applySettings(out *options, values map[string]string, explicit map[string]b
 		key, flag string
 		target    *bool
 	}{
+		{"discovery", "discovery", &out.Discovery},
 		{"showinternalpackets", "show-internal-packets", &out.ShowInternalPackets},
 		{"verbose", "verbose", &out.Verbose},
 		{"notimestamp", "no-timestamp", &out.NoTimestamp},

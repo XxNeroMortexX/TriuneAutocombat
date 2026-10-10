@@ -1,0 +1,51 @@
+{
+  "files": [
+    {
+      "file": "MQ2EQBC.cpp",
+      "baseline": "efd2dcc95f28dce1829ca6b54331507f475bbee3afe53f914e6abb63bd1e3639",
+      "updated": "e5784cfa4a0fb2aa750f48ef30984b23ea61b364db82f6de368ff50d21eca7d1"
+    },
+    {
+      "file": "MQ2EQBC.rc",
+      "baseline": "76d1ad6dafb891451ad07b1266a219485034de1aecfb55047b32ad02ef58ca41",
+      "updated": "ae0784af1d15e0da9b1d2d2730222e64a11c2928d848085864e814e88d4a96be"
+    },
+    {
+      "file": "TriuneEQBCProtocol.h",
+      "baseline": null,
+      "updated": "903dd9a3da281fa3936c41b5f5c457b9d65213330f8760c19c02b6c42634f52a"
+    },
+    {
+      "file": "TriuneEQBCDiscovery.h",
+      "baseline": null,
+      "updated": "061fce7ed89e827c66d8f454f90e35c74421adf6998a9d3eb67bb1d71c7ab05b"
+    }
+  ],
+  "goFiles": [
+    {
+      "file": "eqbc.go",
+      "baseline": "ea3a8ea54a3638677bf835e911adb092bb6d3c4459c21a6bbcb57c0d4858fd44",
+      "updated": "a09e3a784db1ee6f46b57eb01d63bafe2a0812f0b516aa232fc34085801943c2"
+    },
+    {
+      "file": "discovery.go",
+      "baseline": null,
+      "updated": "121adb6039d0d8cfbb9a6736a24dfe0e7403117f9d5d63849974dcd9a36fbb9f"
+    },
+    {
+      "file": "discovery_test.go",
+      "baseline": null,
+      "updated": "5c01fcc7a0a7a5d0ec4f178c96c59ed6a036a6b9ef8badafb300a6b5bc856237"
+    },
+    {
+      "file": "cmd/eqbc/config.go",
+      "baseline": "46c67e34383f71f50f8235a535d722f82084fb87b1f6216821443664c8d55e17",
+      "updated": "b1e0141885bdb1e1b0b62350125a9824d804bf12cdcbe507217662da7429f887"
+    },
+    {
+      "file": "cmd/eqbc/main.go",
+      "baseline": "adcd99effcc13240fe09586ffad7d776205f13d700b088c7c4491bd112c0470a",
+      "updated": "d76aff66ff0190e055ae0f9a619de1df010b3dd9df113a0492e1c37bf2423e27"
+    }
+  ]
+}

@@ -2,6 +2,10 @@
 
 ## 2026-10-09 — 3.1-Morte.7
 
+- **Edited By: NeroMorte — BoxNet Connection tab (focused test)** automatically discovers one EQBCS-Go server, configures transport/control, remembers the endpoint and reconnects; multiple servers require a selection and local Actors remains available.
+- **Created By: NeroMorte — MQ2EQBC discovery client source** polls bounded IPv4 UDP replies, shows machine addresses and hides internal Triune packet echoes without changing EQBC forwarding or ordinary echo settings. Windows DLL publication is pending.
+- **Edited By: NeroMorte — EQBCS-Go 1.0-NeroMorte.3** advertises the bound TCP port on UDP 2114 without exposing passwords. Updater/first-install coverage includes the matching client DLL only after verification.
+
 - **Edited By: NeroMorte — Add a flat MQ runtime destination to MQ2WebUpdate 4.1.7**, persist it through profiles/staging/recovery, and reject running or locked EXEs before any Apply mutation.
 - **Created By: NeroMorte — Register optional RedGuides and Go server EXE mappings automatically**, place them beside MacroQuest, preserve existing/custom mappings and all user INIs, and create missing settings once without starting servers.
 - **Edited By: NeroMorte — Hide internal Triune packets by default in the Go server console**, with an explicit debug option, unchanged forwarding, visible ordinary output, version credits and embedded upstream license.

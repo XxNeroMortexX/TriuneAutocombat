@@ -6,7 +6,7 @@
 -- Inter-box communication for players running several characters on one
 -- computer via native Actors, or across PCs via a connected MQ2EQBC plugin.
 -- The saved transport is explicit and exclusive. EQBC reuses the same plain
--- message protocol and receiver permissions; it does not require a custom DLL.
+-- message protocol and receiver permissions. The NeroMorte client adds automatic LAN discovery.
 --
 -- What it does (Phase 1):
 --   * Peer roster: every box running Triune broadcasts a 1s heartbeat with
@@ -48,8 +48,8 @@
 local plugin = {
     id                 = 'boxnet',
     name               = 'Box Network',
-    -- Edited By: NeroMorte — EQBC transport test.
-    version            = '1.1.0-eqbc-test',
+    -- Edited By: NeroMorte — automatic EQBC connection test.
+    version            = '1.2.0-connection-test',
     author             = 'Triune',
     -- Edited By: NeroMorte — describe both supported transports.
     description        = 'Local Actors or cross-PC EQBC communication: peer roster, remote commands, Camp Here, and a message API for other plugins.',
@@ -102,6 +102,8 @@ local cfg = {
 -- Runtime state
 -- ----------------------------------------------------------------------------
 local net = {
+    -- Edited By: NeroMorte - connection actions run in the plugin tick, never the render callback.
+    connection = require('TAC_support_modules.boxnet_connection').new(),
     available      = false,
     actor          = nil,
     err            = nil,
@@ -1219,8 +1221,35 @@ end
 -- ----------------------------------------------------------------------------
 -- Tick
 -- ----------------------------------------------------------------------------
+-- Edited By: NeroMorte - read optional native discovery without assuming a loaded plugin.
+function net.connectionView()
+    local view={ loaded=eqbcConnected() or tlo(function() return mq.TLO.EQBC() end,nil)~=nil,
+        connected=eqbcConnected(), control=tlo(function() return mq.TLO.EQBC.Setting('control') end,false),
+        connecting=tlo(function() return mq.TLO.EQBC.Connecting() end,false),
+        discovery=tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryVersion() end,0))==1,
+        scanning=tlo(function() return mq.TLO.EQBC.DiscoveryScanning() end,false),
+        host=tlo(function() return mq.TLO.EQBC.Server() end,''), port=tlo(function() return mq.TLO.EQBC.Port() end,''), servers={} }
+    local count=math.min(32,tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryCount() end,0)) or 0)
+    for i=1,count do
+        view.servers[#view.servers+1]={host=tlo(function() return mq.TLO.EQBC.DiscoveryHost(i) end,''),
+            port=tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryPort(i) end,0)),
+            password=tlo(function() return mq.TLO.EQBC.DiscoveryPassword(i) end,false)==true}
+    end
+    return view
+end
+function net.connectionTick()
+    net.connection:tick(nowSec(),net.connectionView(),{
+        command=function(command) mq.cmd(command) end,
+        select=function() if cfg.transport~='eqbc' then cfg.transport='eqbc'; core.saveLoadout(true) end end,
+        localMode=function() cfg.transport='actors' end,
+        save=function() core.saveLoadout(true) end,
+    })
+end
+
 -- Edited By: NeroMorte — preserve the Actors loop and add EQBC reconnect/timeout handling.
 local function tick()
+    -- Edited By: NeroMorte - automatic discovery/setup also runs while combat is paused.
+    net.connectionTick()
     if net.transport ~= cfg.transport then resetTransport() end
     if cfg.transport == 'eqbc' then
         registerActor()
@@ -1589,6 +1618,44 @@ local function drawLog(MUTED, WARN, ERR)
     ImGui.EndChild()
 end
 
+-- Edited By: NeroMorte - Connection tab queues every network action for the main tick.
+function net.drawConnection()
+    local connection=net.connection
+    local enabled=ImGui.Checkbox('Automatic EQBC networking##bnConnectAuto',connection.enabled)
+    if enabled~=connection.enabled then
+        connection.enabled=enabled
+        if not enabled then connection:request('disconnect') end
+        core.saveLoadout(true)
+    end
+    ImGui.TextWrapped(connection.status)
+    local ips=tlo(function() return mq.TLO.EQBC.LocalIPs() end,'')
+    ImGui.TextWrapped('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
+    ImGui.TextWrapped('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
+    if ImGui.Button('Find LAN servers##bnDiscover') then connection:request('scan') end
+    ImGui.SameLine()
+    if ImGui.Button('Disconnect / use local Actors##bnDisconnect') then connection:request('disconnect') end
+    for i,server in ipairs(connection.servers) do
+        local label=server.host..':'..tostring(server.port)..(server.password and ' (password)' or '')
+        if ImGui.Selectable(label..'##bnServer'..i,false) then
+            net.connectionHost=server.host; net.connectionPort=tostring(server.port); net.connectionProtected=server.password
+        end
+    end
+    net.connectionHost=ImGui.InputText('Server address##bnHost',net.connectionHost or connection.host)
+    net.connectionPort=ImGui.InputText('Port##bnPort',net.connectionPort or tostring(connection.port))
+    if net.connectionProtected==nil then net.connectionProtected=connection.protected end
+    net.connectionProtected=ImGui.Checkbox('Password required##bnPasswordRequired',net.connectionProtected)
+    if net.connectionProtected then
+        connection.manualPassword=ImGui.InputText('Password##bnPassword',connection.manualPassword,ImGuiInputTextFlags.Password)
+        ImGui.TextDisabled('Leave blank to reuse the password saved by MQ2EQBC.')
+    end
+    if ImGui.Button('Connect##bnConnect') then
+        connection:request('connect',{host=net.connectionHost,port=tonumber(net.connectionPort),password=net.connectionProtected},connection.manualPassword)
+    end
+    local error=tlo(function() return mq.TLO.EQBC.DiscoveryError() end,'')
+    if error~='' then ImGui.TextWrapped(error) end
+    ImGui.TextWrapped('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
+end
+
 local function drawWindow()
     if not ctrl.show_boxnet then return end
     local colors = core.colors or {}
@@ -1625,8 +1692,12 @@ local function drawWindow()
 
     ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], 'BOX NETWORK')
     ImGui.SameLine()
-    ImGui.TextDisabled('| Boxed characters on this computer (MacroQuest Actors)')
+    -- Edited By: NeroMorte - describe both local and cross-PC networking.
+    ImGui.TextDisabled('| Local Actors or EQBC across computers')
     ImGui.Separator()
+    -- Edited By: NeroMorte - preserve existing roster controls inside the Peers tab.
+    if ImGui.BeginTabBar('BoxNetTabs##bnTabs') then
+        if ImGui.BeginTabItem('Peers##bnPeers') then
     drawStatusLine(GOOD, WARN, ERR, MUTED)
     ImGui.Dummy(0, core.px(4))
     drawQuickButtons(MUTED)
@@ -1634,6 +1705,15 @@ local function drawWindow()
     drawPeerTable(GOOD, WARN, ERR, MUTED, ARC)
     ImGui.Dummy(0, core.px(4))
     drawLog(MUTED, WARN, ERR)
+
+            ImGui.EndTabItem()
+        end
+        if ImGui.BeginTabItem('Connection##bnConnection') then
+            net.drawConnection()
+            ImGui.EndTabItem()
+        end
+        ImGui.EndTabBar()
+    end
 
     if core.preEndWindow then core.preEndWindow('boxnet', false) end
     ImGui.End()
@@ -1716,6 +1796,8 @@ function plugin.onSaveSettings()
     return {
         -- Edited By: NeroMorte — persist the explicit transport choice.
         transport      = cfg.transport,
+        -- Edited By: NeroMorte - keep reconnect preferences without copying passwords into Lua.
+        connection     = net.connection:settings(),
         acceptCommands = cfg.acceptCommands == true,
         acceptSlash    = cfg.acceptSlash == true,
         trust          = cfg.trust == 'allow' and 'allow' or 'all',
@@ -1729,6 +1811,8 @@ end
 
 function plugin.onLoadSettings(s)
     if type(s) ~= 'table' then return end
+    -- Edited By: NeroMorte - older loadouts automatically gain connection discovery.
+    net.connection:load(s.connection)
     -- Edited By: NeroMorte — absent settings retain legacy local Actors.
     if s.transport == 'actors' or s.transport == 'eqbc' then cfg.transport = s.transport end
     if s.acceptCommands ~= nil then cfg.acceptCommands = (s.acceptCommands == true) end
@@ -1765,6 +1849,8 @@ function plugin.onDrawSettings()
         for _, choice in ipairs({ 'actors', 'eqbc' }) do
             if ImGui.Selectable(choice == 'eqbc' and 'EQBC (network)' or 'Actors (this PC)', cfg.transport == choice) then
                 cfg.transport = choice
+                -- Edited By: NeroMorte - an explicit Actors choice disables automatic EQBC.
+                net.connection.enabled = choice == 'eqbc'
                 core.saveLoadout(true)
             end
         end
@@ -1861,6 +1947,8 @@ function plugin.onCommand(cmd, args)
             chat('Transport: %s. Usage: /ac net transport actors|eqbc', cfg.transport)
         else
             cfg.transport = choice
+            -- Edited By: NeroMorte - retain manual transport overrides.
+            net.connection.enabled = choice == 'eqbc'
             core.saveLoadout(true)
             chat('Transport set to %s; use the same choice on every box.', choice)
         end

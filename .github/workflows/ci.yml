@@ -139,3 +139,30 @@ jobs:
           g++ -std=c++17 -Wall -Wextra tests/eqbc_root_fixture.cpp -o /tmp/eqbc-root-test
           /tmp/eqbc-root-test
           python3 tests/test_eqbc_server_release.py
+          # Edited By: NeroMorte - compile the shipped discovery/parser boundary.
+          g++ -std=c++17 -Wall -Wextra tests/eqbc_discovery_fixture.cpp -o /tmp/eqbc-discovery-test
+          /tmp/eqbc-discovery-test
+
+  # Created By: NeroMorte - Windows UDP code and shipped server must interoperate before a game test.
+  eqbc-windows-discovery:
+    name: EQBC Windows discovery smoke test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - name: Compile real Windows discovery header and run against shipped Go EXE
+        shell: pwsh
+        run: |
+          cl /nologo /EHsc /std:c++17 tests/eqbc_windows_discovery_fixture.cpp /Fe:discovery-test.exe /link ws2_32.lib iphlpapi.lib
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $server = Start-Process -FilePath "$PWD/EQBCServers/EQBCS-Go.exe" -ArgumentList '--no-ini','--host','127.0.0.1','--port','39113' -PassThru
+          try {
+            Start-Sleep -Seconds 1
+            if ($server.HasExited) { throw 'Go server exited before discovery test.' }
+            & ./discovery-test.exe
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          } finally {
+            if (!$server.HasExited) { Stop-Process -Id $server.Id }
+          }

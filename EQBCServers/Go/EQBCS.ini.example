@@ -8,3 +8,6 @@ NoTimestamp=false
 NoColor=false
 ; Display Triune internal packets only when debugging.
 ShowInternalPackets=false
+
+; Created By: NeroMorte - automatic BoxNet LAN discovery
+Discovery=true

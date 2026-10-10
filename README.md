@@ -219,3 +219,9 @@ without starting a paused engine). Pure Follow is a separate pending change.
 
 New files: `TAC/lua/TAC_support_modules/boxnet_eqbc.lua`,
 `tests/test_boxnet_eqbc.lua`, `tools/install_boxnet_eqbc_test.ps1`.
+
+### BoxNet Connection tab (focused test)
+
+Start EQBCS-Go on one LAN machine and open Triune on each toon. The Connection tab discovers its actual address/port, automatically selects EQBC transport and enables command control. With several servers, select one; the choice is saved. Disconnect switches to local Actors and disables reconnect. Password-protected servers need a password once, saved by MQ2EQBC rather than Triune. Manual address/port entry supports the standard RedGuides server.
+
+LAN discovery requires the NeroMorte MQ2EQBC client and Go server 1.0-NeroMorte.3. Allow UDP 2114 and the server's TCP port through Windows Firewall for the intended network. Internal Triune frames are hidden automatically; ordinary EQBC chat/commands keep their existing settings. The client DLL is pending the focused Windows build and game test; main is unchanged. The updater uses its existing Check/Stage/Apply and verified DLL handoff for all published payloads; it does not replace a running server EXE.
