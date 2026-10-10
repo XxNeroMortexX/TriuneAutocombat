@@ -1,6 +1,6 @@
 # Triune AutoCombat Change Log
 
-## 2026-10-09 — EQBC server updater test (pending Windows verification)
+## 2026-10-09 — 3.1-Morte.7
 
 - **Edited By: NeroMorte — Add a flat MQ runtime destination to MQ2WebUpdate 4.1.7**, persist it through profiles/staging/recovery, and reject running or locked EXEs before any Apply mutation.
 - **Created By: NeroMorte — Register optional RedGuides and Go server EXE mappings automatically**, place them beside MacroQuest, preserve existing/custom mappings and all user INIs, and create missing settings once without starting servers.
