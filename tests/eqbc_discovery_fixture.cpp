@@ -1,7 +1,13 @@
 // Created By: NeroMorte - exercise the exact client protocol parser.
 #include "../MQ2EQBC/source/TriuneEQBCProtocol.h"
 #include <cassert>
+#include <fstream>
+#include <iterator>
 int main(){
+ // The reconnect toggle must be handled before the similarly named numeric interval.
+ std::ifstream file("MQ2EQBC/source/MQ2EQBC.cpp");
+ std::string source((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+ assert(source.find("!_stricmp(szArg, szSetAutoReconnect)") < source.find("!_strnicmp(szArg, szSetReconnect, sizeof(szSetReconnect))"));
  using namespace triune_eqbc;
  assert(InternalCommand("//ac net _eqbc abc123"));
  assert(InternalCommand(" /AC BOXNET _EQBC abc123 "));

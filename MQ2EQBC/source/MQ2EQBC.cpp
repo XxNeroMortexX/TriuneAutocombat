@@ -270,6 +270,15 @@ public:
 		{
 			bFailed = true;
 		}
+		// Edited By: NeroMorte - distinguish the reconnect toggle from its numeric interval.
+		else if (!_stricmp(szArg, szSetAutoReconnect))
+		{
+			GetArg(szState, szSetting, 2);
+			if (!bToggle && _stricmp(szState, "on") && _stricmp(szState, "off")) { WriteOut("Invalid reconnect setting; use on or off."); return; }
+			bTurnOn = !_stricmp(szState, "on");
+			ToggleSetting(&AutoReconnect, &bToggle, &bTurnOn, "AutoReconnect", "Auto Reconnect (on remote disconnect)");
+			return;
+		}
 		else if (!_strnicmp(szArg, szSetReconnect, sizeof(szSetReconnect)))
 		{
 			char szDigit[MAX_STRING] = { 0 };
