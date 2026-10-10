@@ -166,3 +166,14 @@ jobs:
           } finally {
             if (!$server.HasExited) { Stop-Process -Id $server.Id }
           }
+
+  # Created By: NeroMorte - exercise the actual updater coordinator with deterministic HTTP/OS doubles.
+  updater-network-regressions:
+    name: Updater rate-limit regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native fixture dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libcurl4-openssl-dev
+      - name: Verify caching, cooldowns, provider URLs and staging preflight
+        run: python3 tests/test_webupdate_network.py
