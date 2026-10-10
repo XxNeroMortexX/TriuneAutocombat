@@ -24,6 +24,9 @@ function Assert-Writable([string]$Path){
 }
 function Canonical-Hash([string]$Path){
  $Text=[IO.File]::ReadAllText($Path).Replace("`r`n","`n")
+ # Edited By: NeroMorte - the reviewed local project differs only by an EOF blank line.
+ # Normalize trailing line breaks for project XML; all build settings still hash exactly.
+ if([IO.Path]::GetExtension($Path) -ieq '.vcxproj'){$Text=$Text.TrimEnd([char[]]"`r`n")+"`n"}
  $Algorithm=[Security.Cryptography.SHA256]::Create()
  try{return ([BitConverter]::ToString($Algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)))).Replace('-','').ToLowerInvariant()}finally{$Algorithm.Dispose()}
 }

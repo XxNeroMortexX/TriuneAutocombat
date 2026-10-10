@@ -2,6 +2,8 @@
 
 ## 2026-10-10
 
+- **Edited By: NeroMorte — Accept reviewed trailing blank lines in native updater project XML during installer verification**; retain exact checks of build settings and all other source files.
+
 - **Edited By: NeroMorte — MQ2WebUpdate 4.1.8 candidate reduces GitHub requests**: skip matching local Git blobs before staging and acquire only changed public files from commit-pinned raw URLs; private profiles retain authenticated contents requests. Verify downloaded size and Git blob hash before staging.
 - **Created By: NeroMorte — Coordinate metadata and cooldowns across updater entry points**: cache reference resolutions for 30 seconds and immutable trees, share anonymous metadata/cooldowns between clients using the same runtime, retain process-only authenticated metadata, and respect complete reset/Retry-After delays without retrying rate-limit failures. Raw hosting still has its own limits.
 - **Created By: NeroMorte — Add deterministic coordinator/staging regressions and a backed-up Windows build/install script**. The existing shipped DLL/release metadata remain 4.1.7 until the new Windows binary is built, verified and tested; no unrelated upstream integration.
