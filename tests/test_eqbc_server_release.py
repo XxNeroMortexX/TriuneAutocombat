@@ -28,3 +28,13 @@ offset=struct.unpack_from('<I',data,0x3c)[0]
 assert data[offset:offset+4]==b'PE\0\0'
 assert struct.unpack_from('<H',data,offset+4)[0]==0x14c
 print('Verified published MQ2WebUpdate 4.1.7 payload')
+
+# Created By: NeroMorte - pending DLLs are explicitly disabled; published bytes must match.
+client=json.loads((root/'MQ2EQBC/release.json').read_text())
+if client['enabled']:
+    data=(root/'MQ2EQBC/MQ2EQBC.dll').read_bytes()
+    assert len(data)==client['bytes']
+    assert hashlib.sha256(data).hexdigest()==client['sha256']
+    offset=struct.unpack_from('<I',data,0x3c)[0]
+    assert data[:2]==b'MZ' and data[offset:offset+4]==b'PE\0\0'
+    assert struct.unpack_from('<H',data,offset+4)[0]==0x14c

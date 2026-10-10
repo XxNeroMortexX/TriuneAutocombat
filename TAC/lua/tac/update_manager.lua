@@ -1757,6 +1757,9 @@ function plugin.onInit(coreApi)
     -- Edited By: NeroMorte - Register root server payloads after backend capability checks.
     state.serverUpdatePolicy = require('TAC_support_modules.eqbc_server_update_policy').new(
         require('TAC_support_modules.eqbc_server_release'))
+    -- Edited By: NeroMorte - client DLL registration shares the verified independent handoff.
+    state.eqbcUpdatePolicy = require('TAC_support_modules.eqbc_plugin_update_policy').new(
+        require('TAC_support_modules.eqbc_plugin_release'))
     state.serverDefaultsPoll = 0
     state.navPolicyPoll = 0
     loadMetadata(); state.initialized = true
@@ -1770,6 +1773,8 @@ function plugin.onTick()
     state.navPolicyPoll = os.time()
     local engine = readEngine()
     local policy = state.navUpdatePolicy
+    if not policy or policy.done then policy = state.eqbcUpdatePolicy end
+    -- Edited By: NeroMorte - register client and server payloads in order.
     if not policy or policy.done then policy = state.serverUpdatePolicy end
     if policy and not policy.done then
         policy:step(engine, ctrl, runCommand, commandEncode,
@@ -1790,7 +1795,9 @@ function plugin.onDrawUI()
     refreshAfterSuccessfulApply()
     -- Edited By: NeroMorte - Keep UI/recovery available while migration waits for a locked backend.
     if (not state.navUpdatePolicy or state.navUpdatePolicy.done)
-        and (not state.serverUpdatePolicy or state.serverUpdatePolicy.done) then processTriuneStartupChecks() end
+        and (not state.serverUpdatePolicy or state.serverUpdatePolicy.done)
+        -- Edited By: NeroMorte - startup checks see the complete verified client mapping.
+        and (not state.eqbcUpdatePolicy or state.eqbcUpdatePolicy.done) then processTriuneStartupChecks() end
     drawTriuneStartupPopup()
     drawWindow()
 end

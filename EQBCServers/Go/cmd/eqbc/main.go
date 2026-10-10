@@ -10,7 +10,7 @@ import (
 )
 
 // Edited By: NeroMorte - identify the INI and quiet-packet server build.
-const serverVersion = "1.0-NeroMorte.2"
+const serverVersion = "1.0-NeroMorte.3"
 
 func main() {
 	// Edited By: NeroMorte — load server INI settings before explicit CLI overrides.
@@ -41,9 +41,11 @@ func main() {
 	server := eqbc.NewServer(eqbc.ServerConfig{
 		// Edited By: NeroMorte - internal packet logging stays opt-in, even with verbose enabled.
 		ShowInternalPackets: args.ShowInternalPackets,
-		Verbose:             args.Verbose,
-		Password:            args.Password,
-		NoTimestamp:         args.NoTimestamp,
+		// Edited By: NeroMorte - publish this server to the BoxNet Connection tab.
+		Discovery:   args.Discovery,
+		Verbose:     args.Verbose,
+		Password:    args.Password,
+		NoTimestamp: args.NoTimestamp,
 	})
 
 	// Edited By: NeroMorte - retain a visible version and credits in the server banner.

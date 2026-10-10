@@ -271,6 +271,11 @@ config.payloads = {
         verification = { requirePE = true, sha256 = 'remote_manifest' },
     },
 
+    -- Edited By: NeroMorte - verified client DLL is deployed by independent DLL handoff.
+    { id='mq2eqbc', source='morte', type='mq_plugin',
+      remote='MQ2EQBC/MQ2EQBC.dll', destinationRoot='plugins', destination='MQ2EQBC.dll',
+      pluginName='MQ2EQBC', required=false, selfUpdate=false },
+
     -- Edited By: NeroMorte - add-only MQ-root registration requires the 4.1.7 backend.
     { id='eqbcs_server', source='morte', type='executable', minimumBackend='4.1.7',
       remote='EQBCServers/EQBCS.exe', destinationRoot='mq', destination='EQBCS.exe',

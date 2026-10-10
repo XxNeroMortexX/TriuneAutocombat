@@ -12765,6 +12765,8 @@ end
             return nil
         end })
         local inst = assert(loadfile('TAC/lua/tac/boxnet.lua'))()
+        -- Edited By: NeroMorte - this suite explicitly tests local Actors, not automatic EQBC setup.
+        inst.onLoadSettings({transport='actors',connection={enabled=false}})
         if opts.noActors then
             inst.actorsModule = false
         else

@@ -31,6 +31,22 @@ def nav_payload() -> tuple[Path, str] | None:
     return source, "plugins/MQ2Nav.dll"
 
 
+# Created By: NeroMorte - never include a client DLL before Windows publication.
+def eqbc_payload() -> tuple[Path, str] | None:
+    manifest = ROOT / "MQ2EQBC/release.json"
+    if not manifest.is_file():
+        return None
+    metadata = json.loads(manifest.read_text())
+    if metadata.get("enabled") is not True:
+        return None
+    source = ROOT / "MQ2EQBC/MQ2EQBC.dll"
+    if metadata.get("client") != "RoF2" or metadata.get("architecture") != "Win32":
+        raise RuntimeError("Unsupported EQBC client provenance")
+    if not source.is_file() or source.stat().st_size != metadata.get("bytes") or hashlib.sha256(source.read_bytes()).hexdigest() != metadata.get("sha256"):
+        raise RuntimeError("EQBC DLL differs from its published manifest")
+    return source, "plugins/MQ2EQBC.dll"
+
+
 # Created By: NeroMorte - server EXEs are flat runtime files; user INIs are never archive payloads.
 def server_payloads() -> list[tuple[Path, str]]:
     manifest = ROOT / "EQBCServers/release.json"
@@ -64,6 +80,12 @@ def build() -> None:
             if nav[1] in archive.namelist():
                 raise RuntimeError("Nav DLL is already in the install archive")
             archive.write(*nav)
+        # Edited By: NeroMorte - distribute the matching discovery client.
+        eqbc = eqbc_payload()
+        if eqbc:
+            if eqbc[1] in archive.namelist():
+                raise RuntimeError("EQBC DLL already in install archive")
+            archive.write(*eqbc)
         # Edited By: NeroMorte - keep server output beside MacroQuest.exe.
         for source, destination in server_payloads():
             if destination in archive.namelist():
@@ -98,6 +120,10 @@ def verify() -> None:
         nav = nav_payload()
         if nav and (nav[1] not in names or archive.read(nav[1]) != nav[0].read_bytes()):
             raise RuntimeError("Nav payload is missing or differs from the published DLL")
+        # Edited By: NeroMorte - check exact client bytes in first installs.
+        eqbc = eqbc_payload()
+        if eqbc and (eqbc[1] not in names or archive.read(eqbc[1]) != eqbc[0].read_bytes()):
+            raise RuntimeError("EQBC client is missing or differs")
         # Edited By: NeroMorte - require exact server bytes and exclude managed INIs.
         for source, destination in server_payloads():
             if destination not in names or archive.read(destination) != source.read_bytes():
