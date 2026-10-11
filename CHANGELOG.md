@@ -2,6 +2,12 @@
 
 ## 2026-10-11 — Morte.9 test
 
+- **Created By: NeroMorte — Add confirmed Delete File in Import** for a validated sharing JSON, independent of the Control tab's saved-list Clear/Delete actions. Recheck file contents before removal and refresh the picker after successful deletion.
+
+- **Created By: NeroMorte — Offer opt-in removal of the sharing JSON after successful import**, default off. Save settings first, verify the file still matches the preview, then remove it; failed saves retain the file, and deletion failures preserve the successful import with a clear message.
+
+- **Created By: NeroMorte — Add confirmed Clear Lists and Delete Saved Zone actions**, scoped to the selected record, with forced-save failure restoration. Provide a friend-style JSON test fixture with three Attack and two Ignore entries for the fictitious `triune_friend_demo` zone; the test installer copies it into Config without overwriting an existing file. Sharing JSON remains independent of gameplay settings.
+
 - **Edited By: NeroMorte — Normalize export/display/clipboard paths to Windows backslashes**, and label the manual file-loading action Load File. Selecting an import file continues to preview automatically without applying it.
 
 - **Edited By: NeroMorte — Offer Merge/Replace/Cancel for an existing export**, merging only the same recorded zone with deduplication or replacing with selected current lists. Preserve prior exports in numbered backups and roll back failed replacement. Import Preview explicitly reports no changes and displays sample names alongside zone/counts.

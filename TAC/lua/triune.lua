@@ -2750,6 +2750,7 @@ end
 
 function runtime.npcPreview(filename)
     runtime.npcImportPreview = nil
+    runtime.npcImportFile = nil
     local path, err = runtime.npcSharePath(filename)
     if not path then return false, err end
     local f; f, err = io.open(path, 'rb')
@@ -2758,10 +2759,25 @@ function runtime.npcPreview(filename)
     local data; data, err = runtime.npcJsonRead(text or '')
     if not data then return false, err end
     runtime.npcImportPreview = data
+    runtime.npcImportFile = { filename = filename, contents = text }
     return true, string.format('Preview ready: %s — Attack %d / Ignore %d. No lists changed.', data.zone, #data.attack, #data.ignore)
 end
 
-function runtime.npcImport(replace)
+-- Created By: NeroMorte - Only remove the exact sharing file that was previewed.
+function runtime.npcRemoveImportedFile(meta)
+    if not meta then return false, 'Sharing file kept: no file was selected.' end
+    local path = runtime.npcSharePath(meta.filename)
+    if not path then return false, 'Sharing file kept: invalid filename.' end
+    local f = io.open(path, 'rb')
+    if not f then return false, 'Sharing file could not be reopened for removal.' end
+    local current = f:read(1048577); f:close()
+    if current ~= meta.contents then return false, 'Sharing file changed since Preview; kept it.' end
+    local removed = os.remove(path)
+    if not removed then return false, 'Sharing file could not be removed; it remains in Config.' end
+    return true, 'Sharing JSON file removed.'
+end
+
+function runtime.npcImport(replace, removeFile)
     local data = runtime.npcImportPreview
     if not data then return false, 'Preview a file first.' end
     local function combined(kind)
@@ -2785,7 +2801,14 @@ function runtime.npcImport(replace)
     end
     runtime.npcEditZone = data.zone
     runtime.npcImportPreview = nil
-    return true, (replace and 'Replaced' or 'Merged') .. ' lists for ' .. data.zone .. '.'
+    local file = runtime.npcImportFile
+    runtime.npcImportFile = nil
+    local message = (replace and 'Replaced' or 'Merged') .. ' lists for ' .. data.zone .. '.'
+    if removeFile then
+        local _, removalMessage = runtime.npcRemoveImportedFile(file)
+        message = message .. ' ' .. removalMessage
+    end
+    return true, message
 end
 
 -- ignore-list helpers: applies only to Hunter/Puller AUTO-targeting (see findRoamTarget
@@ -5912,6 +5935,23 @@ function runtime.npcAdd(kind, name, zone)
     list[#list + 1] = name; table.sort(list)
     runtime.saveLoadout(true)
     return true, 'Added ' .. name .. ' to ' .. (zone or 'global') .. ' ' .. kind .. '.'
+end
+
+-- Created By: NeroMorte - Clear both scoped lists or delete a saved zone record.
+function runtime.npcClear(zone, deleteZone)
+    if not zone then return false, 'Choose a saved zone or Global.' end
+    if deleteZone and zone == 'global' then return false, 'Global can be cleared, but not deleted.' end
+    local attack, ignore = runtime.npcList('attack', zone), runtime.npcList('ignore', zone)
+    if zone == 'global' then runtime.pullList = {}; runtime.ignoreList = {}
+    elseif deleteZone then runtime.zonePull[zone] = nil; runtime.zoneIgnore[zone] = nil
+    else runtime.zonePull[zone] = {}; runtime.zoneIgnore[zone] = {} end
+    if not runtime.saveLoadout(true, true) then
+        if zone == 'global' then runtime.pullList = attack; runtime.ignoreList = ignore
+        else runtime.zonePull[zone] = attack; runtime.zoneIgnore[zone] = ignore end
+        return false, 'Could not save; previous lists restored in memory.'
+    end
+    if deleteZone then runtime.npcEditZone = runtime.npcZone() or 'global' end
+    return true, (deleteZone and 'Deleted saved zone lists: ' or 'Cleared Attack and Ignore lists: ') .. zone
 end
 
 function runtime.npcRemove(kind, name, zone)
@@ -12228,9 +12268,37 @@ function UI.drawNpcLists()
     ImGui.SameLine()
     if ImGui.SmallButton('Import Zone##npcImport') then
         runtime.npcImportPreview = nil; runtime.npcImportReplace = false
+        runtime.npcImportRemove = false; runtime.npcImportFile = nil
         runtime.npcImportFilename = 'triune_npc_lists_' .. selected .. '.json'
         runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
         ImGui.OpenPopup('NpcListImport')
+    end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Clear Lists##npcClearLists') then
+        runtime.npcClearPending = { zone = selected, delete = false }
+        ImGui.OpenPopup('NpcClearListsConfirm')
+    end
+    if selected ~= 'global' and (runtime.zonePull[selected] or runtime.zoneIgnore[selected]) then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Delete Saved Zone##npcDeleteZone') then
+            runtime.npcClearPending = { zone = selected, delete = true }
+            ImGui.OpenPopup('NpcClearListsConfirm')
+        end
+    end
+    if ImGui.BeginPopup('NpcClearListsConfirm') then
+        local pending = runtime.npcClearPending
+        if pending then
+            ImGui.Text((pending.delete and 'Delete saved zone: ' or 'Clear both lists: ') .. pending.zone)
+            ImGui.TextWrapped('This removes the selected scope\'s saved Attack and Ignore entries. Exported JSON files remain available for sharing or re-import.')
+            if ImGui.Button(pending.delete and 'Delete Zone##npcClearConfirm' or 'Clear Both Lists##npcClearConfirm') then
+                local ok, msg = runtime.npcClear(pending.zone, pending.delete)
+                runtime.npcNotify(ok, msg)
+                if ok then runtime.npcClearPending = nil; ImGui.CloseCurrentPopup() end
+            end
+            ImGui.SameLine()
+            if ImGui.Button('Cancel##npcClearCancel') then runtime.npcClearPending = nil; ImGui.CloseCurrentPopup() end
+        end
+        ImGui.EndPopup()
     end
     UI.drawNpcMessage()
     if ImGui.BeginPopup('NpcExportExists') then
@@ -12291,13 +12359,44 @@ function UI.drawNpcLists()
                 end
             end
             ImGui.EndChild()
+            runtime.npcImportRemove = ImGui.Checkbox('Remove JSON file after successful import', runtime.npcImportRemove == true)
             runtime.npcImportReplace = ImGui.Checkbox('Replace existing lists (default: Merge)', runtime.npcImportReplace == true)
             if runtime.npcImportReplace then ImGui.TextWrapped('Replace clears both existing lists for this scope before importing, including empty lists.') end
             if ImGui.Button(runtime.npcImportReplace and 'Replace Lists##npcApply' or 'Merge Lists##npcApply') then
-                local ok, msg = runtime.npcImport(runtime.npcImportReplace)
+                local ok, msg = runtime.npcImport(runtime.npcImportReplace, runtime.npcImportRemove)
                 runtime.npcNotify(ok, msg)
                 if ok then ImGui.CloseCurrentPopup() end
             end
+        end
+        if runtime.npcImportFile then
+            if ImGui.SmallButton('Delete File##npcDeleteShareFile') then
+                runtime.npcDeleteFilePending = runtime.npcImportFile
+                ImGui.OpenPopup('NpcDeleteShareFileConfirm')
+            end
+        end
+        if ImGui.BeginPopup('NpcDeleteShareFileConfirm') then
+            local file = runtime.npcDeleteFilePending
+            if file then
+                ImGui.Text('Delete sharing JSON file?')
+                UI.drawNpcText(file.filename)
+                ImGui.TextWrapped('This deletes the selected file from Config. Lists already saved in Triune remain available.')
+                if ImGui.Button('Delete File##npcDeleteShareConfirm') then
+                    local ok, msg = runtime.npcRemoveImportedFile(file)
+                    runtime.npcNotify(ok, msg)
+                    if ok then
+                        runtime.npcImportPreview = nil; runtime.npcImportFile = nil
+                        runtime.npcImportFilename = ''
+                        runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
+                        runtime.npcDeleteFilePending = nil
+                        ImGui.CloseCurrentPopup()
+                    end
+                end
+                ImGui.SameLine()
+                if ImGui.Button('Cancel##npcDeleteShareCancel') then
+                    runtime.npcDeleteFilePending = nil; ImGui.CloseCurrentPopup()
+                end
+            end
+            ImGui.EndPopup()
         end
         if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
         if ImGui.Button('Cancel##npcImportCancel') then ImGui.CloseCurrentPopup() end

@@ -14,7 +14,7 @@ local function install(name)
 end
 for _, name in ipairs({ 'npcZone', 'npcList', 'npcHas', 'npcNames', 'npcZoneStores', 'npcZoneOptions',
     'npcJsonQuote', 'npcJsonExport', 'npcJsonRead', 'npcSharePath', 'npcExport', 'npcPreview', 'npcImport',
-    'npcAdd', 'npcRemove', 'npcNotify', 'npcShareFiles', 'npcWrapText' }) do install(name) end
+    'npcAdd', 'npcRemove', 'npcRemoveImportedFile', 'npcClear', 'npcNotify', 'npcShareFiles', 'npcWrapText' }) do install(name) end
 -- Browser requires no installed Lua module and closes the built-in listing pipe.
 local entries = { 'friend-sro.json', 'Friend Raid.JSON', 'triune_npc_lists_guktop.json', 'bad..json', 'notes.txt' }
 local closed, command = 0, nil
@@ -131,6 +131,67 @@ assert(#runtime.zonePull.guktop == 1 and #runtime.pullList == 1 and #runtime.ign
 assert(not runtime.npcPreview('missing.json') and not runtime.npcImport(true))
 runtime.npcImportPreview = { zone = 'sro', attack = {}, ignore = {} }
 assert(runtime.npcImport(true) and #runtime.zonePull.sro == 0 and #runtime.zoneIgnore.sro == 0)
+-- Friend JSON imports a previously unknown zone. Clearing/deleting is scoped,
+-- and the gameplay path never reopens the sharing file.
+local friend = assert(io.open('tests/fixtures/npc-lists-friend-demo.json', 'rb'))
+local friendData = assert(runtime.npcJsonRead(friend:read('*a'))); friend:close()
+assert(friendData.zone == 'triune_friend_demo' and #friendData.attack == 3 and #friendData.ignore == 2)
+runtime.npcImportPreview = friendData; assert(runtime.npcImport(false))
+assert(#runtime.zonePull.triune_friend_demo == 3 and #runtime.zoneIgnore.triune_friend_demo == 2)
+local previousZone = current; current = 'triune_friend_demo'
+env.io = setmetatable({ open = function() error('Gameplay must not read JSON') end }, { __index = io })
+assert(runtime.isPullAllowed('a demo goblin') and not runtime.isPullAllowed('a demo guard'))
+env.io = io; current = previousZone
+assert(runtime.npcClear('triune_friend_demo', false))
+assert(#runtime.zonePull.triune_friend_demo == 0 and #runtime.zoneIgnore.triune_friend_demo == 0)
+assert(#runtime.zonePull.guktop == 1 and #runtime.pullList == 1 and #runtime.ignoreList == 1)
+runtime.npcImportPreview = friendData; assert(runtime.npcImport(false))
+local savedSave = runtime.saveLoadout; runtime.saveLoadout = function() return false end
+assert(not runtime.npcClear('triune_friend_demo', true))
+assert(#runtime.zonePull.triune_friend_demo == 3 and #runtime.zoneIgnore.triune_friend_demo == 2)
+runtime.saveLoadout = savedSave
+assert(runtime.npcClear('triune_friend_demo', true))
+assert(runtime.zonePull.triune_friend_demo == nil and runtime.zoneIgnore.triune_friend_demo == nil)
+for _, zone in ipairs(runtime.npcZoneOptions()) do assert(zone ~= 'triune_friend_demo') end
+assert(not runtime.npcClear('global', true))
+assert(#runtime.pullList == 1 and #runtime.ignoreList == 1)
+local globalAttack, globalIgnore = runtime.pullList, runtime.ignoreList
+assert(runtime.npcClear('global', false))
+assert(#runtime.pullList == 0 and #runtime.ignoreList == 0 and #runtime.zonePull.guktop == 1)
+runtime.pullList, runtime.ignoreList = globalAttack, globalIgnore
+local globalShared = assert(runtime.npcJsonRead(runtime.npcJsonExport('global')))
+assert(globalShared.zone == 'global' and #globalShared.attack == 1 and #globalShared.ignore == 1)
+-- Optional removal happens only after successful persistence, preserves changed
+-- files, and reports removal failures while retaining the successful import.
+local removePath = mq.configDir .. '/friend-remove.json'
+local function writeFriend(text)
+    local f = assert(io.open(removePath, 'wb')); f:write(text); f:close()
+end
+local friendJson = runtime.npcJsonExport('guktop')
+writeFriend(friendJson)
+assert(runtime.npcPreview('friend-remove.json'))
+assert(runtime.npcImport(false, false))
+local kept = assert(io.open(removePath, 'rb')); kept:close()
+assert(runtime.npcPreview('friend-remove.json'))
+local normalSave = runtime.saveLoadout; runtime.saveLoadout = function() return false end
+assert(not runtime.npcImport(false, true))
+kept = assert(io.open(removePath, 'rb')); kept:close()
+runtime.saveLoadout = normalSave
+assert(runtime.npcImport(false, true))
+assert(io.open(removePath, 'rb') == nil and #runtime.zonePull.guktop == 1)
+writeFriend(friendJson); assert(runtime.npcPreview('friend-remove.json'))
+writeFriend(friendJson .. ' ')
+local imported, changedMessage = runtime.npcImport(false, true)
+assert(imported and changedMessage:find('changed since Preview', 1, true))
+kept = assert(io.open(removePath, 'rb')); kept:close()
+assert(runtime.npcPreview('friend-remove.json'))
+env.os = setmetatable({ remove = function() return nil, 'Injected removal failure' end }, { __index = os })
+local saved, failureMessage = runtime.npcImport(false, true)
+assert(saved and failureMessage:find('remains in Config', 1, true))
+env.os = os
+assert(runtime.npcPreview('friend-remove.json'))
+assert(runtime.npcRemoveImportedFile(runtime.npcImportFile)) -- Explicit Delete File.
+assert(io.open(removePath, 'rb') == nil and #runtime.zonePull.guktop == 1)
 local cleaned = runtime.npcZoneStores({ SRO = { 'b', 'a', 'a' }, bad = { true } })
 assert(#cleaned.sro == 2 and cleaned.bad == nil)
 -- Persist through the actual save/load path, not a duplicated serializer.

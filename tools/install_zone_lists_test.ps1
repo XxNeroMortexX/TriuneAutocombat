@@ -110,6 +110,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Install failed and rollback failed. Triune must stay stopped. Backup: $Backup. $Reason" }
     throw "Install failed; previous branch restored. Backup: $Backup. $Reason"
 }
+# Created By: NeroMorte - Supply a friend-style demo without overwriting user files.
+$DemoFile = Join-Path $Config 'Friend-Demo-Lists.json'
+if (!(Test-Path -LiteralPath $DemoFile)) {
+    New-Item -ItemType Directory -Path $Config -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $Dev 'tests/fixtures/npc-lists-friend-demo.json') -Destination $DemoFile
+}
+Write-Host "Friend-style test file: $DemoFile (zone triune_friend_demo; Attack 3 / Ignore 2)"
 Write-Host "Verified zone lists test: $Revision"
 Write-Host "Backups: $Backup"
 Write-Host 'Existing Lua links and untracked updater files were preserved. No stash was applied.'

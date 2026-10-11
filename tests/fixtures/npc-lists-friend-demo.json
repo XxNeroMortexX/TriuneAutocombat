@@ -1,0 +1,7 @@
+{
+  "format": "triune-npc-lists",
+  "version": 1,
+  "zone": "triune_friend_demo",
+  "attack": ["a demo goblin", "a demo orc", "Demo Captain"],
+  "ignore": ["a demo merchant", "a demo guard"]
+}
