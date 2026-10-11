@@ -109,8 +109,20 @@ namespace mq2webupdate::providers
             const std::string& commitSha,
             const std::string& repositoryPath) const override
         {
-            // The GitHub contents API works for public and private repositories
-            // with one authenticated request path and returns exact blob bytes.
+            // Edited By: NeroMorte - public selected-file downloads do not
+            // spend one REST request per blob. Never put tokens in raw URLs.
+            // Private profiles retain the authenticated contents API.
+            if (!profile.privateRepository)
+            {
+                return {
+                    "https://raw.githubusercontent.com/" +
+                        EncodeGitHubPathSegment(profile.owner) + "/" +
+                        EncodeGitHubPathSegment(profile.repository) + "/" +
+                        EncodeGitHubPathSegment(commitSha) + "/" +
+                        EncodeRepositoryPath(repositoryPath),
+                    false
+                };
+            }
             return {
                 "https://api.github.com/repos/" +
                     EncodeGitHubPathSegment(profile.owner) + "/" +

@@ -1,5 +1,6 @@
 #include <mq/Plugin.h>
 #include <cpr/cpr.h>
+#include <curl/curl.h>
 
 #include <string>
 #include <vector>
@@ -23,6 +24,8 @@
 #include "MQ2WebUpdatePlanner.h"
 #include "MQ2WebUpdateProviders.h"
 #include "MQ2WebUpdateStagePlan.h"
+// Edited By: NeroMorte - central rate-limit/cache policy for every HTTP path.
+#include "MQ2WebUpdateNetworkPolicy.h"
 
 PreSetup("MQ2WebUpdate");
 
@@ -189,7 +192,8 @@ size_t g_errorCount = 0;
 
 // Created by: NeroMorte - MQ2WebUpdate 2.0 public engine/API state.
 // Edited By: NeroMorte - MQ-root standalone server payload support.
-constexpr const char* kWebUpdateVersion = "4.1.7";
+// Edited By: NeroMorte - candidate binary; publish metadata only after Windows verification.
+constexpr const char* kWebUpdateVersion = "4.1.8";
 constexpr const char* kWebUpdateApiVersion = "4.0";
 // Legacy defaults retained for migration of older settings files. The active
 // main repository and every deployment mapping are loaded from the saved
@@ -296,16 +300,14 @@ bool g_restartRequired = false;
 
     std::string GitHubHttpError(const cpr::Response& response);
 
+    // Edited By: NeroMorte - legacy compare/upstream/browser paths share the
+    // same pacing, cache and cooldown as structured compare/stage workers.
+    cpr::Response GitHubProviderGet(
+        const std::string& url, const std::string& token, bool rawContent);
+
     cpr::Response GitHubGet(const std::string& url)
     {
-        return cpr::Get(
-            cpr::Url{ url },
-            cpr::Header{
-                { "User-Agent", "MQ2WebUpdate" },
-                { "Accept", "application/vnd.github+json" }
-            },
-            cpr::Timeout{ 15000 }
-        );
+        return GitHubProviderGet(url, {}, false);
     }
 
     bool CheckResponse(const cpr::Response& response)
@@ -2674,65 +2676,181 @@ bool g_restartRequired = false;
         const cpr::Response& response,
         const std::string& wanted);
 
+    // Created By: NeroMorte - shared public metadata/cooldown files live under
+    // this MQ runtime. A named mutex serializes clients using the same runtime.
+    // Credentials only contribute a digest to the scope; private bodies never
+    // enter the on-disk metadata cache. No cross-PC coordination is implied.
+    std::string ComputeGitBlobSha(const std::string& bytes);
+    struct CachedHttpResponse
+    {
+        std::int64_t expires = 0;
+        cpr::Response response;
+    };
+    std::map<std::string, CachedHttpResponse> g_httpMetadataCache;
+    std::map<std::string, std::int64_t> g_httpCooldowns;
+    std::map<std::string, unsigned> g_secondaryLimitStrikes;
+
+    class SharedRequestLock
+    {
+        HANDLE handle = nullptr;
+        bool owned = false;
+    public:
+        explicit SharedRequestLock(const std::string& identity)
+        {
+            const std::string name = "Local\\MQ2WebUpdate-" + ComputeGitBlobSha(identity);
+            handle = CreateMutexA(nullptr, FALSE, name.c_str());
+            if (handle)
+            {
+                const DWORD result = WaitForSingleObject(handle, 5000);
+                owned = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+            }
+        }
+        bool Ready() const { return owned; }
+        ~SharedRequestLock()
+        {
+            if (owned) ReleaseMutex(handle);
+            if (handle) CloseHandle(handle);
+        }
+    };
+
+    std::int64_t EpochNow()
+    {
+        return static_cast<std::int64_t>(std::time(nullptr));
+    }
+
+    cpr::Response CooldownResponse(std::int64_t until)
+    {
+        cpr::Response response;
+        response.status_code = 429;
+        response.header["retry-after"] = std::to_string(std::max<std::int64_t>(1, until - EpochNow()));
+        response.header["x-ratelimit-reset"] = std::to_string(until);
+        response.header["x-mq2webupdate-cooldown"] = "Requests paused locally until GitHub cooldown expires";
+        return response;
+    }
+
     cpr::Response GitHubProviderGet(
         const std::string& url,
         const std::string& token,
         bool rawContent)
     {
+        // Edited By: NeroMorte - raw downloads have a separate host budget and
+        // receive no public-profile token. Metadata/private downloads retain it.
+        const bool api = url.rfind("https://api.github.com/", 0) == 0;
+        const std::string auth = api ? token : std::string{};
+        const std::string scope = ComputeGitBlobSha((api ? "api|" : "raw|") + auth);
+        const std::string cacheKey = ComputeGitBlobSha(url + "|" + scope);
+        const int cacheSeconds = mq2webupdate::network::MetadataCacheSeconds(url, rawContent);
+        std::lock_guard<std::mutex> requestLock(g_githubRequestMutex);
+        const fs::path lua = GetRuntimeLuaDirectory();
+        const fs::path cacheRoot = lua.empty() ? fs::path{} : lua.parent_path() / "webupdate_cache";
+        SharedRequestLock sharedLock(cacheRoot.string() + "|" + scope);
+        if (!sharedLock.Ready())
+        {
+            // Never race another client if its bounded request has not finished.
+            return CooldownResponse(EpochNow() + 5);
+        }
+        const auto now = EpochNow();
+        const auto cached = g_httpMetadataCache.find(cacheKey);
+        if (cached != g_httpMetadataCache.end() && cached->second.expires > now)
+            return cached->second.response;
+
+        // Edited By: NeroMorte - anonymous metadata can be reused across clients
+        // and plugin reloads. Authenticated responses stay process-local.
+        const bool diskCache = cacheSeconds > 0 && auth.empty() && !cacheRoot.empty();
+        const fs::path metadataPath = cacheRoot / (cacheKey + ".metadata");
+        const fs::path cooldownPath = cacheRoot / (scope + ".cooldown");
+        std::string stored;
+        if (diskCache && ReadFileBinary(metadataPath, stored))
+        {
+            const auto newline = stored.find('\n');
+            const auto expires = mq2webupdate::network::PositiveInteger(stored.substr(0, newline));
+            if (newline != std::string::npos && expires > now && expires <= now + cacheSeconds)
+            {
+                cpr::Response response;
+                response.status_code = 200;
+                response.text = stored.substr(newline + 1);
+                g_httpMetadataCache[cacheKey] = { expires, response };
+                return response;
+            }
+        }
+        auto& until = g_httpCooldowns[scope];
+        if (!cacheRoot.empty() && ReadFileBinary(cooldownPath, stored))
+            until = std::max(until, mq2webupdate::network::PositiveInteger(stored));
+        if (until > now) return CooldownResponse(until);
+
         cpr::Header headers{
             { "User-Agent", "MQ2WebUpdate" },
-            { "Accept", rawContent
-                ? "application/vnd.github.raw+json"
-                : "application/vnd.github+json" },
+            { "Accept", rawContent ? "application/vnd.github.raw+json" : "application/vnd.github+json" },
             { "X-GitHub-Api-Version", "2022-11-28" }
         };
-
-        if (!token.empty())
-            headers["Authorization"] = "Bearer " + token;
+        if (!auth.empty()) headers["Authorization"] = "Bearer " + auth;
 
         cpr::Response response;
         for (int attempt = 0; attempt <= g_networkRetryCount; ++attempt)
         {
+            const auto earliest = g_lastGitHubRequest + std::chrono::milliseconds(350);
+            if (g_lastGitHubRequest.time_since_epoch().count() != 0 &&
+                std::chrono::steady_clock::now() < earliest)
+                std::this_thread::sleep_until(earliest);
+            response = cpr::Get(cpr::Url{ url }, headers,
+                cpr::Timeout{ g_networkTimeoutSeconds * 1000 });
+            g_lastGitHubRequest = std::chrono::steady_clock::now();
+
+            // Edited By: NeroMorte - honor the entire server delay, including
+            // HTTP-date Retry-After; never sleep/retry through a rate limit.
+            const auto responseNow = EpochNow();
+            const std::string retryAfter = ResponseHeaderValue(response, "retry-after");
+            auto retrySeconds = mq2webupdate::network::PositiveInteger(retryAfter);
+            if (!retryAfter.empty() && retrySeconds == 0)
             {
-                std::lock_guard<std::mutex> requestLock(g_githubRequestMutex);
-                const auto now = std::chrono::steady_clock::now();
-                const auto earliest = g_lastGitHubRequest +
-                    std::chrono::milliseconds(350);
-                if (g_lastGitHubRequest.time_since_epoch().count() != 0 &&
-                    now < earliest)
-                {
-                    std::this_thread::sleep_until(earliest);
-                }
-
-                response = cpr::Get(
-                    cpr::Url{ url },
-                    headers,
-                    cpr::Timeout{ g_networkTimeoutSeconds * 1000 }
-                );
-                g_lastGitHubRequest = std::chrono::steady_clock::now();
+                const auto date = curl_getdate(retryAfter.c_str(), nullptr);
+                if (date > responseNow) retrySeconds = date - responseNow;
             }
-
-            const std::string retryAfter =
-                ResponseHeaderValue(response, "retry-after");
-            const bool retryable = static_cast<bool>(response.error) ||
-                response.status_code == 408 || response.status_code == 429 ||
-                (response.status_code == 403 && !retryAfter.empty()) ||
-                response.status_code >= 500;
-            if (!retryable || attempt == g_networkRetryCount)
+            const bool secondary = response.status_code == 403 &&
+                (response.text.find("secondary rate limit") != std::string::npos ||
+                 response.text.find("abuse detection") != std::string::npos);
+            if (secondary || response.status_code == 429)
+            {
+                auto& strikes = g_secondaryLimitStrikes[scope];
+                strikes = std::min(5u, strikes + 1);
+                retrySeconds = std::max<std::int64_t>(retrySeconds, 60LL << (strikes - 1));
+            }
+            auto pauseUntil = mq2webupdate::network::CooldownUntil(
+                response.status_code, ResponseHeaderValue(response, "x-ratelimit-remaining"),
+                ResponseHeaderValue(response, "x-ratelimit-reset"), retrySeconds, secondary, responseNow);
+            // Edited By: NeroMorte - Retry-After on a transient server failure
+            // also prohibits an early retry; preserve the response for diagnostics.
+            if (response.status_code >= 500 && retrySeconds > 0)
+                pauseUntil = std::max(pauseUntil, mq2webupdate::network::CooldownUntil(
+                    429, {}, {}, retrySeconds, false, responseNow));
+            if (pauseUntil > responseNow)
+            {
+                until = std::max(until, pauseUntil);
+                if (!cacheRoot.empty())
+                {
+                    std::error_code ec;
+                    fs::create_directories(cacheRoot, ec);
+                    if (!ec) WriteFileBinaryAtomic(cooldownPath, std::to_string(until));
+                }
+                // A successful last-budget response is usable; subsequent calls
+                // are gated. A rejected response stops the current operation.
                 break;
-
-            int waitMilliseconds = 250 * (attempt + 1);
-            if (!retryAfter.empty())
-            {
-                try
-                {
-                    waitMilliseconds = std::clamp(
-                        std::stoi(retryAfter), 1, 60) * 1000;
-                }
-                catch (...) {}
             }
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(waitMilliseconds));
+            const bool retryable = static_cast<bool>(response.error) ||
+                response.status_code == 408 || response.status_code >= 500;
+            if (!retryable || attempt == g_networkRetryCount) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(250 * (attempt + 1)));
+        }
+        if (!response.error && response.status_code == 200 && cacheSeconds > 0)
+        {
+            const auto expires = EpochNow() + cacheSeconds;
+            g_httpMetadataCache[cacheKey] = { expires, response };
+            if (diskCache)
+            {
+                std::error_code ec;
+                fs::create_directories(cacheRoot, ec);
+                if (!ec) WriteFileBinaryAtomic(metadataPath, std::to_string(expires) + "\n" + response.text);
+            }
         }
         return response;
     }
@@ -2779,7 +2897,10 @@ bool g_restartRequired = false;
     std::string GitHubHttpError(const cpr::Response& response)
     {
         std::ostringstream error;
-        error << "GitHub returned HTTP " << response.status_code;
+        // Edited By: NeroMorte - distinguish a local cooldown from a new rejection.
+        const auto cooldown = ResponseHeaderValue(response, "x-mq2webupdate-cooldown");
+        error << (cooldown.empty() ? "GitHub returned HTTP " : "GitHub requests paused; HTTP ")
+            << response.status_code;
 
         const std::string remaining =
             ResponseHeaderValue(response, "x-ratelimit-remaining");
@@ -10425,10 +10546,11 @@ void ShowStatus()
                 "sha"
             );
 
-        if (output.remoteSha.empty())
+        // Edited By: NeroMorte - only a validated commit may select immutable data.
+        if (!IsValidGitSha(output.remoteSha))
         {
             output.lastError =
-                "Could not parse commit SHA.";
+                "Remote commit SHA is invalid.";
 
             ++output.errorCount;
             return output;
@@ -10439,7 +10561,7 @@ void ShowStatus()
         // --------------------------------------------------------
 
         std::string treeJson;
-        const std::string cacheKey = RepositoryCacheKey(profile);
+        const std::string cacheKey = RepositoryCacheKey(profile) + "|" + ComputeGitBlobSha(credential.value);
         {
             std::lock_guard<std::mutex> cacheLock(g_repositoryTreeCacheMutex);
             const auto cached = g_repositoryTreeCache.find(cacheKey);
@@ -10847,18 +10969,30 @@ void ShowStatus()
         // 2. Discover TAC/lua files at that exact SHA.
         // --------------------------------------------------------
 
-        const std::string treeUrl =
-            provider->RepositoryTreeRequest(profile, output.remoteSha).url;
-
-        auto treeResponse = GitHubProviderGet(
-            treeUrl, credential.value, false);
-
-        if (!WorkerCheckResponse(
-                treeResponse,
-                output.lastError))
+        // Edited By: NeroMorte - reuse the same immutable tree as Compare.
+        cpr::Response treeResponse;
+        const std::string cacheKey = RepositoryCacheKey(profile) + "|" + ComputeGitBlobSha(credential.value);
         {
-            ++output.errorCount;
-            return output;
+            std::lock_guard<std::mutex> cacheLock(g_repositoryTreeCacheMutex);
+            const auto cached = g_repositoryTreeCache.find(cacheKey);
+            if (cached != g_repositoryTreeCache.end() && cached->second.commitSha == output.remoteSha)
+            {
+                treeResponse.status_code = 200;
+                treeResponse.text = cached->second.json;
+            }
+        }
+        if (treeResponse.text.empty())
+        {
+            treeResponse = GitHubProviderGet(
+                provider->RepositoryTreeRequest(profile, output.remoteSha).url,
+                credential.value, false);
+            if (!WorkerCheckResponse(treeResponse, output.lastError))
+            {
+                ++output.errorCount;
+                return output;
+            }
+            std::lock_guard<std::mutex> cacheLock(g_repositoryTreeCacheMutex);
+            g_repositoryTreeCache[cacheKey] = { output.remoteSha, treeResponse.text };
         }
 
         const std::string luaPrefix = LuaRemotePrefix(profile);
@@ -11113,10 +11247,40 @@ void ShowStatus()
                     "NEW FILE";
             }
 
+            // Edited By: NeroMorte - classify broken links and matching local
+            // blobs before any download. Preserve Compare's CRLF normalization.
+            if (localProtected && !localExists)
+            {
+                result.status = "PROTECTED";
+                output.fileResults.push_back(std::move(result));
+                continue;
+            }
+            if (localExists)
+            {
+                std::string localData;
+                if (!ReadFileBinary(localPath, localData))
+                {
+                    ++output.errorCount;
+                    result.status = "ERROR";
+                    if (output.lastError.empty()) output.lastError = "Could not read local file: " + remote.fileName;
+                    output.fileResults.push_back(std::move(result));
+                    continue;
+                }
+                if (ComputeGitBlobSha(localData) == remote.gitObjectSha ||
+                    (IsTextDeployment(remote.destinationRelativePath) &&
+                     ComputeGitBlobSha(NormalizeTextLineEndings(localData)) == remote.gitObjectSha))
+                {
+                    ++output.sameCount;
+                    result.status = "SAME";
+                    output.fileResults.push_back(std::move(result));
+                    continue;
+                }
+            }
+
             const auto request = provider->FileRequest(
                 profile, output.remoteSha, remote.repoPath);
             auto response = GitHubProviderGet(
-                request.url, credential.value, true);
+                request.url, request.requiresAuthentication ? credential.value : std::string{}, true);
 
             std::string requestError;
 
@@ -11134,15 +11298,18 @@ void ShowStatus()
                     std::move(result)
                 );
 
-                continue;
+                return output;
             }
 
-            if (response.text.size() != remote.expectedSize)
+            // Edited By: NeroMorte - commit-pinned transport must match the
+            // resolved Git blob before the payload is ever staged.
+            if (response.text.size() != remote.expectedSize ||
+                ComputeGitBlobSha(response.text) != remote.gitObjectSha)
             {
                 ++output.errorCount;
                 result.status = "ERROR";
                 if (output.lastError.empty())
-                    output.lastError = "Downloaded file size does not match the resolved GitHub tree.";
+                    output.lastError = "Downloaded file size/hash does not match the resolved GitHub tree.";
                 output.fileResults.push_back(std::move(result));
                 continue;
             }

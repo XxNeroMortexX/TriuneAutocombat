@@ -1,5 +1,14 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-10
+
+- **Edited By: NeroMorte — MQ2WebUpdate 4.1.8 reduces GitHub requests**: skip matching local Git blobs before staging and acquire only changed public files from commit-pinned raw URLs; private profiles retain authenticated contents requests. Verify downloaded size and Git blob hash before staging.
+- **Created By: NeroMorte — Coordinate metadata and cooldowns across updater entry points**: cache reference resolutions for 30 seconds and immutable trees, share anonymous metadata/cooldowns between clients using the same runtime, retain process-only authenticated metadata, and respect complete reset/Retry-After delays without retrying rate-limit failures. Raw hosting retains its own limits; separate PCs do not share local caches.
+- **Created By: NeroMorte — Publish the exact Windows-built and game-tested Win32 4.1.8 DLL** with verified source revision, size, SHA256 and Git blob SHA. NeroMorte confirms loading as 4.1.8, repeated comparisons with 45 matching files and zero errors, and a temporary README download/apply returning to no pending updates with all 40 Lua links protected.
+- **Created By: NeroMorte — Add deterministic network/staging regressions and backed-up Windows build/install/restore scripts**. All nine CI checks pass on the published binary; tests cover long quota delays, cache reuse, private credential isolation, selected-file URLs, matching local files and payload integrity. Native project verification accepts the reviewed extra EOF blank line without accepting changes to build settings. No unrelated upstream integration.
+
+---
+
 ## 2026-10-09 — 3.1-Morte.8
 
 - **Edited By: NeroMorte — BoxNet Connection tab** automatically loads MQ2EQBC, discovers one reachable passwordless Go server, selects EQBC transport, enables control and remembers the connection. Multiple servers require selection; protected servers need a password once; local Actors remains available.
