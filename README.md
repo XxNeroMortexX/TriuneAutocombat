@@ -36,6 +36,14 @@ Your setup is saved automatically and reloads next time.
 
 ---
 
+### Zone Attack / Ignore lists
+
+On **Control → Attack / Ignore Lists**, select the current zone, **Global**, or a saved zone. Each choice shows Attack and Ignore counts. Global rules combine with the actual current zone; browsing a saved zone only changes which lists you edit. Ignore wins. Attack/Pull entries restrict Puller auto-pulls; existing Manual/Assist target rules remain unchanged.
+
+Lists are saved per character in `config/triune_loadout_<server>_<character>.lua`. Existing lists remain Global. **Export Zone** writes both lists to `config/triune_npc_lists_<zone-short-name>.json` (Global uses `global`). Share that JSON with friends. Place a received file in your MQ config folder, click **Import Zone**, enter its filename, and preview the recorded zone/counts. **Merge** keeps existing names and removes duplicates; explicitly checking **Replace** replaces both lists for that scope, including empty lists. Other zones and settings stay intact. Export refuses to overwrite an existing file; rename the earlier export before exporting again. Shared files are parsed as data and never executed.
+
+---
+
 ## Combat modes
 
 | Mode | Use it when | What Triune does |

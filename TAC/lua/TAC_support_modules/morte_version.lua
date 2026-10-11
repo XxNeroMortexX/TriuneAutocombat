@@ -18,13 +18,13 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - Automatic EQBC connection and verified client release; engine version remains independent.
-    version = 'Morte.8',
+    -- Edited By: NeroMorte - Zone list sharing test; engine version remains independent.
+    version = 'Morte.9',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
 
-    channel = 'stable',
+    channel = 'test',
 }
 
 ---------------------------------------------------------------------------
@@ -37,7 +37,7 @@ version.morte = {
 
 version.engine = {
     -- Edited By: NeroMorte - Publish the Windows-built MQ runtime root updater.
-    expectedVersion = '4.1.7',
+    expectedVersion = '4.1.8',
     minimumVersion = '4.0.0',
 }
 
