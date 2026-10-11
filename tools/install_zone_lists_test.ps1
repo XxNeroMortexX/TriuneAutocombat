@@ -62,7 +62,11 @@ foreach ($Relative in $Files) {
 $LocalTest = $null
 git -C $Dev show-ref --verify --quiet "refs/heads/$Branch"
 if ($LASTEXITCODE -eq 0) { $LocalTest = git -C $Dev rev-parse "refs/heads/$Branch" }
-if ($LocalTest -and $LocalTest -ne $Revision) { throw 'Existing local test branch differs; stopped without resetting it.' }
+# Edited By: NeroMorte - Permit reviewed test revisions through fast-forward only.
+if ($LocalTest -and $LocalTest -ne $Revision) {
+    git -C $Dev merge-base --is-ancestor $LocalTest $Revision
+    if ($LASTEXITCODE -ne 0) { throw 'Existing test branch diverges; stopped without resetting it.' }
+}
 $Backup = Join-Path $BackupRoot ('zone-lists-test-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,6))
 New-Item -ItemType Directory -Path $Backup -Force | Out-Null
 foreach ($Relative in $Files) {
@@ -87,6 +91,8 @@ try {
     if ($LocalTest) { git -C $Dev switch $Branch }
     else { git -C $Dev switch -c $Branch --track "origin/$Branch" }
     if ($LASTEXITCODE -ne 0) { throw 'Test branch switch failed.' }
+    git -C $Dev merge --ff-only $Revision
+    if ($LASTEXITCODE -ne 0) { throw 'Test branch fast-forward failed.' }
     if ((git -C $Dev rev-parse HEAD) -ne $Revision) { throw 'HEAD verification failed.' }
     foreach ($Entry in $Links) {
         $Linked = $false
@@ -99,7 +105,8 @@ try {
     }
 } catch {
     $Reason = $_
-    git -C $Dev switch $BeforeBranch
+    if ($BeforeBranch -eq $Branch) { git -C $Dev switch --detach $BeforeCommit }
+    else { git -C $Dev switch $BeforeBranch }
     if ($LASTEXITCODE -ne 0) { throw "Install failed and rollback failed. Triune must stay stopped. Backup: $Backup. $Reason" }
     throw "Install failed; previous branch restored. Backup: $Backup. $Reason"
 }
@@ -107,4 +114,4 @@ Write-Host "Verified zone lists test: $Revision"
 Write-Host "Backups: $Backup"
 Write-Host 'Existing Lua links and untracked updater files were preserved. No stash was applied.'
 Write-Host 'Now start Triune in game with /lua run triune. Open Control to test zone lists and JSON sharing.'
-Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch '$BeforeBranch'"
+Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch --detach '$BeforeCommit'"

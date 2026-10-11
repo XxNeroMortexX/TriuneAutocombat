@@ -14,7 +14,26 @@ local function install(name)
 end
 for _, name in ipairs({ 'npcZone', 'npcList', 'npcHas', 'npcNames', 'npcZoneStores', 'npcZoneOptions',
     'npcJsonQuote', 'npcJsonExport', 'npcJsonRead', 'npcSharePath', 'npcExport', 'npcPreview', 'npcImport',
-    'npcAdd', 'npcRemove' }) do install(name) end
+    'npcAdd', 'npcRemove', 'npcNotify', 'npcShareFiles' }) do install(name) end
+-- File selection includes a friend's renamed file and another zone's export,
+-- excludes directories/unsafe filenames, and gracefully retains manual entry.
+local entries = { '.', '..', 'friend-sro.json', 'triune_npc_lists_guktop.json', 'folder.json', 'bad..json', 'notes.txt' }
+env.require = function(name)
+    assert(name == 'lfs')
+    return { dir = function()
+        local index = 0
+        return function() index = index + 1; return entries[index] end
+    end, attributes = function(path)
+        return path:match('folder%.json$') and 'directory' or 'file'
+    end }
+end
+local choices = assert(runtime.npcShareFiles())
+assert(#choices == 2 and choices[1] == 'friend-sro.json' and choices[2] == 'triune_npc_lists_guktop.json')
+local originalRequire = env.require
+env.require = function() error('No lfs available') end
+local fallback, reason = runtime.npcShareFiles()
+assert(#fallback == 0 and reason:find('enter the filename', 1, true))
+env.require = originalRequire
 local ignored = assert(loadstring(assert(source:match('(local function isIgnored%b().-\nend)\n')) .. '\nreturn isIgnored'))
 setfenv(ignored, env); env.isIgnored = ignored()
 install('isPullAllowed')
@@ -85,11 +104,16 @@ assert(runtime.zonePull.sro and #runtime.zonePull.sro == 0)
 -- Clipped ImGui children still receive EndChild, and zone transitions select the
 -- actual zone without changing the targeting policy when another scope is viewed.
 local ended = 0
+local clickExport, chats = false, {}
+env.print = function(message) chats[#chats + 1] = message end
 local imgui = setmetatable({
     BeginCombo = function() return false end,
     BeginChild = function() return false end,
     EndChild = function() ended = ended + 1 end,
-    SmallButton = function() return false end,
+    SmallButton = function(label)
+        if clickExport and label == 'Export Zone##npcExport' then clickExport = false; return true end
+        return false
+    end,
     BeginPopup = function() return false end,
     InputText = function(_, value) return value, false end,
 }, { __index = function() return function() end end })
@@ -102,6 +126,10 @@ runtime.npcEditZone = 'sro'; env.UI.drawNpcLists()
 assert(runtime.npcEditZone == 'sro' and runtime.isPullAllowed('a frog'))
 current = 'sro'; env.UI.drawNpcLists()
 assert(runtime.npcEditZone == 'sro' and ended == 6)
+clickExport = true; env.UI.drawNpcLists()
+assert(#chats == 1 and chats[1]:find('File already exists', 1, true))
+runtime.npcNotify(true, 'Exported to test.json')
+assert(#chats == 2 and chats[2]:find('Exported to test.json', 1, true))
 os.remove(runtime.loadoutFilePath()); os.remove(mq.configDir .. '/triune_npc_lists_sro.json')
 assert(os.execute('rmdir "' .. mq.configDir .. '"') == 0)
 print('PASS: zone isolation, Global compatibility, include/ignore precedence, safe JSON, merge/replace and save/reload')

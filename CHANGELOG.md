@@ -2,6 +2,8 @@
 
 ## 2026-10-11 — Morte.9 test
 
+- **Edited By: NeroMorte — Make file actions visible in chat and offer an Import file picker**, covering other zones' exports and friends' JSON files in MQ config. Refresh the file list on opening or request; preview the recorded zone/counts before applying. Test installer updates use fast-forward only and back up the current revision/settings.
+
 - **Edited By: NeroMorte — Add per-zone Attack/Pull and Ignore lists on Control**, with a compact saved-zone selector showing counts. Global entries remain intact; actual current-zone additions apply automatically. Ignore takes precedence, and existing Puller include matching and Manual/Assist targeting rules stay intact. Inspired by thezerodivide's Global + zone design, adapted to this fork's per-character settings.
 - **Created By: NeroMorte — Share one zone through bounded, non-executable JSON files** in the MQ config folder. Preview the source zone/counts, merge without duplicates by default, or explicitly replace both lists for that scope. Zone lists save and reload in the existing per-character Lua loadout.
 

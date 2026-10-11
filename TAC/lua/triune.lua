@@ -2633,6 +2633,30 @@ function runtime.npcSharePath(filename)
     return mq.configDir .. '/' .. filename
 end
 
+-- Created By: NeroMorte - Report file actions in chat as well as the Control tab.
+function runtime.npcNotify(ok, message)
+    runtime.npcListMessage = message
+    print((ok and '\ag' or '\ay') .. '[Triune Lists]\ax ' .. tostring(message))
+end
+
+-- Created By: NeroMorte - List local JSON filenames once when Import opens/refreshes.
+-- The selected file is validated separately; unrelated JSON is never imported.
+function runtime.npcShareFiles()
+    local files = {}
+    local ok, err = pcall(function()
+        local lfs = require('lfs')
+        for filename in lfs.dir(mq.configDir) do
+            if #files < 250 and runtime.npcSharePath(filename)
+                and lfs.attributes(mq.configDir .. '/' .. filename, 'mode') == 'file' then
+                files[#files + 1] = filename
+            end
+        end
+    end)
+    if not ok then return {}, 'Cannot list files; enter the filename below. ' .. tostring(err) end
+    table.sort(files, function(a, b) return a:lower() < b:lower() end)
+    return files
+end
+
 function runtime.npcExport(zone)
     if not zone then return false, 'Select a zone first.' end
     local filename = 'triune_npc_lists_' .. zone .. '.json'
@@ -12102,17 +12126,35 @@ function UI.drawNpcLists()
     end
     ImGui.TextWrapped('Include limits Puller auto-pulls; empty Global and zone Include lists allow all mobs. Ignore filters Hunter/Puller auto-targets. Manual/Assist targets keep their existing rules.')
     if ImGui.SmallButton('Export Zone##npcExport') then
-        local _, msg = runtime.npcExport(selected); runtime.npcListMessage = msg
+        local ok, msg = runtime.npcExport(selected); runtime.npcNotify(ok, msg)
     end
     ImGui.SameLine()
     if ImGui.SmallButton('Import Zone##npcImport') then
         runtime.npcImportPreview = nil; runtime.npcImportReplace = false
         runtime.npcImportFilename = 'triune_npc_lists_' .. selected .. '.json'
+        runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
         ImGui.OpenPopup('NpcListImport')
     end
     if runtime.npcListMessage then ImGui.TextWrapped(runtime.npcListMessage) end
     if ImGui.BeginPopup('NpcListImport') then
         ImGui.TextWrapped('Place the shared JSON file in your MQ config folder. Import uses the zone recorded inside the file.')
+        ImGui.TextWrapped(mq.configDir)
+        ImGui.SetNextItemWidth(UI.px(320))
+        if ImGui.BeginCombo('Saved files##npcImportFiles', runtime.npcImportFilename or 'Choose a JSON file') then
+            for _, fileName in ipairs(runtime.npcImportFiles or {}) do
+                if ImGui.Selectable(fileName, fileName == runtime.npcImportFilename) then
+                    runtime.npcImportFilename = fileName
+                    local _, msg = runtime.npcPreview(fileName); runtime.npcListMessage = msg
+                end
+            end
+            ImGui.EndCombo()
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Refresh##npcImportRefresh') then
+            runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
+        end
+        if runtime.npcImportFilesError then ImGui.TextWrapped(runtime.npcImportFilesError) end
+        if #(runtime.npcImportFiles or {}) == 0 then ImGui.TextWrapped('No JSON files found. Copy your friend\'s file into the folder above, then Refresh.') end
         ImGui.SetNextItemWidth(UI.px(320))
         local filename, changed = ImGui.InputText('File##npcImportFilename', runtime.npcImportFilename or '')
         runtime.npcImportFilename = filename
@@ -12127,7 +12169,7 @@ function UI.drawNpcLists()
             if runtime.npcImportReplace then ImGui.TextWrapped('Replace clears both existing lists for this scope before importing, including empty lists.') end
             if ImGui.Button(runtime.npcImportReplace and 'Replace Lists##npcApply' or 'Merge Lists##npcApply') then
                 local ok, msg = runtime.npcImport(runtime.npcImportReplace)
-                runtime.npcListMessage = msg
+                runtime.npcNotify(ok, msg)
                 if ok then ImGui.CloseCurrentPopup() end
             end
         end
