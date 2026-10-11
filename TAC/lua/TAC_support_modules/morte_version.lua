@@ -18,13 +18,13 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - Zone list sharing test; engine version remains independent.
+    -- Edited By: NeroMorte - Per-zone list sharing and management; engine version remains independent.
     version = 'Morte.9',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
 
-    channel = 'test',
+    channel = 'stable',
 }
 
 ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 # Triune AutoCombat Change Log
 
-## 2026-10-11 — Morte.9 test
+## 2026-10-11 — 3.1-Morte.9
+
+- **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.
 
 - **Created By: NeroMorte — Add confirmed Delete File in Import** for a validated sharing JSON, independent of the Control tab's saved-list Clear/Delete actions. Recheck file contents before removal and refresh the picker after successful deletion.
 
