@@ -1,0 +1,50 @@
+{
+  "baseRevision": "e2423e2aaad543a0df237739c99324dd14fd9648",
+  "files": [
+    {
+      "file": "MQ2WebUpdate.cpp",
+      "baseline": "6aa357c6bfd348bd092dae20810abee037f451680e7be3185546e0f89280d5eb",
+      "updated": "d3ea0306d009bbeaaf561ee0727c4321b60d2246456222ee9528cb585b0d5aec"
+    },
+    {
+      "file": "MQ2WebUpdate.vcxproj",
+      "baseline": "56038563df61166ee1c6be4065270184f28d94a584f2854b34baed2483747353",
+      "updated": "56038563df61166ee1c6be4065270184f28d94a584f2854b34baed2483747353"
+    },
+    {
+      "file": "MQ2WebUpdateCredentials.h",
+      "baseline": "b961c300961ae59e697b1467b3219d0b645bd566a23b3fa7d132610f1e32cd9f",
+      "updated": "b961c300961ae59e697b1467b3219d0b645bd566a23b3fa7d132610f1e32cd9f"
+    },
+    {
+      "file": "MQ2WebUpdateNetworkPolicy.h",
+      "baseline": null,
+      "updated": "40d34f4bcfb80a812bf2f0824c88227b053deb9a4b985f3fbc67f582dbf8a60d"
+    },
+    {
+      "file": "MQ2WebUpdatePlanner.h",
+      "baseline": "2cca753d83e22d2d93fb294f96f19c1def3b615681484fb5a2d539e82d86fbb1",
+      "updated": "2cca753d83e22d2d93fb294f96f19c1def3b615681484fb5a2d539e82d86fbb1"
+    },
+    {
+      "file": "MQ2WebUpdateProfileStore.h",
+      "baseline": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57",
+      "updated": "683320888307fe45703ccfa9dc91f3c4ec6d989cf99969be9b0c736db3ea5d57"
+    },
+    {
+      "file": "MQ2WebUpdateProfiles.h",
+      "baseline": "ce1dc3f0ae6509ce6f589a06bf7c9af00792bfbe7eefe84e0faa43650bbd2604",
+      "updated": "ce1dc3f0ae6509ce6f589a06bf7c9af00792bfbe7eefe84e0faa43650bbd2604"
+    },
+    {
+      "file": "MQ2WebUpdateProviders.h",
+      "baseline": "7c784feeec14c89ed0664fb76cda4203b724e064b385b4b796edb664eed343d4",
+      "updated": "40d0ee1f281dc51c6123b092310ea80ff9efa51fd82d083d9ed32fa58bca0e02"
+    },
+    {
+      "file": "MQ2WebUpdateStagePlan.h",
+      "baseline": "692ea70634500d6f6d00a013048432760918a3432efbf93c5390e065944211ab",
+      "updated": "692ea70634500d6f6d00a013048432760918a3432efbf93c5390e065944211ab"
+    }
+  ]
+}
