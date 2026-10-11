@@ -14,26 +14,43 @@ local function install(name)
 end
 for _, name in ipairs({ 'npcZone', 'npcList', 'npcHas', 'npcNames', 'npcZoneStores', 'npcZoneOptions',
     'npcJsonQuote', 'npcJsonExport', 'npcJsonRead', 'npcSharePath', 'npcExport', 'npcPreview', 'npcImport',
-    'npcAdd', 'npcRemove', 'npcNotify', 'npcShareFiles' }) do install(name) end
--- File selection includes a friend's renamed file and another zone's export,
--- excludes directories/unsafe filenames, and gracefully retains manual entry.
-local entries = { '.', '..', 'friend-sro.json', 'triune_npc_lists_guktop.json', 'folder.json', 'bad..json', 'notes.txt' }
-env.require = function(name)
-    assert(name == 'lfs')
-    return { dir = function()
+    'npcAdd', 'npcRemove', 'npcNotify', 'npcShareFiles', 'npcWrapText' }) do install(name) end
+-- Browser requires no installed Lua module and closes the built-in listing pipe.
+local entries = { 'friend-sro.json', 'triune_npc_lists_guktop.json', 'bad..json', 'notes.txt' }
+local closed, command = 0, nil
+local originalIo = io
+local fakeIo = setmetatable({ popen = function(cmd)
+    command = cmd
+    return { lines = function()
         local index = 0
         return function() index = index + 1; return entries[index] end
-    end, attributes = function(path)
-        return path:match('folder%.json$') and 'directory' or 'file'
-    end }
-end
+    end, close = function() closed = closed + 1 end }
+end }, { __index = originalIo })
+env.io, env.package = fakeIo, { config = '\\' }
+env.require = function() error('No optional modules installed') end
 local choices = assert(runtime.npcShareFiles())
 assert(#choices == 2 and choices[1] == 'friend-sro.json' and choices[2] == 'triune_npc_lists_guktop.json')
-local originalRequire = env.require
-env.require = function() error('No lfs available') end
+assert(closed == 1 and command:find('dir /b /a-d', 1, true))
+local originalDir = mq.configDir
+mq.configDir = 'C:\\unsafe%PATH%'
+local guarded, guardReason = runtime.npcShareFiles()
+assert(#guarded == 0 and guardReason and closed == 1)
+mq.configDir = originalDir
+fakeIo.popen = function() error('Unavailable') end
 local fallback, reason = runtime.npcShareFiles()
-assert(#fallback == 0 and reason:find('enter the filename', 1, true))
-env.require = originalRequire
+assert(#fallback == 0 and reason == 'Cannot browse files. Enter the JSON filename below.')
+env.io = originalIo
+local longPath = 'E:\\' .. string.rep('very-long-folder\\', 30) .. 'triune_npc_lists_potactics.json'
+local lines = runtime.npcWrapText(longPath, 15, function(v) return #v end)
+assert(table.concat(lines) == longPath and #lines > 20)
+for _, line in ipairs(lines) do assert(#line <= 15) end
+local unicodeText = 'A\195\169B'
+local unicodeLines = runtime.npcWrapText(unicodeText, 1, function(v)
+    local count = 0
+    for _ in v:gmatch('[%z\1-\127\194-\244][\128-\191]*') do count = count + 1 end
+    return count
+end)
+assert(#unicodeLines == 3 and unicodeLines[2] == '\195\169' and table.concat(unicodeLines) == unicodeText)
 local ignored = assert(loadstring(assert(source:match('(local function isIgnored%b().-\nend)\n')) .. '\nreturn isIgnored'))
 setfenv(ignored, env); env.isIgnored = ignored()
 install('isPullAllowed')
@@ -104,9 +121,13 @@ assert(runtime.zonePull.sro and #runtime.zonePull.sro == 0)
 -- Clipped ImGui children still receive EndChild, and zone transitions select the
 -- actual zone without changing the targeting policy when another scope is viewed.
 local ended = 0
-local clickExport, chats = false, {}
+local clickExport, chats, drawn, copied = false, {}, {}, nil
 env.print = function(message) chats[#chats + 1] = message end
 local imgui = setmetatable({
+    GetContentRegionAvail = function() return 120, 200 end,
+    CalcTextSize = function(value) return #value, 10 end,
+    TextUnformatted = function(value) drawn[#drawn + 1] = value end,
+    SetClipboardText = function(value) copied = value end,
     BeginCombo = function() return false end,
     BeginChild = function() return false end,
     EndChild = function() ended = ended + 1 end,
@@ -118,8 +139,10 @@ local imgui = setmetatable({
     InputText = function(_, value) return value, false end,
 }, { __index = function() return function() end end })
 env.ImGui, env.UI, env.accent = imgui, { px = function(v) return v end }, function() end
-local ui = assert(loadstring(assert(source:match('(function UI%.drawNpcLists%b().-\nend)\n'))))
-setfenv(ui, env); ui()
+for _, name in ipairs({ 'drawNpcText', 'drawNpcMessage', 'drawNpcLists' }) do
+    local ui = assert(loadstring(assert(source:match('(function UI%.' .. name .. '%b().-\nend)\n'))))
+    setfenv(ui, env); ui()
+end
 env.UI.drawNpcLists()
 assert(ended == 2 and runtime.npcEditZone == 'guktop')
 runtime.npcEditZone = 'sro'; env.UI.drawNpcLists()
@@ -130,6 +153,13 @@ clickExport = true; env.UI.drawNpcLists()
 assert(#chats == 1 and chats[1]:find('File already exists', 1, true))
 runtime.npcNotify(true, 'Exported to test.json')
 assert(#chats == 2 and chats[2]:find('Exported to test.json', 1, true))
+drawn = {}; env.UI.drawNpcText(longPath)
+assert(table.concat(drawn) == longPath)
+for _, line in ipairs(drawn) do assert(#line <= 120) end
+runtime.npcListPath = longPath
+imgui.SmallButton = function(label) return label == 'Copy Export Path##npcCopyExportPath' end
+env.UI.drawNpcMessage()
+assert(copied == longPath)
 os.remove(runtime.loadoutFilePath()); os.remove(mq.configDir .. '/triune_npc_lists_sro.json')
 assert(os.execute('rmdir "' .. mq.configDir .. '"') == 0)
 print('PASS: zone isolation, Global compatibility, include/ignore precedence, safe JSON, merge/replace and save/reload')

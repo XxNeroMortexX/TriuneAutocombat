@@ -2639,28 +2639,51 @@ function runtime.npcNotify(ok, message)
     print((ok and '\ag' or '\ay') .. '[Triune Lists]\ax ' .. tostring(message))
 end
 
--- Created By: NeroMorte - List local JSON filenames once when Import opens/refreshes.
--- The selected file is validated separately; unrelated JSON is never imported.
+-- Edited By: NeroMorte - Use Windows' built-in directory listing, as the existing
+-- plugin browser does, without depending on an installed LuaFileSystem module.
 function runtime.npcShareFiles()
     local files = {}
-    local ok, err = pcall(function()
-        local lfs = require('lfs')
-        for filename in lfs.dir(mq.configDir) do
-            if #files < 250 and runtime.npcSharePath(filename)
-                and lfs.attributes(mq.configDir .. '/' .. filename, 'mode') == 'file' then
-                files[#files + 1] = filename
-            end
+    local isWin = package.config and package.config:sub(1, 1) == '\\'
+    if not isWin then return files, 'Enter the JSON filename below.' end
+    local dir = tostring(mq.configDir or ''):gsub('/', '\\')
+    -- The folder comes from MQ, never from the import filename. Refuse shell
+    -- expansion characters before placing it inside a quoted directory query.
+    if dir == '' or dir:find('["%%!&|<>^%c]') then
+        return files, 'Cannot browse this folder. Enter the JSON filename below.'
+    end
+    local pipe
+    local ok = pcall(function()
+        pipe = io.popen('dir /b /a-d "' .. dir .. '\\*.json" 2>nul')
+        if not pipe then error('Directory listing unavailable') end
+        for filename in pipe:lines() do
+            if #files < 250 and runtime.npcSharePath(filename) then files[#files + 1] = filename end
         end
     end)
-    if not ok then return {}, 'Cannot list files; enter the filename below. ' .. tostring(err) end
+    if pipe then pcall(function() pipe:close() end) end
+    if not ok then return {}, 'Cannot browse files. Enter the JSON filename below.' end
     table.sort(files, function(a, b) return a:lower() < b:lower() end)
     return files
+end
+
+-- Created By: NeroMorte - Break even a long path token at measured character
+-- boundaries. Display-only line breaks never change the original copied path.
+function runtime.npcWrapText(text, width, measure)
+    local lines, line = {}, ''
+    for ch in tostring(text or ''):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+        if ch == '\n' then lines[#lines + 1] = line; line = ''
+        elseif line ~= '' and measure(line .. ch) > width then
+            lines[#lines + 1] = line; line = ch
+        else line = line .. ch end
+    end
+    lines[#lines + 1] = line
+    return lines
 end
 
 function runtime.npcExport(zone)
     if not zone then return false, 'Select a zone first.' end
     local filename = 'triune_npc_lists_' .. zone .. '.json'
     local path = assert(runtime.npcSharePath(filename))
+    runtime.npcListPath = path
     local existing = io.open(path, 'rb')
     if existing then existing:close(); return false, 'File already exists: ' .. filename .. '. Rename it before exporting again.' end
     local f, err = io.open(path, 'wb')
@@ -12052,6 +12075,22 @@ function UI.distanceSlider(label, value, minimum, dragMaximum)
     return edited, edited ~= value
 end
 
+-- Created By: NeroMorte - Paths wrap to available width and copy without breaks.
+function UI.drawNpcText(text)
+    local width = ImGui.GetContentRegionAvail()
+    width = math.max(1, width)
+    for _, line in ipairs(runtime.npcWrapText(text, width, function(value) return ImGui.CalcTextSize(value) end)) do
+        ImGui.TextUnformatted(line)
+    end
+end
+
+function UI.drawNpcMessage()
+    if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
+    if runtime.npcListPath and ImGui.SmallButton('Copy Export Path##npcCopyExportPath') then
+        ImGui.SetClipboardText(runtime.npcListPath)
+    end
+end
+
 -- Edited By: NeroMorte - One compact scope selector and file preview on Control.
 function UI.drawNpcLists()
     local current, fullName = runtime.npcZone()
@@ -12135,10 +12174,11 @@ function UI.drawNpcLists()
         runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
         ImGui.OpenPopup('NpcListImport')
     end
-    if runtime.npcListMessage then ImGui.TextWrapped(runtime.npcListMessage) end
+    UI.drawNpcMessage()
     if ImGui.BeginPopup('NpcListImport') then
         ImGui.TextWrapped('Place the shared JSON file in your MQ config folder. Import uses the zone recorded inside the file.')
-        ImGui.TextWrapped(mq.configDir)
+        UI.drawNpcText(mq.configDir)
+        if ImGui.SmallButton('Copy Folder Path##npcCopyFolder') then ImGui.SetClipboardText(mq.configDir) end
         ImGui.SetNextItemWidth(UI.px(320))
         if ImGui.BeginCombo('Saved files##npcImportFiles', runtime.npcImportFilename or 'Choose a JSON file') then
             for _, fileName in ipairs(runtime.npcImportFiles or {}) do
@@ -12154,7 +12194,7 @@ function UI.drawNpcLists()
             runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
         end
         if runtime.npcImportFilesError then ImGui.TextWrapped(runtime.npcImportFilesError) end
-        if #(runtime.npcImportFiles or {}) == 0 then ImGui.TextWrapped('No JSON files found. Copy your friend\'s file into the folder above, then Refresh.') end
+        if not runtime.npcImportFilesError and #(runtime.npcImportFiles or {}) == 0 then ImGui.TextWrapped('No JSON files found. Copy your friend\'s file into the folder above, then Refresh.') end
         ImGui.SetNextItemWidth(UI.px(320))
         local filename, changed = ImGui.InputText('File##npcImportFilename', runtime.npcImportFilename or '')
         runtime.npcImportFilename = filename
@@ -12173,7 +12213,7 @@ function UI.drawNpcLists()
                 if ok then ImGui.CloseCurrentPopup() end
             end
         end
-        if runtime.npcListMessage then ImGui.TextWrapped(runtime.npcListMessage) end
+        if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
         if ImGui.Button('Cancel##npcImportCancel') then ImGui.CloseCurrentPopup() end
         ImGui.EndPopup()
     end

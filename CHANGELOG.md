@@ -2,6 +2,8 @@
 
 ## 2026-10-11 — Morte.9 test
 
+- **Edited By: NeroMorte — Remove the file picker's LuaFileSystem dependency** after a Windows game test found it absent. Use the existing core browser's built-in Windows listing pattern with a guarded MQ folder, show concise failures, and wrap long paths by measured character widths with full-path Copy buttons.
+
 - **Edited By: NeroMorte — Make file actions visible in chat and offer an Import file picker**, covering other zones' exports and friends' JSON files in MQ config. Refresh the file list on opening or request; preview the recorded zone/counts before applying. Test installer updates use fast-forward only and back up the current revision/settings.
 
 - **Edited By: NeroMorte — Add per-zone Attack/Pull and Ignore lists on Control**, with a compact saved-zone selector showing counts. Global entries remain intact; actual current-zone additions apply automatically. Ignore takes precedence, and existing Puller include matching and Manual/Assist targeting rules stay intact. Inspired by thezerodivide's Global + zone design, adapted to this fork's per-character settings.
