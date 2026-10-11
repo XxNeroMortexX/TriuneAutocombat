@@ -16,7 +16,7 @@ for _, name in ipairs({ 'npcZone', 'npcList', 'npcHas', 'npcNames', 'npcZoneStor
     'npcJsonQuote', 'npcJsonExport', 'npcJsonRead', 'npcSharePath', 'npcExport', 'npcPreview', 'npcImport',
     'npcAdd', 'npcRemove', 'npcNotify', 'npcShareFiles', 'npcWrapText' }) do install(name) end
 -- Browser requires no installed Lua module and closes the built-in listing pipe.
-local entries = { 'friend-sro.json', 'triune_npc_lists_guktop.json', 'bad..json', 'notes.txt' }
+local entries = { 'friend-sro.json', 'Friend Raid.JSON', 'triune_npc_lists_guktop.json', 'bad..json', 'notes.txt' }
 local closed, command = 0, nil
 local originalIo = io
 local fakeIo = setmetatable({ popen = function(cmd)
@@ -29,7 +29,7 @@ end }, { __index = originalIo })
 env.io, env.package = fakeIo, { config = '\\' }
 env.require = function() error('No optional modules installed') end
 local choices = assert(runtime.npcShareFiles())
-assert(#choices == 2 and choices[1] == 'friend-sro.json' and choices[2] == 'triune_npc_lists_guktop.json')
+assert(#choices == 3 and choices[1] == 'Friend Raid.JSON' and choices[2] == 'friend-sro.json' and choices[3] == 'triune_npc_lists_guktop.json')
 assert(closed == 1 and command:find('dir /b /a-d', 1, true))
 local originalDir = mq.configDir
 mq.configDir = 'C:\\unsafe%PATH%'
@@ -89,6 +89,36 @@ assert(not runtime.npcSharePath('../evil.json') and not runtime.npcSharePath('C:
 assert(not runtime.npcSharePath('bad.lua'))
 assert(runtime.npcExport('sro'))
 assert(not runtime.npcExport('sro')) -- Never silently overwrite an earlier export.
+local exportPath = mq.configDir .. '/triune_npc_lists_sro.json'
+local function readExport()
+    local f = assert(io.open(exportPath, 'rb')); local text = f:read('*a'); f:close(); return text
+end
+local originalExport = readExport()
+local oldAttack, oldIgnore = runtime.zonePull.sro, runtime.zoneIgnore.sro
+runtime.zonePull.sro, runtime.zoneIgnore.sro = { 'fresh' }, {}
+assert(runtime.npcExport('sro', 'merge'))
+local mergedExport = assert(runtime.npcJsonRead(readExport()))
+assert(#mergedExport.attack == 3 and #mergedExport.ignore == 1)
+assert(#runtime.zonePull.sro == 1 and runtime.zonePull.sro[1] == 'fresh' and #runtime.zoneIgnore.sro == 0)
+assert(runtime.npcExport('sro', 'replace'))
+local replacedExport = assert(runtime.npcJsonRead(readExport()))
+assert(#replacedExport.attack == 1 and replacedExport.attack[1] == 'fresh' and #replacedExport.ignore == 0)
+local beforeFailure = readExport()
+env.os = setmetatable({ rename = function(from, to)
+    if from:sub(-4) == '.tmp' then return nil, 'Injected replacement failure' end
+    return os.rename(from, to)
+end }, { __index = os })
+assert(not runtime.npcExport('sro', 'replace'))
+assert(readExport() == beforeFailure) -- Original export restored after install failure.
+env.os = os
+local backup = assert(io.open(exportPath .. '.bak.1', 'rb'))
+assert(backup:read('*a') == originalExport); backup:close()
+local existingTemp = assert(io.open(exportPath .. '.tmp', 'wb')); existingTemp:write('preserve me'); existingTemp:close()
+assert(not runtime.npcExport('sro', 'replace') and readExport() == beforeFailure)
+os.remove(exportPath .. '.tmp')
+runtime.zonePull.sro, runtime.zoneIgnore.sro = oldAttack, oldIgnore
+local restore = assert(io.open(exportPath, 'wb')); restore:write(originalExport); restore:close()
+
 runtime.zonePull.sro = { 'existing' }
 assert(runtime.npcPreview('triune_npc_lists_sro.json'))
 assert(runtime.npcImport(false))
@@ -150,9 +180,9 @@ assert(runtime.npcEditZone == 'sro' and runtime.isPullAllowed('a frog'))
 current = 'sro'; env.UI.drawNpcLists()
 assert(runtime.npcEditZone == 'sro' and ended == 6)
 clickExport = true; env.UI.drawNpcLists()
-assert(#chats == 1 and chats[1]:find('File already exists', 1, true))
+assert(#chats == 0 and runtime.npcExportZone == 'sro')
 runtime.npcNotify(true, 'Exported to test.json')
-assert(#chats == 2 and chats[2]:find('Exported to test.json', 1, true))
+assert(#chats == 1 and chats[1]:find('Exported to test.json', 1, true))
 drawn = {}; env.UI.drawNpcText(longPath)
 assert(table.concat(drawn) == longPath)
 for _, line in ipairs(drawn) do assert(#line <= 120) end
@@ -160,6 +190,7 @@ runtime.npcListPath = longPath
 imgui.SmallButton = function(label) return label == 'Copy Export Path##npcCopyExportPath' end
 env.UI.drawNpcMessage()
 assert(copied == longPath)
-os.remove(runtime.loadoutFilePath()); os.remove(mq.configDir .. '/triune_npc_lists_sro.json')
+os.remove(runtime.loadoutFilePath()); os.remove(exportPath)
+os.remove(exportPath .. '.bak.1'); os.remove(exportPath .. '.bak.2')
 assert(os.execute('rmdir "' .. mq.configDir .. '"') == 0)
 print('PASS: zone isolation, Global compatibility, include/ignore precedence, safe JSON, merge/replace and save/reload')

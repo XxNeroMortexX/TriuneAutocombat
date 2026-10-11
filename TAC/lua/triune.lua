@@ -2526,10 +2526,10 @@ function runtime.npcJsonQuote(s)
     end) .. '"'
 end
 
-function runtime.npcJsonExport(zone)
+function runtime.npcJsonExport(zone, data)
     local function array(kind)
         local out = {}
-        for _, name in ipairs(runtime.npcList(kind, zone) or {}) do out[#out + 1] = runtime.npcJsonQuote(name) end
+        for _, name in ipairs((data and data[kind]) or runtime.npcList(kind, zone) or {}) do out[#out + 1] = runtime.npcJsonQuote(name) end
         return '[' .. table.concat(out, ', ') .. ']'
     end
     return '{\n  "format": "triune-npc-lists",\n  "version": 1,\n  "zone": ' .. runtime.npcJsonQuote(zone)
@@ -2627,7 +2627,7 @@ function runtime.npcJsonRead(text)
 end
 
 function runtime.npcSharePath(filename)
-    if type(filename) ~= 'string' or #filename > 150 or not filename:match('^[%w_%-%.]+%.json$') or filename:find('..', 1, true) then
+    if type(filename) ~= 'string' or #filename > 150 or not filename:lower():match('%.json$') or filename:find('[\\/:"<>|?*%c]') or filename:find('..', 1, true) then
         return nil, 'Use a simple .json filename in the MQ config folder.'
     end
     return mq.configDir .. '/' .. filename
@@ -2679,19 +2679,69 @@ function runtime.npcWrapText(text, width, measure)
     return lines
 end
 
-function runtime.npcExport(zone)
+-- Edited By: NeroMorte - Re-export offers Merge/Replace/Cancel, with rollback.
+function runtime.npcExport(zone, mode)
     if not zone then return false, 'Select a zone first.' end
+    if mode and mode ~= 'merge' and mode ~= 'replace' then return false, 'Choose Merge, Replace or Cancel.' end
     local filename = 'triune_npc_lists_' .. zone .. '.json'
     local path = assert(runtime.npcSharePath(filename))
     runtime.npcListPath = path
     local existing = io.open(path, 'rb')
-    if existing then existing:close(); return false, 'File already exists: ' .. filename .. '. Rename it before exporting again.' end
-    local f, err = io.open(path, 'wb')
+    local exists = existing ~= nil
+    local previous
+    if existing then
+        if mode == 'merge' then previous = existing:read(1048577) end
+        existing:close()
+        if not mode then return false, 'File already exists. Choose Merge, Replace or Cancel.', 'exists' end
+    end
+    local data
+    if exists and mode == 'merge' then
+        local err
+        data, err = runtime.npcJsonRead(previous or '')
+        if not data then return false, 'Cannot merge: ' .. tostring(err) end
+        if data.zone ~= zone then return false, 'Cannot merge a different zone into this export.' end
+        for _, kind in ipairs({ 'attack', 'ignore' }) do
+            local names, seen = {}, {}
+            for _, list in ipairs({ data[kind], runtime.npcList(kind, zone) or {} }) do
+                for _, name in ipairs(list) do
+                    if not seen[name] then seen[name] = true; names[#names + 1] = name end
+                end
+            end
+            data[kind], err = runtime.npcNames(names)
+            if not data[kind] then return false, err end
+        end
+    end
+    local tmp = path .. '.tmp'
+    local left = io.open(tmp, 'rb')
+    if left then left:close(); return false, 'An earlier temporary export needs inspection: ' .. tmp end
+    local f, err = io.open(tmp, 'wb')
     if not f then return false, tostring(err) end
-    local ok, writeErr = f:write(runtime.npcJsonExport(zone))
+    local ok, writeErr = f:write(runtime.npcJsonExport(zone, data))
     local closed, closeErr = f:close()
-    if not ok or not closed then os.remove(path); return false, tostring(writeErr or closeErr) end
-    return true, 'Exported to ' .. path
+    if not ok or not closed then os.remove(tmp); return false, tostring(writeErr or closeErr) end
+    local backup
+    if exists then
+        for i = 1, 100 do
+            local candidate = path .. '.bak.' .. i
+            local probe = io.open(candidate, 'rb')
+            if probe then probe:close() else backup = candidate; break end
+        end
+        if not backup then os.remove(tmp); return false, 'Export backup limit reached; no file changed.' end
+        local moved
+        moved, err = os.rename(path, backup)
+        if not moved then os.remove(tmp); return false, 'Could not back up existing export: ' .. tostring(err) end
+    end
+    local moved
+    moved, err = os.rename(tmp, path)
+    if not moved then
+        if backup then
+            local restored = os.rename(backup, path)
+            if not restored then return false, 'Export failed; previous file is preserved at ' .. backup end
+        end
+        os.remove(tmp)
+        return false, 'Export failed: ' .. tostring(err)
+    end
+    return true, (exists and (mode == 'merge' and 'Merged export to ' or 'Replaced export at ') or 'Exported to ') .. path
 end
 
 function runtime.npcPreview(filename)
@@ -2704,7 +2754,7 @@ function runtime.npcPreview(filename)
     local data; data, err = runtime.npcJsonRead(text or '')
     if not data then return false, err end
     runtime.npcImportPreview = data
-    return true, string.format('%s: Attack %d / Ignore %d', data.zone, #data.attack, #data.ignore)
+    return true, string.format('Preview ready: %s — Attack %d / Ignore %d. No lists changed.', data.zone, #data.attack, #data.ignore)
 end
 
 function runtime.npcImport(replace)
@@ -12165,7 +12215,11 @@ function UI.drawNpcLists()
     end
     ImGui.TextWrapped('Include limits Puller auto-pulls; empty Global and zone Include lists allow all mobs. Ignore filters Hunter/Puller auto-targets. Manual/Assist targets keep their existing rules.')
     if ImGui.SmallButton('Export Zone##npcExport') then
-        local ok, msg = runtime.npcExport(selected); runtime.npcNotify(ok, msg)
+        local ok, msg, state = runtime.npcExport(selected)
+        if state == 'exists' then
+            runtime.npcExportZone = selected
+            ImGui.OpenPopup('NpcExportExists')
+        else runtime.npcNotify(ok, msg) end
     end
     ImGui.SameLine()
     if ImGui.SmallButton('Import Zone##npcImport') then
@@ -12175,6 +12229,24 @@ function UI.drawNpcLists()
         ImGui.OpenPopup('NpcListImport')
     end
     UI.drawNpcMessage()
+    if ImGui.BeginPopup('NpcExportExists') then
+        local zone = runtime.npcExportZone
+        ImGui.Text('Export already exists for ' .. tostring(zone))
+        UI.drawNpcText(runtime.npcListPath)
+        ImGui.TextWrapped('Merge adds your selected zone lists to the existing export without duplicates. Replace writes only your current lists. Your in-game lists are not changed.')
+        for _, mode in ipairs({ 'merge', 'replace' }) do
+            if mode == 'replace' then ImGui.SameLine() end
+            if ImGui.Button((mode == 'merge' and 'Merge' or 'Replace') .. '##npcExportChoice') then
+                local ok, msg = runtime.npcExport(zone, mode)
+                runtime.npcNotify(ok, msg)
+                if ok then ImGui.CloseCurrentPopup() end
+            end
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Cancel##npcExportCancel') then ImGui.CloseCurrentPopup() end
+        if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
+        ImGui.EndPopup()
+    end
     if ImGui.BeginPopup('NpcListImport') then
         ImGui.TextWrapped('Place the shared JSON file in your MQ config folder. Import uses the zone recorded inside the file.')
         UI.drawNpcText(mq.configDir)
@@ -12205,6 +12277,16 @@ function UI.drawNpcLists()
         local data = runtime.npcImportPreview
         if data then
             ImGui.Text(string.format('%s — Attack %d / Ignore %d', data.zone, #data.attack, #data.ignore))
+            ImGui.TextDisabled('Preview only: nothing has been imported yet.')
+            if ImGui.BeginChild('NpcListPreviewEntries', UI.px(340), UI.px(95), true) then
+                for _, kind in ipairs({ 'attack', 'ignore' }) do
+                    ImGui.TextUnformatted(kind == 'attack' and 'Attack:' or 'Ignore:')
+                    if #data[kind] == 0 then ImGui.TextDisabled('(empty)') end
+                    for i = 1, math.min(3, #data[kind]) do ImGui.TextUnformatted(data[kind][i]) end
+                    if #data[kind] > 3 then ImGui.TextDisabled('+' .. (#data[kind] - 3) .. ' more') end
+                end
+            end
+            ImGui.EndChild()
             runtime.npcImportReplace = ImGui.Checkbox('Replace existing lists (default: Merge)', runtime.npcImportReplace == true)
             if runtime.npcImportReplace then ImGui.TextWrapped('Replace clears both existing lists for this scope before importing, including empty lists.') end
             if ImGui.Button(runtime.npcImportReplace and 'Replace Lists##npcApply' or 'Merge Lists##npcApply') then
