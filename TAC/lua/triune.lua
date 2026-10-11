@@ -660,6 +660,9 @@ local runtime = {
     pendingCursorClearAt = nil,
     ignoreList = {},
     pullList = {},
+    -- Edited By: NeroMorte - Per-character zone additions; legacy lists remain Global.
+    zoneIgnore = {},
+    zonePull = {},
     -- Per-spawn XTarget overrides set from the Extended Target window
     -- (session-only: spawn ids are transient). xtForceId is the one mob the
     -- engine stays on until it dies; xtIgnoreIds is a set of spawn ids the
@@ -2451,17 +2454,372 @@ local function isUnreachable(id)
     return true
 end
 
+-- Edited By: NeroMorte - Global + zone lists follow thezerodivide's design;
+-- saved-zone browsing and non-executable sharing are implemented for this fork.
+function runtime.npcZone()
+    local zs, zn
+    pcall(function() zs = mq.TLO.Zone.ShortName() end)
+    pcall(function() zn = mq.TLO.Zone.Name() end)
+    if type(zs) ~= 'string' or not zs:match('^[%w_%-]+$') or zs == 'NULL' then return nil end
+    return zs:lower(), zn
+end
+
+function runtime.npcList(kind, zone, create)
+    if not zone or zone == 'global' then return kind == 'attack' and runtime.pullList or runtime.ignoreList end
+    local store = kind == 'attack' and runtime.zonePull or runtime.zoneIgnore
+    if create and not store[zone] then store[zone] = {} end
+    return store[zone]
+end
+
+function runtime.npcHas(list, name)
+    for _, n in ipairs(list or {}) do if n == name then return true end end
+    return false
+end
+
+function runtime.npcNames(list)
+    if type(list) ~= 'table' then return nil, 'Expected an array of NPC names.' end
+    local out, seen, count = {}, {}, 0
+    for k, name in pairs(list) do
+        if type(k) ~= 'number' or k < 1 or k % 1 ~= 0 or k > #list then return nil, 'Expected a dense name array.' end
+        if type(name) ~= 'string' or #name > 200 or name:find('%c') then return nil, 'Invalid NPC name.' end
+        name = name:match('^%s*(.-)%s*$')
+        if name == '' then return nil, 'Empty NPC name.' end
+        count = count + 1
+        if count > 2000 then return nil, 'Too many NPC names (maximum 2000 per list).' end
+        if not seen[name] then out[#out + 1] = name; seen[name] = true end
+    end
+    if count ~= #list then return nil, 'Expected a dense name array.' end
+    table.sort(out)
+    return out
+end
+
+function runtime.npcZoneStores(store)
+    local out = {}
+    for zone, names in pairs(type(store) == 'table' and store or {}) do
+        if type(zone) == 'string' and zone ~= 'global' and zone:match('^[%w_%-]+$') then
+            local valid = runtime.npcNames(names)
+            if valid then out[zone:lower()] = valid end
+        end
+    end
+    return out
+end
+
+function runtime.npcZoneOptions()
+    local current = runtime.npcZone()
+    local seen, out = { global = true }, { 'global' }
+    if current then seen[current] = true; out[#out + 1] = current end
+    local saved = {}
+    for _, store in ipairs({ runtime.zonePull, runtime.zoneIgnore }) do
+        for zone in pairs(store) do
+            if not seen[zone] then seen[zone] = true; saved[#saved + 1] = zone end
+        end
+    end
+    table.sort(saved)
+    for _, zone in ipairs(saved) do out[#out + 1] = zone end
+    return out
+end
+
+function runtime.npcJsonQuote(s)
+    return '"' .. s:gsub('[%z\1-\31\\"]', function(c)
+        if c == '\\' or c == '"' then return '\\' .. c end
+        return string.format('\\u%04x', c:byte())
+    end) .. '"'
+end
+
+function runtime.npcJsonExport(zone, data)
+    local function array(kind)
+        local out = {}
+        for _, name in ipairs((data and data[kind]) or runtime.npcList(kind, zone) or {}) do out[#out + 1] = runtime.npcJsonQuote(name) end
+        return '[' .. table.concat(out, ', ') .. ']'
+    end
+    return '{\n  "format": "triune-npc-lists",\n  "version": 1,\n  "zone": ' .. runtime.npcJsonQuote(zone)
+        .. ',\n  "attack": ' .. array('attack') .. ',\n  "ignore": ' .. array('ignore') .. '\n}\n'
+end
+
+-- Created By: NeroMorte - Bounded JSON reader for list files. No load/loadfile/eval.
+function runtime.npcJsonRead(text)
+    if type(text) ~= 'string' or #text > 1048576 then return nil, 'List file exceeds 1 MiB.' end
+    if text:sub(1, 3) == '\239\187\191' then text = text:sub(4) end
+    local pos, nodes, shapes = 1, 0, {}
+    local function skip() local _, last = text:find('^%s*', pos); pos = (last or pos - 1) + 1 end
+    local function fail() error('Invalid list JSON near byte ' .. pos, 0) end
+    local function utf8code(code)
+        if code < 128 then return string.char(code) end
+        if code < 2048 then return string.char(192 + math.floor(code / 64), 128 + code % 64) end
+        if code < 65536 then return string.char(224 + math.floor(code / 4096), 128 + math.floor(code / 64) % 64, 128 + code % 64) end
+        return string.char(240 + math.floor(code / 262144), 128 + math.floor(code / 4096) % 64, 128 + math.floor(code / 64) % 64, 128 + code % 64)
+    end
+    local function hex()
+        local h = text:sub(pos, pos + 3)
+        if #h ~= 4 or not h:match('^%x%x%x%x$') then fail() end
+        pos = pos + 4
+        return tonumber(h, 16)
+    end
+    local function str()
+        if text:sub(pos, pos) ~= '"' then fail() end
+        pos = pos + 1
+        local out = {}
+        while pos <= #text do
+            local c = text:sub(pos, pos); pos = pos + 1
+            if c == '"' then return table.concat(out) end
+            if c:byte() < 32 then fail() end
+            if c == '\\' then
+                c = text:sub(pos, pos); pos = pos + 1
+                local escapes = { ['"'] = '"', ['\\'] = '\\', ['/'] = '/', b = '\b', f = '\f', n = '\n', r = '\r', t = '\t' }
+                if c == 'u' then
+                    local code = hex()
+                    if code >= 0xd800 and code <= 0xdbff then
+                        if text:sub(pos, pos + 1) ~= '\\u' then fail() end
+                        pos = pos + 2
+                        local low = hex()
+                        if low < 0xdc00 or low > 0xdfff then fail() end
+                        code = 0x10000 + (code - 0xd800) * 1024 + low - 0xdc00
+                    elseif code >= 0xdc00 and code <= 0xdfff then fail() end
+                    c = utf8code(code)
+                else c = escapes[c]; if not c then fail() end end
+            end
+            out[#out + 1] = c
+        end
+        fail()
+    end
+    local parse
+    parse = function(depth)
+        nodes = nodes + 1
+        if depth > 4 or nodes > 4100 then fail() end
+        skip()
+        local c = text:sub(pos, pos)
+        if c == '"' then return str() end
+        if c == '{' or c == '[' then
+            local obj, isObj, seen = {}, c == '{', {}
+            shapes[obj] = isObj and 'object' or 'array'
+            pos = pos + 1; skip()
+            local close = isObj and '}' or ']'
+            if text:sub(pos, pos) == close then pos = pos + 1; return obj end
+            while true do
+                skip()
+                local key = #obj + 1
+                if isObj then
+                    key = str(); skip()
+                    if seen[key] or text:sub(pos, pos) ~= ':' then fail() end
+                    seen[key] = true; pos = pos + 1
+                end
+                obj[key] = parse(depth + 1); skip()
+                c = text:sub(pos, pos); pos = pos + 1
+                if c == close then return obj end
+                if c ~= ',' then fail() end
+            end
+        end
+        if text:sub(pos, pos) == '1' then pos = pos + 1; return 1 end
+        fail()
+    end
+    local ok, data = pcall(function() local v = parse(0); skip(); if pos <= #text then fail() end; return v end)
+    if not ok then return nil, data end
+    if type(data) ~= 'table' or data.format ~= 'triune-npc-lists' or data.version ~= 1 then return nil, 'Not a Triune NPC list version 1 file.' end
+    for key in pairs(data) do
+        if key ~= 'format' and key ~= 'version' and key ~= 'zone' and key ~= 'attack' and key ~= 'ignore' then return nil, 'Unknown list field: ' .. tostring(key) end
+    end
+    if type(data.zone) ~= 'string' or #data.zone > 80 or not data.zone:match('^[%w_%-]+$') or data.zone == 'NULL' then return nil, 'Invalid zone short name.' end
+    if shapes[data.attack] ~= 'array' or shapes[data.ignore] ~= 'array' then return nil, 'Attack and Ignore must be arrays.' end
+    local attack, ae = runtime.npcNames(data.attack)
+    local ignore, ie = runtime.npcNames(data.ignore)
+    if not attack or not ignore then return nil, ae or ie end
+    return { zone = data.zone:lower(), attack = attack, ignore = ignore }
+end
+
+function runtime.npcSharePath(filename)
+    if type(filename) ~= 'string' or #filename > 150 or not filename:lower():match('%.json$') or filename:find('[\\/:"<>|?*%c]') or filename:find('..', 1, true) then
+        return nil, 'Use a simple .json filename in the MQ config folder.'
+    end
+    -- Edited By: NeroMorte - Keep saved/displayed/copied Windows paths consistent.
+    local separator = package.config and package.config:sub(1, 1) or '/'
+    local folder = mq.configDir
+    if separator == '\\' then folder = folder:gsub('/', '\\') end
+    return folder:gsub('[/\\]+$', '') .. separator .. filename
+end
+
+-- Created By: NeroMorte - Report file actions in chat as well as the Control tab.
+function runtime.npcNotify(ok, message)
+    runtime.npcListMessage = message
+    print((ok and '\ag' or '\ay') .. '[Triune Lists]\ax ' .. tostring(message))
+end
+
+-- Edited By: NeroMorte - Use Windows' built-in directory listing, as the existing
+-- plugin browser does, without depending on an installed LuaFileSystem module.
+function runtime.npcShareFiles()
+    local files = {}
+    local isWin = package.config and package.config:sub(1, 1) == '\\'
+    if not isWin then return files, 'Enter the JSON filename below.' end
+    local dir = tostring(mq.configDir or ''):gsub('/', '\\')
+    -- The folder comes from MQ, never from the import filename. Refuse shell
+    -- expansion characters before placing it inside a quoted directory query.
+    if dir == '' or dir:find('["%%!&|<>^%c]') then
+        return files, 'Cannot browse this folder. Enter the JSON filename below.'
+    end
+    local pipe
+    local ok = pcall(function()
+        pipe = io.popen('dir /b /a-d "' .. dir .. '\\*.json" 2>nul')
+        if not pipe then error('Directory listing unavailable') end
+        for filename in pipe:lines() do
+            if #files < 250 and runtime.npcSharePath(filename) then files[#files + 1] = filename end
+        end
+    end)
+    if pipe then pcall(function() pipe:close() end) end
+    if not ok then return {}, 'Cannot browse files. Enter the JSON filename below.' end
+    table.sort(files, function(a, b) return a:lower() < b:lower() end)
+    return files
+end
+
+-- Created By: NeroMorte - Break even a long path token at measured character
+-- boundaries. Display-only line breaks never change the original copied path.
+function runtime.npcWrapText(text, width, measure)
+    local lines, line = {}, ''
+    for ch in tostring(text or ''):gmatch('[%z\1-\127\194-\244][\128-\191]*') do
+        if ch == '\n' then lines[#lines + 1] = line; line = ''
+        elseif line ~= '' and measure(line .. ch) > width then
+            lines[#lines + 1] = line; line = ch
+        else line = line .. ch end
+    end
+    lines[#lines + 1] = line
+    return lines
+end
+
+-- Edited By: NeroMorte - Re-export offers Merge/Replace/Cancel, with rollback.
+function runtime.npcExport(zone, mode)
+    if not zone then return false, 'Select a zone first.' end
+    if mode and mode ~= 'merge' and mode ~= 'replace' then return false, 'Choose Merge, Replace or Cancel.' end
+    local filename = 'triune_npc_lists_' .. zone .. '.json'
+    local path = assert(runtime.npcSharePath(filename))
+    runtime.npcListPath = path
+    local existing = io.open(path, 'rb')
+    local exists = existing ~= nil
+    local previous
+    if existing then
+        if mode == 'merge' then previous = existing:read(1048577) end
+        existing:close()
+        if not mode then return false, 'File already exists. Choose Merge, Replace or Cancel.', 'exists' end
+    end
+    local data
+    if exists and mode == 'merge' then
+        local err
+        data, err = runtime.npcJsonRead(previous or '')
+        if not data then return false, 'Cannot merge: ' .. tostring(err) end
+        if data.zone ~= zone then return false, 'Cannot merge a different zone into this export.' end
+        for _, kind in ipairs({ 'attack', 'ignore' }) do
+            local names, seen = {}, {}
+            for _, list in ipairs({ data[kind], runtime.npcList(kind, zone) or {} }) do
+                for _, name in ipairs(list) do
+                    if not seen[name] then seen[name] = true; names[#names + 1] = name end
+                end
+            end
+            data[kind], err = runtime.npcNames(names)
+            if not data[kind] then return false, err end
+        end
+    end
+    local tmp = path .. '.tmp'
+    local left = io.open(tmp, 'rb')
+    if left then left:close(); return false, 'An earlier temporary export needs inspection: ' .. tmp end
+    local f, err = io.open(tmp, 'wb')
+    if not f then return false, tostring(err) end
+    local ok, writeErr = f:write(runtime.npcJsonExport(zone, data))
+    local closed, closeErr = f:close()
+    if not ok or not closed then os.remove(tmp); return false, tostring(writeErr or closeErr) end
+    local backup
+    if exists then
+        for i = 1, 100 do
+            local candidate = path .. '.bak.' .. i
+            local probe = io.open(candidate, 'rb')
+            if probe then probe:close() else backup = candidate; break end
+        end
+        if not backup then os.remove(tmp); return false, 'Export backup limit reached; no file changed.' end
+        local moved
+        moved, err = os.rename(path, backup)
+        if not moved then os.remove(tmp); return false, 'Could not back up existing export: ' .. tostring(err) end
+    end
+    local moved
+    moved, err = os.rename(tmp, path)
+    if not moved then
+        if backup then
+            local restored = os.rename(backup, path)
+            if not restored then return false, 'Export failed; previous file is preserved at ' .. backup end
+        end
+        os.remove(tmp)
+        return false, 'Export failed: ' .. tostring(err)
+    end
+    return true, (exists and (mode == 'merge' and 'Merged export to ' or 'Replaced export at ') or 'Exported to ') .. path
+end
+
+function runtime.npcPreview(filename)
+    runtime.npcImportPreview = nil
+    runtime.npcImportFile = nil
+    local path, err = runtime.npcSharePath(filename)
+    if not path then return false, err end
+    local f; f, err = io.open(path, 'rb')
+    if not f then return false, tostring(err) end
+    local text = f:read(1048577); f:close()
+    local data; data, err = runtime.npcJsonRead(text or '')
+    if not data then return false, err end
+    runtime.npcImportPreview = data
+    runtime.npcImportFile = { filename = filename, contents = text }
+    return true, string.format('Preview ready: %s — Attack %d / Ignore %d. No lists changed.', data.zone, #data.attack, #data.ignore)
+end
+
+-- Created By: NeroMorte - Only remove the exact sharing file that was previewed.
+function runtime.npcRemoveImportedFile(meta)
+    if not meta then return false, 'Sharing file kept: no file was selected.' end
+    local path = runtime.npcSharePath(meta.filename)
+    if not path then return false, 'Sharing file kept: invalid filename.' end
+    local f = io.open(path, 'rb')
+    if not f then return false, 'Sharing file could not be reopened for removal.' end
+    local current = f:read(1048577); f:close()
+    if current ~= meta.contents then return false, 'Sharing file changed since Preview; kept it.' end
+    local removed = os.remove(path)
+    if not removed then return false, 'Sharing file could not be removed; it remains in Config.' end
+    return true, 'Sharing JSON file removed.'
+end
+
+function runtime.npcImport(replace, removeFile)
+    local data = runtime.npcImportPreview
+    if not data then return false, 'Preview a file first.' end
+    local function combined(kind)
+        local list = {}
+        if not replace then for _, name in ipairs(runtime.npcList(kind, data.zone) or {}) do list[#list + 1] = name end end
+        for _, name in ipairs(data[kind]) do list[#list + 1] = name end
+        -- Limit the result, not the temporary array containing duplicates.
+        local seen, unique = {}, {}
+        for _, name in ipairs(list) do if not seen[name] then seen[name] = true; unique[#unique + 1] = name end end
+        return runtime.npcNames(unique)
+    end
+    local attack, ae = combined('attack'); local ignore, ie = combined('ignore')
+    if not attack or not ignore then return false, ae or ie end
+    local beforeAttack, beforeIgnore = runtime.npcList('attack', data.zone), runtime.npcList('ignore', data.zone)
+    if data.zone == 'global' then runtime.pullList = attack; runtime.ignoreList = ignore
+    else runtime.zonePull[data.zone] = attack; runtime.zoneIgnore[data.zone] = ignore end
+    if not runtime.saveLoadout(true, true) then
+        if data.zone == 'global' then runtime.pullList = beforeAttack; runtime.ignoreList = beforeIgnore
+        else runtime.zonePull[data.zone] = beforeAttack; runtime.zoneIgnore[data.zone] = beforeIgnore end
+        return false, 'Could not save imported lists; existing lists restored in memory.'
+    end
+    runtime.npcEditZone = data.zone
+    runtime.npcImportPreview = nil
+    local file = runtime.npcImportFile
+    runtime.npcImportFile = nil
+    local message = (replace and 'Replaced' or 'Merged') .. ' lists for ' .. data.zone .. '.'
+    if removeFile then
+        local _, removalMessage = runtime.npcRemoveImportedFile(file)
+        message = message .. ' ' .. removalMessage
+    end
+    return true, message
+end
+
 -- ignore-list helpers: applies only to Hunter/Puller AUTO-targeting (see findRoamTarget
 -- below); Assist and anything you target yourself are never filtered.
+-- Edited By: NeroMorte - Ignore wins across Global and the actual current zone.
 local function isIgnored(name)
-    if not name then return false end
+    if not name or tostring(name) == '' then return false end
     local cleanName = tostring(name)
-    if cleanName == '' then return false end
-    if not runtime.ignoreList then return false end
-    for _, n in ipairs(runtime.ignoreList) do
-        if tostring(n) == cleanName then return true end
-    end
-    return false
+    local zone = runtime.npcZone()
+    return runtime.npcHas(runtime.ignoreList, cleanName)
+        or (zone ~= nil and runtime.npcHas(runtime.npcList('ignore', zone), cleanName))
 end
 
 -- Returns true if the spawn ID belongs to the player, their pet, any group member,
@@ -5479,6 +5837,9 @@ function runtime.loadAll()
     ALLDATA = t
     if type(ALLDATA.__ignore) == 'table' then runtime.ignoreList = ALLDATA.__ignore end
     if type(ALLDATA.__pullList) == 'table' then runtime.pullList = ALLDATA.__pullList end
+    -- Edited By: NeroMorte - Validate zone additions while preserving legacy Global entries.
+    runtime.zoneIgnore = runtime.npcZoneStores(ALLDATA.__zoneIgnore)
+    runtime.zonePull = runtime.npcZoneStores(ALLDATA.__zonePull)
     if type(ALLDATA.__zoneHazards) == 'table' then ctrl.zone_hazards = ALLDATA.__zoneHazards end
     if type(ALLDATA.__zoneWaypoints) == 'table' then ctrl.zone_waypoints = ALLDATA.__zoneWaypoints end
     if type(ALLDATA.__zoneWaypointPresets) == 'table' then ctrl.zone_waypoint_presets = ALLDATA.__zoneWaypointPresets end
@@ -5514,7 +5875,7 @@ runtime.saveLoadout = function(silent, force)
     if silent and not force and runtime.lastSaveAt and (nowSave - runtime.lastSaveAt) < 0.5 then
         runtime.autoDirty = true
         runtime.autoDirtyAt = nowSave
-        return
+        return false
     end
     runtime.lastSaveAt = nowSave
     if runtime.pluginManager and runtime.pluginManager.collectSettings then
@@ -5523,6 +5884,9 @@ runtime.saveLoadout = function(silent, force)
     if myName then ALLDATA[myName] = runtime.collectEntry() end
     ALLDATA.__ignore = runtime.ignoreList
     ALLDATA.__pullList = runtime.pullList
+    -- Edited By: NeroMorte - Keep zone lists in the existing per-character save.
+    ALLDATA.__zoneIgnore = runtime.zoneIgnore
+    ALLDATA.__zonePull = runtime.zonePull
     ALLDATA.__zoneHazards = ctrl.zone_hazards
     runtime.syncCurrentZoneWaypoints()
     ALLDATA.__zoneWaypoints = ctrl.zone_waypoints
@@ -5532,7 +5896,7 @@ runtime.saveLoadout = function(silent, force)
     local path = runtime.loadoutFilePath()
     local tmpPath = path .. '.tmp'
     local f = io.open(tmpPath, 'w')
-    if not f then return end
+    if not f then return false end
     local okWrite, werr = pcall(function()
         f:write('return '); serialize(ALLDATA, f, 1)
     end)
@@ -5540,7 +5904,7 @@ runtime.saveLoadout = function(silent, force)
     if not okWrite then
         os.remove(tmpPath)
         print('\ar[Triune]\ax failed to save loadout: ' .. tostring(werr))
-        return
+        return false
     end
     -- os.rename won't overwrite on Windows, so drop the old file first; if that
     -- fails leave the temp file in place rather than losing the save.
@@ -5548,53 +5912,66 @@ runtime.saveLoadout = function(silent, force)
     local okMove, merr = os.rename(tmpPath, path)
     if not okMove then
         print('\ar[Triune]\ax failed to replace loadout file: ' .. tostring(merr))
-        return
+        return false
     end
     if runtime.pluginManager and runtime.pluginManager.onLoadoutSaved then
         runtime.pluginManager.onLoadoutSaved()
     end
     if not silent then print('\ag[Triune]\ax saved loadout for ' .. tostring(myName or '?') .. '.') end
+    -- Edited By: NeroMorte - Import reports success only after a forced save succeeds.
+    return true
 end
 
-function runtime.addIgnore(name)
-    if not name or name == '' or isIgnored(name) then return end
-    table.insert(runtime.ignoreList, name)
-    table.sort(runtime.ignoreList)
+-- Edited By: NeroMorte - Explicit scope changes only that list; default stays Global
+-- for existing slash commands and plugin callers.
+function runtime.npcAdd(kind, name, zone)
+    local names, err = runtime.npcNames({ name })
+    if not names then return false, err end
+    name = names[1]
+    if not name then return false, 'Choose an NPC name.' end
+    local list = runtime.npcList(kind, zone, true)
+    if runtime.npcHas(list, name) then return false, 'Already listed.' end
+    if #list >= 2000 then return false, 'List already contains 2000 names.' end
+    list[#list + 1] = name; table.sort(list)
     runtime.saveLoadout(true)
-    print('\ag[Triune]\ax added to ignore list: ' .. name)
-end
-function runtime.removeIgnore(name)
-    for i, n in ipairs(runtime.ignoreList) do
-        if n == name then
-            table.remove(runtime.ignoreList, i); break
-        end
-    end
-    runtime.saveLoadout(true)
-    print('\ag[Triune]\ax removed from ignore list: ' .. name)
+    return true, 'Added ' .. name .. ' to ' .. (zone or 'global') .. ' ' .. kind .. '.'
 end
 
--- pull-list (include-list) helpers for Puller mode:
-function runtime.isPullListed(name)
-    if not name or name == '' then return false end
-    for _, n in ipairs(runtime.pullList) do if n == name then return true end end
-    return false
-end
-function runtime.addPull(name)
-    if not name or name == '' or runtime.isPullListed(name) then return end
-    table.insert(runtime.pullList, name)
-    table.sort(runtime.pullList)
-    runtime.saveLoadout(true)
-    print('\ag[Triune]\ax added to pull list: ' .. name)
-end
-function runtime.removePull(name)
-    for i, n in ipairs(runtime.pullList) do
-        if n == name then
-            table.remove(runtime.pullList, i); break
-        end
+-- Created By: NeroMorte - Clear both scoped lists or delete a saved zone record.
+function runtime.npcClear(zone, deleteZone)
+    if not zone then return false, 'Choose a saved zone or Global.' end
+    if deleteZone and zone == 'global' then return false, 'Global can be cleared, but not deleted.' end
+    local attack, ignore = runtime.npcList('attack', zone), runtime.npcList('ignore', zone)
+    if zone == 'global' then runtime.pullList = {}; runtime.ignoreList = {}
+    elseif deleteZone then runtime.zonePull[zone] = nil; runtime.zoneIgnore[zone] = nil
+    else runtime.zonePull[zone] = {}; runtime.zoneIgnore[zone] = {} end
+    if not runtime.saveLoadout(true, true) then
+        if zone == 'global' then runtime.pullList = attack; runtime.ignoreList = ignore
+        else runtime.zonePull[zone] = attack; runtime.zoneIgnore[zone] = ignore end
+        return false, 'Could not save; previous lists restored in memory.'
     end
-    runtime.saveLoadout(true)
-    print('\ag[Triune]\ax removed from pull list: ' .. name)
+    if deleteZone then runtime.npcEditZone = runtime.npcZone() or 'global' end
+    return true, (deleteZone and 'Deleted saved zone lists: ' or 'Cleared Attack and Ignore lists: ') .. zone
 end
+
+function runtime.npcRemove(kind, name, zone)
+    local list = runtime.npcList(kind, zone)
+    for i, n in ipairs(list or {}) do
+        if n == name then table.remove(list, i); runtime.saveLoadout(true); return end
+    end
+end
+
+function runtime.addIgnore(name, zone)
+    local ok, msg = runtime.npcAdd('ignore', name, zone)
+    if ok then print('\ag[Triune]\ax ' .. msg) end
+end
+function runtime.removeIgnore(name, zone) runtime.npcRemove('ignore', name, zone) end
+function runtime.isPullListed(name, zone) return runtime.npcHas(runtime.npcList('attack', zone), name) end
+function runtime.addPull(name, zone)
+    local ok, msg = runtime.npcAdd('attack', name, zone)
+    if ok then print('\ag[Triune]\ax ' .. msg) end
+end
+function runtime.removePull(name, zone) runtime.npcRemove('attack', name, zone) end
 
 -- Auto-Accept (group / trade / dzadd) lives in the auto_accept plugin (lua/tac/auto_accept.lua).
 
@@ -6058,22 +6435,19 @@ function runtime.wpPresetCommitImport(pending)
     return true
 end
 
+-- Edited By: NeroMorte - Preserve Puller matching semantics; include Global + zone.
 function runtime.isPullAllowed(name)
-    if not name then return false end
+    if not name or tostring(name) == '' then return false end
     local cleanName = tostring(name)
-    if cleanName == '' then return false end
     if isIgnored(cleanName) then return false end
-    if not runtime.pullList or #runtime.pullList == 0 then return true end
+    local zone = runtime.npcZone()
+    local zoned = zone and runtime.npcList('attack', zone) or {}
+    if #(runtime.pullList or {}) == 0 and #(zoned or {}) == 0 then return true end
     local lowerName = cleanName:lower()
-    for _, n in ipairs(runtime.pullList) do
-        local strN = tostring(n)
-        if strN ~= '' then
-            local ln = strN:lower()
-            -- exact, or the listed text followed by a word boundary ("a rat"
-            -- matches "a rat" and "a rat king" but not "a ratman")
-            if lowerName == ln or (lowerName:sub(1, #ln) == ln and lowerName:sub(#ln + 1, #ln + 1):match('^[%s%p]?$')) then
-                return true
-            end
+    for _, list in ipairs({ runtime.pullList or {}, zoned or {} }) do
+        for _, n in ipairs(list) do
+            local ln = tostring(n):lower()
+            if ln ~= '' and (lowerName == ln or (lowerName:sub(1, #ln) == ln and lowerName:sub(#ln + 1, #ln + 1):match('^[%s%p]?$'))) then return true end
         end
     end
     return false
@@ -6285,6 +6659,12 @@ local function loadoutSig()
     p[#p + 1] = table.concat(ctrlParts, '~')
     if runtime.ignoreList then p[#p + 1] = 'ignore:' .. table.concat(runtime.ignoreList, ',') end
     if runtime.pullList then p[#p + 1] = 'pull:' .. table.concat(runtime.pullList, ',') end
+    -- Edited By: NeroMorte - Detect zone-list edits in the autosave signature.
+    for _, zone in ipairs(runtime.npcZoneOptions()) do
+        if zone ~= 'global' then
+            p[#p + 1] = 'zone:' .. zone .. ':' .. table.concat(runtime.npcList('attack', zone) or {}, ',') .. ':' .. table.concat(runtime.npcList('ignore', zone) or {}, ',')
+        end
+    end
     return table.concat(p, '|')
 end
 
@@ -11789,6 +12169,241 @@ function UI.distanceSlider(label, value, minimum, dragMaximum)
     return edited, edited ~= value
 end
 
+-- Created By: NeroMorte - Paths wrap to available width and copy without breaks.
+function UI.drawNpcText(text)
+    local width = ImGui.GetContentRegionAvail()
+    width = math.max(1, width)
+    for _, line in ipairs(runtime.npcWrapText(text, width, function(value) return ImGui.CalcTextSize(value) end)) do
+        ImGui.TextUnformatted(line)
+    end
+end
+
+function UI.drawNpcMessage()
+    if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
+    if runtime.npcListPath and ImGui.SmallButton('Copy Export Path##npcCopyExportPath') then
+        ImGui.SetClipboardText(runtime.npcListPath)
+    end
+end
+
+-- Edited By: NeroMorte - One compact scope selector and file preview on Control.
+function UI.drawNpcLists()
+    local current, fullName = runtime.npcZone()
+    if runtime.npcViewedCurrent ~= current then
+        runtime.npcViewedCurrent = current
+        runtime.npcEditZone = current or 'global'
+    end
+    local selected = runtime.npcEditZone or current or 'global'
+    local function label(zone)
+        local display = zone == 'global' and 'Global' or (zone == current and (fullName or zone) or zone)
+        return string.format('%s — Attack %d / Ignore %d', display,
+            #(runtime.npcList('attack', zone) or {}), #(runtime.npcList('ignore', zone) or {}))
+    end
+    accent(GOLD, 'Attack / Ignore Lists')
+    ImGui.SetNextItemWidth(UI.px(360))
+    if ImGui.BeginCombo('##npcListZone', label(selected)) then
+        for _, zone in ipairs(runtime.npcZoneOptions()) do
+            if ImGui.Selectable(label(zone) .. '##npcZone_' .. zone, selected == zone) then
+                selected = zone; runtime.npcEditZone = zone
+            end
+        end
+        ImGui.EndCombo()
+    end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Current Zone##npcCurrent') then runtime.npcEditZone = current or 'global'; selected = runtime.npcEditZone end
+    ImGui.TextWrapped('Global + current zone apply automatically. Browsing a saved zone only edits it. Ignore takes precedence.')
+    if selected ~= 'global' and selected ~= current then ImGui.TextDisabled('Editing saved zone: ' .. selected) end
+    for _, kind in ipairs({ 'attack', 'ignore' }) do
+        ImGui.PushID('npcList_' .. kind)
+        ImGui.Text(kind == 'attack' and 'Attack / Pull (Include)' or 'Ignore')
+        ImGui.SameLine()
+        if ImGui.SmallButton('Add Target') then
+            if selected ~= 'global' and selected ~= current then
+                runtime.npcListMessage = 'Add Target is available for Global or the current zone.'
+            else
+                local name
+                pcall(function() name = mq.TLO.Target.CleanName() end)
+                if name and name ~= '' then
+                    local ok, msg = runtime.npcAdd(kind, name, selected); runtime.npcListMessage = msg
+                    if ok and kind == 'ignore' then
+                        local combat
+                        pcall(function() combat = mq.TLO.Me.Combat() end)
+                        if combat then mq.cmd('/attack off') end
+                    end
+                else runtime.npcListMessage = 'Select a target first.' end
+            end
+        end
+        ImGui.SameLine()
+        ImGui.SetNextItemWidth(UI.px(180))
+        local key = kind .. 'ListInput'
+        runtime[key] = ImGui.InputText('##npcName', runtime[key] or '')
+        ImGui.SameLine()
+        if ImGui.SmallButton('Add') then
+            local ok, msg = runtime.npcAdd(kind, runtime[key], selected)
+            runtime.npcListMessage = msg
+            if ok then runtime[key] = '' end
+        end
+        local list = runtime.npcList(kind, selected) or {}
+        local remove
+        if ImGui.BeginChild('npcNames', 0, UI.px(75), true) then
+            if #list == 0 then ImGui.TextDisabled('(empty)') end
+            for i, name in ipairs(list) do
+                ImGui.PushID(i)
+                if ImGui.SmallButton('x') then remove = name end
+                ImGui.SameLine(); ImGui.TextUnformatted(name)
+                ImGui.PopID()
+            end
+        end
+        ImGui.EndChild()
+        if remove then runtime.npcRemove(kind, remove, selected) end
+        ImGui.PopID()
+    end
+    ImGui.TextWrapped('Include limits Puller auto-pulls; empty Global and zone Include lists allow all mobs. Ignore filters Hunter/Puller auto-targets. Manual/Assist targets keep their existing rules.')
+    if ImGui.SmallButton('Export Zone##npcExport') then
+        local ok, msg, state = runtime.npcExport(selected)
+        if state == 'exists' then
+            runtime.npcExportZone = selected
+            ImGui.OpenPopup('NpcExportExists')
+        else runtime.npcNotify(ok, msg) end
+    end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Import Zone##npcImport') then
+        runtime.npcImportPreview = nil; runtime.npcImportReplace = false
+        runtime.npcImportRemove = false; runtime.npcImportFile = nil
+        runtime.npcImportFilename = 'triune_npc_lists_' .. selected .. '.json'
+        runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
+        ImGui.OpenPopup('NpcListImport')
+    end
+    ImGui.SameLine()
+    if ImGui.SmallButton('Clear Lists##npcClearLists') then
+        runtime.npcClearPending = { zone = selected, delete = false }
+        ImGui.OpenPopup('NpcClearListsConfirm')
+    end
+    if selected ~= 'global' and (runtime.zonePull[selected] or runtime.zoneIgnore[selected]) then
+        ImGui.SameLine()
+        if ImGui.SmallButton('Delete Saved Zone##npcDeleteZone') then
+            runtime.npcClearPending = { zone = selected, delete = true }
+            ImGui.OpenPopup('NpcClearListsConfirm')
+        end
+    end
+    if ImGui.BeginPopup('NpcClearListsConfirm') then
+        local pending = runtime.npcClearPending
+        if pending then
+            ImGui.Text((pending.delete and 'Delete saved zone: ' or 'Clear both lists: ') .. pending.zone)
+            ImGui.TextWrapped('This removes the selected scope\'s saved Attack and Ignore entries. Exported JSON files remain available for sharing or re-import.')
+            if ImGui.Button(pending.delete and 'Delete Zone##npcClearConfirm' or 'Clear Both Lists##npcClearConfirm') then
+                local ok, msg = runtime.npcClear(pending.zone, pending.delete)
+                runtime.npcNotify(ok, msg)
+                if ok then runtime.npcClearPending = nil; ImGui.CloseCurrentPopup() end
+            end
+            ImGui.SameLine()
+            if ImGui.Button('Cancel##npcClearCancel') then runtime.npcClearPending = nil; ImGui.CloseCurrentPopup() end
+        end
+        ImGui.EndPopup()
+    end
+    UI.drawNpcMessage()
+    if ImGui.BeginPopup('NpcExportExists') then
+        local zone = runtime.npcExportZone
+        ImGui.Text('Export already exists for ' .. tostring(zone))
+        UI.drawNpcText(runtime.npcListPath)
+        ImGui.TextWrapped('Merge adds your selected zone lists to the existing export without duplicates. Replace writes only your current lists. Your in-game lists are not changed.')
+        for _, mode in ipairs({ 'merge', 'replace' }) do
+            if mode == 'replace' then ImGui.SameLine() end
+            if ImGui.Button((mode == 'merge' and 'Merge' or 'Replace') .. '##npcExportChoice') then
+                local ok, msg = runtime.npcExport(zone, mode)
+                runtime.npcNotify(ok, msg)
+                if ok then ImGui.CloseCurrentPopup() end
+            end
+        end
+        ImGui.SameLine()
+        if ImGui.Button('Cancel##npcExportCancel') then ImGui.CloseCurrentPopup() end
+        if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
+        ImGui.EndPopup()
+    end
+    if ImGui.BeginPopup('NpcListImport') then
+        ImGui.TextWrapped('Place the shared JSON file in your MQ config folder. Import uses the zone recorded inside the file.')
+        UI.drawNpcText(mq.configDir)
+        if ImGui.SmallButton('Copy Folder Path##npcCopyFolder') then ImGui.SetClipboardText(mq.configDir) end
+        ImGui.SetNextItemWidth(UI.px(320))
+        if ImGui.BeginCombo('Saved files##npcImportFiles', runtime.npcImportFilename or 'Choose a JSON file') then
+            for _, fileName in ipairs(runtime.npcImportFiles or {}) do
+                if ImGui.Selectable(fileName, fileName == runtime.npcImportFilename) then
+                    runtime.npcImportFilename = fileName
+                    local _, msg = runtime.npcPreview(fileName); runtime.npcListMessage = msg
+                end
+            end
+            ImGui.EndCombo()
+        end
+        ImGui.SameLine()
+        if ImGui.SmallButton('Refresh##npcImportRefresh') then
+            runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
+        end
+        if runtime.npcImportFilesError then ImGui.TextWrapped(runtime.npcImportFilesError) end
+        if not runtime.npcImportFilesError and #(runtime.npcImportFiles or {}) == 0 then ImGui.TextWrapped('No JSON files found. Copy your friend\'s file into the folder above, then Refresh.') end
+        ImGui.SetNextItemWidth(UI.px(320))
+        local filename, changed = ImGui.InputText('File##npcImportFilename', runtime.npcImportFilename or '')
+        runtime.npcImportFilename = filename
+        if changed then runtime.npcImportPreview = nil end
+        if ImGui.Button('Load File##npcPreview') then
+            local _, msg = runtime.npcPreview(filename); runtime.npcListMessage = msg
+        end
+        local data = runtime.npcImportPreview
+        if data then
+            ImGui.Text(string.format('%s — Attack %d / Ignore %d', data.zone, #data.attack, #data.ignore))
+            ImGui.TextDisabled('Preview only: nothing has been imported yet.')
+            if ImGui.BeginChild('NpcListPreviewEntries', UI.px(340), UI.px(95), true) then
+                for _, kind in ipairs({ 'attack', 'ignore' }) do
+                    ImGui.TextUnformatted(kind == 'attack' and 'Attack:' or 'Ignore:')
+                    if #data[kind] == 0 then ImGui.TextDisabled('(empty)') end
+                    for i = 1, math.min(3, #data[kind]) do ImGui.TextUnformatted(data[kind][i]) end
+                    if #data[kind] > 3 then ImGui.TextDisabled('+' .. (#data[kind] - 3) .. ' more') end
+                end
+            end
+            ImGui.EndChild()
+            runtime.npcImportRemove = ImGui.Checkbox('Remove JSON file after successful import', runtime.npcImportRemove == true)
+            runtime.npcImportReplace = ImGui.Checkbox('Replace existing lists (default: Merge)', runtime.npcImportReplace == true)
+            if runtime.npcImportReplace then ImGui.TextWrapped('Replace clears both existing lists for this scope before importing, including empty lists.') end
+            if ImGui.Button(runtime.npcImportReplace and 'Replace Lists##npcApply' or 'Merge Lists##npcApply') then
+                local ok, msg = runtime.npcImport(runtime.npcImportReplace, runtime.npcImportRemove)
+                runtime.npcNotify(ok, msg)
+                if ok then ImGui.CloseCurrentPopup() end
+            end
+        end
+        if runtime.npcImportFile then
+            if ImGui.SmallButton('Delete File##npcDeleteShareFile') then
+                runtime.npcDeleteFilePending = runtime.npcImportFile
+                ImGui.OpenPopup('NpcDeleteShareFileConfirm')
+            end
+        end
+        if ImGui.BeginPopup('NpcDeleteShareFileConfirm') then
+            local file = runtime.npcDeleteFilePending
+            if file then
+                ImGui.Text('Delete sharing JSON file?')
+                UI.drawNpcText(file.filename)
+                ImGui.TextWrapped('This deletes the selected file from Config. Lists already saved in Triune remain available.')
+                if ImGui.Button('Delete File##npcDeleteShareConfirm') then
+                    local ok, msg = runtime.npcRemoveImportedFile(file)
+                    runtime.npcNotify(ok, msg)
+                    if ok then
+                        runtime.npcImportPreview = nil; runtime.npcImportFile = nil
+                        runtime.npcImportFilename = ''
+                        runtime.npcImportFiles, runtime.npcImportFilesError = runtime.npcShareFiles()
+                        runtime.npcDeleteFilePending = nil
+                        ImGui.CloseCurrentPopup()
+                    end
+                end
+                ImGui.SameLine()
+                if ImGui.Button('Cancel##npcDeleteShareCancel') then
+                    runtime.npcDeleteFilePending = nil; ImGui.CloseCurrentPopup()
+                end
+            end
+            ImGui.EndPopup()
+        end
+        if runtime.npcListMessage then UI.drawNpcText(runtime.npcListMessage) end
+        if ImGui.Button('Cancel##npcImportCancel') then ImGui.CloseCurrentPopup() end
+        ImGui.EndPopup()
+    end
+end
+
 function UI.drawControlTab()
     if not ImGui.BeginTabItem('Control') then return end
     accent(GOLD, 'Combat Mode')
@@ -12659,79 +13274,10 @@ function UI.drawControlTab()
         end
 
 
-        accent(GOLD, 'NPCs to Pull (Include List)')
-        accent(MUTED, 'If empty, pulls any mob in radius. If populated, ONLY pulls listed names.')
-
-        if ImGui.Button('Pull Current Target##pullCurTgt', UI.px(170), UI.px(24)) then
-            local nm
-            pcall(function() nm = mq.TLO.Target.CleanName() end)
-            if nm and nm ~= '' then
-                runtime.addPull(nm)
-            else
-                print('\ay[Triune]\ax no target selected.')
-            end
-        end
-        ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(180))
-        runtime.pullInput = ImGui.InputText('##pullAddInput', runtime.pullInput or '')
-        ImGui.SameLine()
-        if ImGui.Button('Add##pullAddBtn') then
-            if runtime.pullInput and runtime.pullInput ~= '' then
-                runtime.addPull(runtime.pullInput); runtime.pullInput = ''
-            end
-        end
-
-        if ImGui.BeginChild('pullListFrame', 0, UI.px(90), true) then
-            if not runtime.pullList or #runtime.pullList == 0 then
-                ImGui.TextDisabled('(all mobs allowed)')
-            else
-                for i, nm in ipairs(runtime.pullList) do
-                    ImGui.PushID('pl_' .. i)
-                    if ImGui.Button('x') then runtime.removePull(nm) end
-                    ImGui.SameLine(); ImGui.Text(tostring(nm))
-                    ImGui.PopID()
-                end
-            end
-        end
-        ImGui.EndChild()
-
-        accent(GOLD, 'NPCs to Ignore (Ignore List)')
-        accent(MUTED, 'Puller will NEVER auto-target these names (shared across all characters).')
-
-        if ImGui.Button('Ignore Current Target##ignoreCurTgt', UI.px(170), UI.px(24)) then
-            local nm
-            pcall(function() nm = mq.TLO.Target.CleanName() end)
-            if nm and nm ~= '' then
-                if mq.TLO.Me.Combat() then mq.cmd('/attack off') end
-                runtime.addIgnore(nm)
-            else
-                print('\ay[Triune]\ax no target selected.')
-            end
-        end
-        ImGui.SameLine()
-        ImGui.SetNextItemWidth(UI.px(180))
-        runtime.ignoreInput = ImGui.InputText('##ignoreAddInput', runtime.ignoreInput or '')
-        ImGui.SameLine()
-        if ImGui.Button('Add##ignoreAddBtn') then
-            if runtime.ignoreInput and runtime.ignoreInput ~= '' then
-                runtime.addIgnore(runtime.ignoreInput); runtime.ignoreInput = ''
-            end
-        end
-
-        if ImGui.BeginChild('ignoreListFrame', 0, UI.px(90), true) then
-            if not runtime.ignoreList or #runtime.ignoreList == 0 then
-                ImGui.TextDisabled('(none ignored)')
-            else
-                for i, nm in ipairs(runtime.ignoreList) do
-                    ImGui.PushID('ig_' .. i)
-                    if ImGui.Button('x') then runtime.removeIgnore(nm) end
-                    ImGui.SameLine(); ImGui.Text(tostring(nm))
-                    ImGui.PopID()
-                end
-            end
-        end
-        ImGui.EndChild()
     end
+
+    -- Edited By: NeroMorte - Keep compact list management on Control, in every mode.
+    UI.drawNpcLists()
 
     -- Assist Mode Contextual Controls
     if ctrl.mode == 'Assist' then
