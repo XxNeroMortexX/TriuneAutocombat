@@ -2630,7 +2630,11 @@ function runtime.npcSharePath(filename)
     if type(filename) ~= 'string' or #filename > 150 or not filename:lower():match('%.json$') or filename:find('[\\/:"<>|?*%c]') or filename:find('..', 1, true) then
         return nil, 'Use a simple .json filename in the MQ config folder.'
     end
-    return mq.configDir .. '/' .. filename
+    -- Edited By: NeroMorte - Keep saved/displayed/copied Windows paths consistent.
+    local separator = package.config and package.config:sub(1, 1) or '/'
+    local folder = mq.configDir
+    if separator == '\\' then folder = folder:gsub('/', '\\') end
+    return folder:gsub('[/\\]+$', '') .. separator .. filename
 end
 
 -- Created By: NeroMorte - Report file actions in chat as well as the Control tab.
@@ -12271,7 +12275,7 @@ function UI.drawNpcLists()
         local filename, changed = ImGui.InputText('File##npcImportFilename', runtime.npcImportFilename or '')
         runtime.npcImportFilename = filename
         if changed then runtime.npcImportPreview = nil end
-        if ImGui.Button('Preview##npcPreview') then
+        if ImGui.Button('Load File##npcPreview') then
             local _, msg = runtime.npcPreview(filename); runtime.npcListMessage = msg
         end
         local data = runtime.npcImportPreview

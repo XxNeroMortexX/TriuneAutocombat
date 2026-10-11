@@ -2,6 +2,8 @@
 
 ## 2026-10-11 — Morte.9 test
 
+- **Edited By: NeroMorte — Normalize export/display/clipboard paths to Windows backslashes**, and label the manual file-loading action Load File. Selecting an import file continues to preview automatically without applying it.
+
 - **Edited By: NeroMorte — Offer Merge/Replace/Cancel for an existing export**, merging only the same recorded zone with deduplication or replacing with selected current lists. Preserve prior exports in numbered backups and roll back failed replacement. Import Preview explicitly reports no changes and displays sample names alongside zone/counts.
 
 - **Edited By: NeroMorte — Remove the file picker's LuaFileSystem dependency** after a Windows game test found it absent. Use the existing core browser's built-in Windows listing pattern with a guarded MQ folder, show concise failures, and wrap long paths by measured character widths with full-path Copy buttons.

@@ -39,7 +39,7 @@ mq.configDir = originalDir
 fakeIo.popen = function() error('Unavailable') end
 local fallback, reason = runtime.npcShareFiles()
 assert(#fallback == 0 and reason == 'Cannot browse files. Enter the JSON filename below.')
-env.io = originalIo
+env.io, env.package = originalIo, package
 local longPath = 'E:\\' .. string.rep('very-long-folder\\', 30) .. 'triune_npc_lists_potactics.json'
 local lines = runtime.npcWrapText(longPath, 15, function(v) return #v end)
 assert(table.concat(lines) == longPath and #lines > 20)
