@@ -8,6 +8,8 @@
 
 - **Edited By: NeroMorte — Fix the Auto AA Order sort when changing its number**: use mutually exclusive ascending/descending comparisons so editing Order cannot make both rows compare as first and interrupt ImGui rendering. Exercise the actual browser sorter with repeated order edits, ties and unassigned values in both directions.
 
+- **Edited By: NeroMorte — Restore extended Hunt Combat Radius input and native Hunt map markers**: use the same distance control as Camp/Search, draw the active Hunt anchor or a moving Search Radius circle, refresh setting edits immediately, and clear Hunt markers at Travel waypoints. Back up and verify the main Lua link in the focused installer; test large saved radii and actual map helper behavior.
+
 ### 3.1-Morte.9 — zone lists (completed)
 
 - **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.

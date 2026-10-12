@@ -233,3 +233,7 @@ LAN discovery requires the NeroMorte MQ2EQBC client and Go server 1.0-NeroMorte.
 ### AA purchase checks
 
 Auto AA honors the **Auto-buy selection**: Checked priorities only, or All standard AAs. The separately configured cap spender can run when selected AAs are finished; an unchecked Prio box alone does not disable that cap choice. Ignore and Stop at remain automatic purchase limits; explicit per-row Train keeps its manual override behavior. Purchases wait for safe combat state, verify the active AA tab and selected row, and send one Train click. A queued automatic purchase is cancelled if its selection is removed, Auto-Spend is disabled, or its limits change before training.
+
+### Pull and Hunt radius markers
+
+The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X and circle through MQ2Map. Camp uses the camp position and Pull Radius. Hunt uses the active Combat Anchor (including a Hunt waypoint); without an active anchor, Search Radius follows the toon. Travel waypoints clear the circle. Search Radius and Combat Radius are separate limits: increase both when you want a larger search inside an anchored hunt area. Camp, Search and Combat Radius use the same 10,000-unit drag scale and accept larger values by Ctrl+clicking the number.

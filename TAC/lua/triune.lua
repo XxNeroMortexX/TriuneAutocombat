@@ -10624,7 +10624,22 @@ function runtime.updateEqCampMap()
         runtime.eqCampMapNeedsRefresh = true
         return
     end
-    local camp = ctrl.camp_loc
+    -- Edited By: NeroMorte - Draw the active Hunt boundary, not a stale Camp location.
+    local camp, radius, label, mobile = ctrl.camp_loc, ctrl.camp_radius or 100, 'Triune Camp', false
+    if ctrl.mode == 'Puller' and ctrl.submode == 'Hunt' then
+        local node = runtime.wpNode and runtime.wpNode()
+        if node and node.kind == 'Travel' then
+            runtime.clearEqCampMap()
+            return
+        end
+        local anchor, anchorRadius = runtime.huntAnchor()
+        if anchor then
+            camp, radius, label = anchor, anchorRadius, 'Triune Hunt Anchor'
+        else
+            camp = { x = mq.TLO.Me.X(), y = mq.TLO.Me.Y(), z = mq.TLO.Me.Z() }
+            radius, label, mobile = ctrl.hunter_radius or 1500, 'Triune Hunt Search', true
+        end
+    end
     local zone = mq.TLO.Zone.ShortName() or ''
     local character = mq.TLO.Me.CleanName() or ''
     if ctrl.show_eq_camp_radius == false or not camp or zone == '' or character == '' then
@@ -10635,13 +10650,19 @@ function runtime.updateEqCampMap()
     if not x or not y or not z then runtime.clearEqCampMap(); return end
     -- MQ2Map identifies maplocs by coordinates truncated to whole units (Y X Z).
     local loc = string.format('%d %d %d', math.modf(y), math.modf(x), math.modf(z))
-    local radius = math.max(1, math.floor(tonumber(ctrl.camp_radius) or 100))
-    local key = character .. '|' .. zone .. '|' .. loc .. '|' .. radius
+    radius = math.max(1, math.floor(tonumber(radius) or 100))
+    local key = character .. '|' .. zone .. '|' .. loc .. '|' .. radius .. '|' .. label
     local previous = runtime.eqCampMapMarker
     if previous and previous.key == key and not runtime.eqCampMapNeedsRefresh then return end
+    -- Edited By: NeroMorte - Moving Hunt circles refresh at most twice a second; setting edits stay immediate.
+    local now = os.clock()
+    if mobile and previous and previous.label == label and previous.radius == radius and
+        previous.zone == zone and previous.character == character and not runtime.eqCampMapNeedsRefresh and
+        now - (previous.at or -100) < 0.5 then return end
     runtime.clearEqCampMap()
-    mq.cmd(string.format('/squelch /maploc %s size 50 width 2 radius %d rcolor 0 255 0 color 0 255 0 label Triune Camp', loc, radius))
-    runtime.eqCampMapMarker = { loc = loc, key = key }
+    mq.cmd(string.format('/squelch /maploc %s size 50 width 2 radius %d rcolor 0 255 0 color 0 255 0 label %s', loc, radius, label))
+    runtime.eqCampMapMarker = { loc = loc, key = key, radius = radius, label = label,
+        zone = zone, character = character, at = now }
     runtime.eqCampMapNeedsRefresh = false
 end
 
@@ -10650,6 +10671,7 @@ end
 function runtime.refreshEqCampMapFromUI(force)
     local now = os.clock()
     if force or now - (runtime.lastEqCampMapUIAt or -100) >= 0.1 then
+        if force then runtime.eqCampMapNeedsRefresh = true end
         runtime.updateEqCampMap()
         runtime.lastEqCampMapUIAt = now
     end
@@ -12416,13 +12438,14 @@ function UI.drawControlTab()
     accent(MUTED, MODES.SUB_DESC[descKey] or MODES.DESC[ctrl.mode] or '')
 
     -- Edited By: NeroMorte - Independently control the native EverQuest map camp overlay.
-    local eqCampShown = ImGui.Checkbox('Show Camp on EQ Map##eqCampMap', ctrl.show_eq_camp_radius ~= false)
+    local eqCampShown = ImGui.Checkbox('Show Pull / Hunt Radius on EQ Map##eqCampMap', ctrl.show_eq_camp_radius ~= false)
     if eqCampShown ~= (ctrl.show_eq_camp_radius ~= false) then
         ctrl.show_eq_camp_radius = eqCampShown
+        runtime.refreshEqCampMapFromUI(true)
         runtime.saveLoadout(true)
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('Show the camp X and radius circle on EverQuest\'s map using MQ2Map.\nClear Camp removes it; a new camp redraws it automatically. Triune\'s own map is independent.')
+        ImGui.SetTooltip('%s', 'Show an X and radius circle on EverQuest\'s map using MQ2Map. Camp uses Pull Radius. Hunt uses its active Combat Anchor, or Search Radius around the toon when no anchor is active.')
     end
 
     -- Manual Mode Contextual Controls
@@ -12677,7 +12700,12 @@ function UI.drawControlTab()
             local huntR, huntRChanged = UI.distanceSlider('Search Radius', ctrl.hunter_radius or 1500, 50, 2000)
             if huntRChanged then
                 ctrl.hunter_radius = huntR
+                -- Edited By: NeroMorte - Redraw the free Hunt search circle as its distance changes.
+                runtime.refreshEqCampMapFromUI(false)
                 runtime.saveLoadout(true)
+            end
+            if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
+                runtime.refreshEqCampMapFromUI(true)
             end
             -- Edited By: NeroMorte - Explain unrestricted Ctrl+click search-radius entry.
             if ImGui.IsItemHovered() then
@@ -12745,6 +12773,8 @@ function UI.drawControlTab()
                     end
                     runtime.anchorReturning = false
                     runtime.saveZoneAnchor()
+                    -- Edited By: NeroMorte - Show the Hunt anchor immediately after Set Anchor.
+                    runtime.refreshEqCampMapFromUI(true)
                 end
             end
             if ImGui.IsItemHovered() then
@@ -12760,6 +12790,8 @@ function UI.drawControlTab()
                 pursuit.wanderLoc = nil
                 runtime.anchorReturning = false
                 runtime.saveZoneAnchor()
+                -- Edited By: NeroMorte - Restore the free Hunt search circle after Clear Anchor.
+                runtime.refreshEqCampMapFromUI(true)
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Forget the anchor for this zone -- the Puller roams anywhere within Search Radius again.')
@@ -12768,10 +12800,15 @@ function UI.drawControlTab()
             ImGui.SetNextItemWidth(UI.px(220))
             local curRadius = (ctrl.hunter_combat_radius and ctrl.hunter_combat_radius > 0) and ctrl
                 .hunter_combat_radius or 250
-            local newRadius, changed = ImGui.SliderInt('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)
+            -- Edited By: NeroMorte - Use the same unrestricted distance input as Camp and Search Radius.
+            local newRadius, changed = UI.distanceSlider('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)
             if changed then
                 ctrl.hunter_combat_radius = newRadius
+                runtime.refreshEqCampMapFromUI(false)
                 if ctrl.hunter_combat_loc then runtime.saveZoneAnchor() else runtime.saveLoadout(true) end
+            end
+            if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
+                runtime.refreshEqCampMapFromUI(true)
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
@@ -26590,3 +26627,4 @@ if runtime.fullStop then pcall(runtime.fullStop) end -- attack / nav / stick wer
 runtime.clearEqCampMap()
 runtime.saveLoadout(true, true)
 tlog.close('script exit')
+

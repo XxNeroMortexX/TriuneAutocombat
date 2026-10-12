@@ -47,7 +47,7 @@ function Resolve-LinkPath([string]$Path, [ref]$Linked, [int]$Depth = 0) {
     $ResolvedParent = Resolve-LinkPath $Parent $Linked ($Depth + 1)
     return [IO.Path]::GetFullPath((Join-Path $ResolvedParent (Split-Path -Leaf $Full)))
 }
-$Files = @('TAC/lua/tac/auto_aa.lua', 'TAC/lua/TAC_support_modules/morte_version.lua')
+$Files = @('TAC/lua/triune.lua', 'TAC/lua/tac/auto_aa.lua', 'TAC/lua/TAC_support_modules/morte_version.lua')
 $Links = @()
 foreach ($Relative in $Files) {
     $Dest = Join-Path $Dev $Relative
@@ -74,7 +74,7 @@ foreach ($Relative in $Files) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Copy) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $Dev $Relative) -Destination $Copy
 }
-# Created By: NeroMorte - Preserve per-character settings before zone-list edits/imports.
+# Created By: NeroMorte - Preserve per-character settings before testing AA and radius controls.
 if (Test-Path -LiteralPath $Config) {
     $ConfigBackup = Join-Path $Backup 'config'
     New-Item -ItemType Directory -Path $ConfigBackup -Force | Out-Null
@@ -113,5 +113,5 @@ try {
 Write-Host "Verified AA purchase guards test: $Revision"
 Write-Host "Backups: $Backup"
 Write-Host 'Existing Lua links and untracked updater files were preserved. No stash was applied.'
-Write-Host 'Now start Triune in game with /lua run triune. Open Auto AA to test one selected purchase and combat blocking.'
+Write-Host 'Now start Triune in game with /lua run triune. Test Auto AA Order +/- and Puller Camp/Hunt radius controls and EQ map circles.'
 Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch --detach '$BeforeCommit'"

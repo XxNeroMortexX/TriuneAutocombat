@@ -71,3 +71,43 @@ assert(#commands == drawn + 2 and commands[#commands]:find('radius 102', 1, true
 now = 1.13; ctrl.camp_radius = 103; runtime.refreshEqCampMapFromUI(true)
 assert(#commands == drawn + 4 and commands[#commands]:find('radius 103', 1, true))
 print('PASS: GUI map redraw coalesces drag frames and forces exact final radius')
+
+-- Edited By: NeroMorte - Hunt draws its actual anchor, or the moving search boundary when unanchored.
+ctrl.mode, ctrl.submode, ctrl.hunter_radius = 'Puller', 'Hunt', 30000
+local mx, my, mz = 50, 60, 7
+mq.TLO.Me.X = function() return mx end
+mq.TLO.Me.Y = function() return my end
+mq.TLO.Me.Z = function() return mz end
+local anchor, anchorRadius, node
+runtime.huntAnchor = function() return anchor, anchorRadius end
+runtime.wpNode = function() return node end
+runtime.refreshEqCampMapFromUI(true)
+assert(commands[#commands]:find('/maploc 60 50 7', 1, true))
+assert(commands[#commands]:find('radius 30000', 1, true))
+assert(commands[#commands]:find('label Triune Hunt Search', 1, true))
+drawn = #commands
+mx = 75; now = now + 0.1; runtime.updateEqCampMap()
+assert(#commands == drawn) -- moving search circles are throttled
+now = now + 0.5; runtime.updateEqCampMap()
+assert(#commands == drawn + 2 and commands[#commands]:find('/maploc 60 75 7', 1, true))
+anchor, anchorRadius = { x = 700, y = 800, z = 9 }, 18000
+runtime.refreshEqCampMapFromUI(true)
+assert(commands[#commands]:find('/maploc 800 700 9', 1, true))
+assert(commands[#commands]:find('radius 18000', 1, true))
+assert(commands[#commands]:find('label Triune Hunt Anchor', 1, true))
+drawn = #commands
+mx = 1000; now = now + 1; runtime.updateEqCampMap()
+assert(#commands == drawn) -- a combat anchor stays fixed while the toon moves
+anchorRadius = 25000; runtime.refreshEqCampMapFromUI(true)
+assert(commands[#commands]:find('radius 25000', 1, true))
+anchor = nil; runtime.refreshEqCampMapFromUI(true)
+assert(commands[#commands]:find('label Triune Hunt Search', 1, true))
+node = { kind = 'Travel' }; runtime.updateEqCampMap()
+assert(runtime.eqCampMapMarker == nil)
+node = nil; ctrl.submode = 'Camp'; ctrl.camp_radius = 60000
+runtime.updateEqCampMap()
+assert(commands[#commands]:find('label Triune Camp', 1, true))
+assert(commands[#commands]:find('radius 60000', 1, true))
+ctrl.show_eq_camp_radius = false; runtime.updateEqCampMap()
+assert(runtime.eqCampMapMarker == nil)
+print('PASS: Hunt search/anchor X and circles, large radii, movement throttling, Camp/Hunt switches and Travel clearing')

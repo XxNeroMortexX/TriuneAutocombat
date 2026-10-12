@@ -12,7 +12,7 @@ local env = { UI = {}, math = math, tonumber = tonumber,
     end } }
 local helper = assert(source:match('(function UI%.distanceSlider.-\nend)\n\nfunction UI%.drawControlTab'))
 assert(load(helper, 'distanceSlider', 't', env))()
-for _, setting in ipairs({ { 10, 500 }, { 15, 250 }, { 50, 2000 } }) do
+for _, setting in ipairs({ { 1, 2000 }, { 10, 500 }, { 15, 250 }, { 50, 2000 } }) do
     local minimum, scale = setting[1], setting[2]
     edited = nil
     env.UI.distanceSlider('test', scale, minimum, scale)
@@ -35,10 +35,10 @@ local sanitize = assert(source:match('(local function sanitizeModeConfig.-\nend)
 local sanitizeEnv = setmetatable({ MODES = { PULL_CON_LIST = {} } }, { __index = _G })
 local cleanup = assert(load(sanitize .. '\nreturn sanitizeModeConfig', 'sanitize', 't', sanitizeEnv))()
 local saved = { mode = 'Puller', submode = 'Camp', auto_spend_aa_threshold = 1,
-    camp_radius = 60000, hunter_radius = 80000, pull_engage_dist = 40000 }
+    camp_radius = 60000, hunter_radius = 80000, hunter_combat_radius = 70000, pull_engage_dist = 40000 }
 cleanup(saved)
 assert(saved.auto_spend_aa_threshold == 1)
-assert(saved.camp_radius == 60000 and saved.hunter_radius == 80000 and saved.pull_engage_dist == 40000)
+assert(saved.camp_radius == 60000 and saved.hunter_radius == 80000 and saved.pull_engage_dist == 40000 and saved.hunter_combat_radius == 70000)
 saved.auto_spend_aa_threshold = 0; cleanup(saved)
 assert(saved.auto_spend_aa_threshold == 1)
 local plugin = dofile('TAC/lua/tac/auto_aa.lua')
@@ -93,3 +93,6 @@ assert(not aa.checkAutoSpendAA(false) and trained == nil)
 points = 0; aa.lastAutoSpendAAAt = nil; aa.lastPrioEvalAt = nil
 assert(not aa.checkAutoSpendAA(false))
 print('PASS: actual automatic AA evaluator accepts 1-4 points, honors a higher bank, and rejects an empty bank')
+
+-- Edited By: NeroMorte - Hunt Combat Radius must use the same extended input as Camp/Search.
+assert(source:find("UI.distanceSlider('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)", 1, true))
