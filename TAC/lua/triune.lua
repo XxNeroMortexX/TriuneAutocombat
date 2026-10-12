@@ -12713,8 +12713,14 @@ function UI.drawControlTab()
             end
             -- Edited By: NeroMorte - Explain unrestricted Ctrl+click search-radius entry.
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Search distance in units. Ctrl+click to type a larger radius; no gameplay upper cap.')
+                ImGui.SetTooltip('%s', 'Search distance from the toon. Ctrl+click to type a larger value. An active Combat Anchor adds its own fixed boundary; changing Search Radius does not change that anchor circle.')
             end
+            -- Edited By: NeroMorte - Identify which Hunt radius the native map currently represents.
+            local mapAnchor = runtime.huntAnchor()
+            local mapNode = runtime.wpNode()
+            ImGui.TextDisabled(mapNode and mapNode.kind == 'Travel' and 'EQ map circle: none at a Travel waypoint'
+                or mapAnchor and 'EQ map circle: active Combat Radius anchor'
+                or 'EQ map circle: Search Radius (moves with toon)')
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
             if ImGui.IsItemHovered() then
@@ -22573,6 +22579,14 @@ function runtime.anchorRoamTick()
     local mx, my = me.X() or 0, me.Y() or 0
     local wl = pursuit.wanderLoc
     if wl then
+        -- Edited By: NeroMorte - Revalidate an idle roam leg after radius/anchor changes.
+        local ax, ay = wl.x - a.x, wl.y - a.y
+        if ax * ax + ay * ay > r * r then
+            stopMoving()
+            pursuit.wanderLoc = nil
+            runtime.anchorRoamNextAt = now
+            return false
+        end
         local dx, dy = mx - wl.x, my - wl.y
         local navActive = false
         pcall(function() navActive = mq.TLO.Navigation.Active() or false end)

@@ -13,6 +13,8 @@
 - **Edited By: NeroMorte — Propagate plugin render failures to MacroQuest's overlay failure/reset handler** instead of drawing later plugins into an unfinished window. Keep the original traceback and restore the draw-dispatch flag. Sort AA rows before opening ImGui/theme scopes. Add injected render/sort failure regressions. This fixes a verified unsafe error path; the reported native SetNavFocusScope crash still requires fresh-client/dump confirmation.
 - **Edited By: NeroMorte — Back up and hash-check locally modified ingame.cfg during test installation**, while continuing to block other tracked source changes and staged changes.
 
+- **Edited By: NeroMorte — Cancel idle Hunt roaming legs outside a changed anchor/radius** instead of continuing to a destination chosen under the old boundary. Clarify the displayed map circle beside Search Radius. Actual Hunt scanner tests cover inside/outside/exact boundary targets, radius shrink and anchor relocation; the friend's reported behavior still needs its mode/radius/anchor details.
+
 ### 3.1-Morte.9 — zone lists (completed)
 
 - **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.
