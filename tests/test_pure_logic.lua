@@ -7521,9 +7521,10 @@ do
     assert_true(AA_CONTENT:find("if %(not specialList or #specialList == 0%) and not AA%.specialTabReadDone then") ~= nil,
         'Suite 62: scanPlayerAAs respects specialTabReadDone')
 
-    -- 3. Verify main loop honors paused and auto_spend_aa states
-    assert_true(AA_CONTENT:find("if not ctrl%.paused and ctrl%.auto_spend_aa and not mq%.TLO%.Me%.Combat") ~= nil,
-        'Suite 62: main loop only executes pending read when not paused and auto_spend_aa is enabled')
+    -- Edited By: NeroMorte — preserve an active trainer while honoring pause and Auto Spend.
+    -- 3. Verify main loop honors trainer, paused and auto_spend_aa states
+    assert_true(AA_CONTENT:find("if not AA%.pendingAATrain and not ctrl%.paused and ctrl%.auto_spend_aa and not mq%.TLO%.Me%.Combat") ~= nil,
+        'Suite 62: pending read requires no active trainer, not paused, and auto_spend_aa enabled')
     assert_true(AA_CONTENT:find("elseif not ctrl%.auto_spend_aa or ctrl%.paused then%s*AA%.pendingReadSpecialTab = false") ~= nil,
         'Suite 62: main loop clears pending read when auto_spend_aa disabled or paused')
 
