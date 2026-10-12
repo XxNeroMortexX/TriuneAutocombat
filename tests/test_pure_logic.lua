@@ -7790,7 +7790,7 @@ do
     assert_true(AA_CONTENT:find("AA.isSpecialTabAA") ~= nil, 'Suite 64: auto_aa.lua defines isSpecialTabAA')
     assert_true(AA_CONTENT:find("function AA.startAATrainWorkflow") ~= nil, 'Suite 64: auto_aa.lua defines the AA window trainer')
     assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(target.name, allowStop, true)", 1, true) ~= nil, 'Suite 64: prioritized auto-spend goes straight to the window trainer')
-    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop, true)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
+    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop, true, true)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
     assert_true(AA_CONTENT:find("if unspent < AA.threshold() then return false end", 1, true) ~= nil, 'Suite 64: prioritized auto-spend waits for the Bank threshold')
 end
 
@@ -8880,7 +8880,7 @@ do
     local triuneContent = readFile('TAC/lua/triune.lua')
     assert_true(AA_CONTENT:find("function AA%.checkAutoSpendAA%(allowStop%)") ~= nil,
         'Suite 73: triune.lua defines AA.checkAutoSpendAA(allowStop)')
-    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop, automatic%)") ~= nil,
+    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop, automatic, capSpender%)") ~= nil,
         'Suite 73: triune.lua defines AA.startAATrainWorkflow(targetName, allowStop)')
     assert_true(triuneContent:find("Let plugins %(e%.g%. Auto AA purchases%) use the gap between pulls") ~= nil,
         'Suite 73: triune.lua offers the gap between pulls to plugins')
@@ -10270,9 +10270,9 @@ do
         'Suite 85: processAATrainWorkflow has triedUncheckTrainFilter fallback')
 
     -- 4. Verify direct listbox lookup aliases in findAAInWindowLists
-    assert_true(AA_CONTENT:find("List('=Summon Firework')", 1, true) ~= nil,
+    assert_true(AA_CONTENT:find("AA.listIndex(child, '=Summon Firework')", 1, true) ~= nil,
         'Suite 85: findAAInWindowLists supports direct List lookup for Summon Firework')
-    assert_true(AA_CONTENT:find("List('=Alternately Advanced Fireworks')", 1, true) ~= nil,
+    assert_true(AA_CONTENT:find("AA.listIndex(child, '=Alternately Advanced Fireworks')", 1, true) ~= nil,
         'Suite 85: findAAInWindowLists supports direct List lookup for Alternately Advanced Fireworks')
 
     -- 5. Functional simulation of multi-path readiness check

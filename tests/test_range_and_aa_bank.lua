@@ -68,6 +68,7 @@ local automatic = assert(aaSource:match('(function AA%.checkAutoSpendAA.-\nend)'
 local points, bank, trained = 1, 1, nil
 local aa = {
     threshold = function() return bank end,
+    purchaseCombatBlocked = function() return false end,
     automaticNames = function() return { 'One Point AA' } end,
     isIgnored = function() return false end,
     purchaseInfo = function(name) return { name = name, rank = 0, maxRank = 1, cost = 1 } end,
