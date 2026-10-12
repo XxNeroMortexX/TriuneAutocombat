@@ -6,6 +6,8 @@
 - **Edited By: NeroMorte — Recheck queued automatic AA selection and share combat guards across all purchase entry points**, including hostile XTargets during pending training. Preserve All standard mode, separate cap spending, Ignore, target ranks, purchase order, bank settings, repeatable controls and quiet messages. Treat a failed combat-state read as unsafe to train.
 - **Created By: NeroMorte — Add actual-trainer regressions and a small backed-up Windows test installer**. This addresses verified code defects; the reports from other players still require in-game confirmation.
 
+- **Edited By: NeroMorte — Fix the Auto AA Order sort when changing its number**: use mutually exclusive ascending/descending comparisons so editing Order cannot make both rows compare as first and interrupt ImGui rendering. Exercise the actual browser sorter with repeated order edits, ties and unassigned values in both directions.
+
 ### 3.1-Morte.9 — zone lists (completed)
 
 - **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.

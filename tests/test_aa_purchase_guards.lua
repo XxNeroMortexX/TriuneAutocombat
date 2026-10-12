@@ -107,5 +107,45 @@ w.ctrl.auto_aa_selection = 'priorities'
 assert(w.aa.automaticAllowed('Alternately Advanced Fireworks', true))
 w.ctrl.auto_aa_priorities['Run Speed'] = true
 assert(not w.aa.automaticAllowed('Alternately Advanced Fireworks', true))
+-- Edited By: NeroMorte - Order +/- rebuilds the real browser sort; both directions must be strict.
+w = world()
+w.ctrl.auto_aa_sort_by = 'order'
+w.aa.scannedAAs = {}
+for i = 1, 48 do
+    local name = string.format('Sort AA %02d', i)
+    w.aa.scannedAAs[i] = { name = name, rank = 0, maxRank = 5, cost = (i % 3) + 1 }
+end
+local realSort = table.sort
+table.sort = function(items, less)
+    for _, a in ipairs(items) do
+        assert(not less(a, a), 'Order sort must not put an AA before itself')
+        for _, b in ipairs(items) do
+            assert(not (less(a, b) and less(b, a)), 'Order sort compares both AAs as first')
+        end
+    end
+    return realSort(items, less)
+end
+for _, asc in ipairs({ true, false }) do
+    w.ctrl.auto_aa_sort_asc = asc
+    for edit = 0, 8 do
+        w.ctrl.auto_aa_purchase_order = {}
+        for i, item in ipairs(w.aa.scannedAAs) do
+            if i % 4 ~= 0 then w.ctrl.auto_aa_purchase_order[item.name] = (i + edit) % 7 end
+        end
+        w.aa.aaFilterDirty = true
+        local sorted = w.aa.getFilteredSortedAAs()
+        assert(#sorted == 48)
+        for i = 2, #sorted do
+            local function order(item)
+                local value = w.ctrl.auto_aa_purchase_order[item.name] or 0
+                return value > 0 and value or math.huge
+            end
+            local before, after = order(sorted[i - 1]), order(sorted[i])
+            if asc then assert(before <= after) else assert(before >= after) end
+        end
+        assert(w.aa.getFilteredSortedAAs() == sorted, 'Unedited browser sort must stay cached')
+    end
+end
+table.sort = realSort
 print = savedPrint
 print('PASS: exact row identity, Fireworks aliases, one Train click, queued-selection/limits and combat guards, All mode and cap preservation')

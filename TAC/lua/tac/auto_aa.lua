@@ -1701,7 +1701,10 @@ function AA.getFilteredSortedAAs()
             local aOrder, bOrder = tonumber(orders[a.name]), tonumber(orders[b.name])
             aOrder = aOrder and aOrder > 0 and aOrder or math.huge
             bOrder = bOrder and bOrder > 0 and bOrder or math.huge
-            if aOrder ~= bOrder then return asc and aOrder < bOrder or aOrder > bOrder end
+            -- Edited By: NeroMorte - Keep ascending/descending Order comparisons mutually exclusive.
+            if aOrder ~= bOrder then
+                if asc then return aOrder < bOrder else return aOrder > bOrder end
+            end
             if ctrl.auto_aa_buy_order ~= 'list' and a.cost ~= b.cost then
                 return (a.cost or 0) < (b.cost or 0)
             end
