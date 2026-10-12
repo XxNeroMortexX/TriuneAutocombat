@@ -10912,12 +10912,16 @@ do
     assert_eq(ctrlNew.plugins.auto_accept.runInCombat, true, 'Suite 88: collectSettings persists runInCombat')
     assert_true(ctrlNew.plugins.auto_accept.settings == nil, 'Suite 88: auto_accept does not double-persist ctrl keys')
 
-    -- 7. A crashing render hook flags the plugin instead of retrying every frame
+    -- Edited By: NeroMorte - A draw failure must escape to MQ, while flagging the plugin and preserving its traceback.
+    -- 7. A crashing render hook stops the callback instead of reusing its ImGui stack.
     pm.plugins.hud_group.enabled = true
     pm.plugins.hud_group.status = 'Active'
     local realDraw = pm.plugins.hud_group.instance.onDrawUI
     pm.plugins.hud_group.instance.onDrawUI = function() error('boom') end
-    pm.drawUI()
+    local drawOK, drawError = pcall(pm.drawUI)
+    assert_eq(drawOK, false, 'Suite 88: render failure escapes to the MQ callback handler')
+    assert_true(tostring(drawError):find('boom', 1, true) ~= nil, 'Suite 88: original render error survives dispatch')
+    assert_eq(pm.inDraw, false, 'Suite 88: render failure clears the draw dispatch flag')
     assert_eq(pm.plugins.hud_group.status, 'Error', 'Suite 88: onDrawUI error transitions plugin to Error')
     assert_true(tostring(pm.plugins.hud_group.errorMsg):find('onDrawUI: ') ~= nil, 'Suite 88: onDrawUI error message recorded')
     local drawCalls = 0
