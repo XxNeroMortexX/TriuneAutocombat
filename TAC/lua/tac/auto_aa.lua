@@ -1630,6 +1630,8 @@ end
 
 -- Tick side of AA.requestScan.
 function AA.runPendingScan()
+    -- Edited By: NeroMorte - Defer scans until the trainer releases its AA window selection.
+    if AA.pendingAATrain then return end
     if AA.scanRequestAt and os.clock() >= AA.scanRequestAt then
         AA.scanRequestAt = nil
         AA.lastAAScanAt = 0
@@ -3337,7 +3339,7 @@ function AA.tick()
         AA.requestScan(0)
     end
     if AA.pendingReadSpecialTab then
-        if not ctrl.paused and ctrl.auto_spend_aa and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not rt.isCasting() then
+        if not AA.pendingAATrain and not ctrl.paused and ctrl.auto_spend_aa and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not rt.isCasting() then
             AA.pendingReadSpecialTab = false
             if AA.readSpecialTabOnce then AA.readSpecialTabOnce(false) end
             AA.requestScan(0)

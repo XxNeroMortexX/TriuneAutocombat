@@ -73,10 +73,16 @@ assert(not w.aa.rowMatches('Run Speed', 'Run Speed Plus'))
 local callableList = { List = function() return setmetatable({}, { __call = function() return 801 end }) end }
 assert(w.aa.listIndex(callableList, '=Run Speed') == 801)
 
-w = world(); w.queue(); w.aa.processAATrainWorkflow()
+w = world(); w.queue()
+local scans = 0
+w.aa.scanPlayerAAs = function() scans = scans + 1 end
+w.aa.requestScan(0); w.aa.runPendingScan()
+assert(scans == 0 and w.aa.scanRequestAt ~= nil)
+w.aa.processAATrainWorkflow()
 assert(w.clicks == 1 and w.nativeClicks == 0 and w.points == 99)
 assert(w.aa.pendingAATrain.step == 'verify')
 w.aa.processAATrainWorkflow(); assert(w.clicks == 1)
+w.aa.pendingAATrain = nil; w.aa.runPendingScan(); assert(scans == 1)
 
 for _, change in ipairs({ function(x) x.ctrl.auto_aa_priorities['Run Speed'] = nil end,
     function(x) x.ctrl.auto_spend_aa = false end,

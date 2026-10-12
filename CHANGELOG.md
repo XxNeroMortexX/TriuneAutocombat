@@ -2,7 +2,7 @@
 
 ## 2026-10-11 — Morte.10 test / 3.1-Morte.9
 
-- **Edited By: NeroMorte — Guard AA purchases against wrong/changed rows and duplicate Train clicks**: unwrap callable native list indices, validate exact AA row identity and known Fireworks aliases, verify the active tab/selected row immediately before Train, and send one /notify click pair. Consume Experience can no longer fall back to a Fireworks row.
+- **Edited By: NeroMorte — Guard AA purchases against wrong/changed rows and duplicate Train clicks**: unwrap callable native list indices, validate exact AA row identity and known Fireworks aliases, verify the active tab/selected row immediately before Train, and send one /notify click pair. Defer queued scans/Special-tab reads while training so they cannot change the trainer's selection. Consume Experience can no longer fall back to a Fireworks row.
 - **Edited By: NeroMorte — Recheck queued automatic AA selection and share combat guards across all purchase entry points**, including hostile XTargets during pending training. Preserve All standard mode, separate cap spending, Ignore, target ranks, purchase order, bank settings, repeatable controls and quiet messages. Treat a failed combat-state read as unsafe to train.
 - **Created By: NeroMorte — Add actual-trainer regressions and a small backed-up Windows test installer**. This addresses verified code defects; the reports from other players still require in-game confirmation.
 
