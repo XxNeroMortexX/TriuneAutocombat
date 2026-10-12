@@ -14,8 +14,16 @@ $Remote = git -C $Dev remote get-url origin
 if ($LASTEXITCODE -ne 0 -or $Remote -notmatch '(?i)github\.com[:/]XxNeroMortexX/TriuneAutocombat(?:\.git)?/?$') {
     throw 'origin does not point to the expected Triune fork.'
 }
-git -C $Dev diff --quiet
-if ($LASTEXITCODE -ne 0) { throw 'Tracked working files have changes; stopped. No stash or reset was used.' }
+# Edited By: NeroMorte - Preserve the runtime-edited config; block every other tracked modification.
+$Changed = @(git -C $Dev diff --name-only)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect tracked working changes.' }
+$Blocked = @($Changed | Where-Object { $_ -ne 'TAC/config/ingame.cfg' })
+if ($Blocked.Count) { throw "Tracked source changes found: $($Blocked -join ', '). No stash or reset was used." }
+$IngamePath = Join-Path $Dev 'TAC/config/ingame.cfg'
+$IngameBefore = $null
+if (Test-Path -LiteralPath $IngamePath -PathType Leaf) {
+    $IngameBefore = (Get-FileHash -LiteralPath $IngamePath -Algorithm SHA256).Hash
+}
 git -C $Dev diff --cached --quiet
 if ($LASTEXITCODE -ne 0) { throw 'There are staged changes; stopped.' }
 $BeforeBranch = git -C $Dev branch --show-current
@@ -74,6 +82,8 @@ foreach ($Relative in $Files) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Copy) -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $Dev $Relative) -Destination $Copy
 }
+# Edited By: NeroMorte - Back up the runtime config without replacing its local changes.
+if ($IngameBefore) { Copy-Item -LiteralPath $IngamePath -Destination (Join-Path $Backup 'ingame.cfg.before') }
 # Created By: NeroMorte - Preserve per-character settings before testing AA and radius controls.
 if (Test-Path -LiteralPath $Config) {
     $ConfigBackup = Join-Path $Backup 'config'
@@ -94,6 +104,9 @@ try {
     git -C $Dev merge --ff-only $Revision
     if ($LASTEXITCODE -ne 0) { throw 'Test branch fast-forward failed.' }
     if ((git -C $Dev rev-parse HEAD) -ne $Revision) { throw 'HEAD verification failed.' }
+    if ($IngameBefore -and (Get-FileHash -LiteralPath $IngamePath -Algorithm SHA256).Hash -ne $IngameBefore) {
+        throw 'Runtime ingame.cfg changed during installation; stopped.'
+    }
     foreach ($Entry in $Links) {
         $Linked = $false
         $Resolved = Resolve-LinkPath $Entry.Live ([ref]$Linked)

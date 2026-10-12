@@ -2768,6 +2768,8 @@ end
 -- Edited By: NeroMorte - AA ignore/target/order controls and visible repeatable spender options.
 function AA.drawWindow()
     if not ctrl.show_auto_aa then return end
+    -- Edited By: NeroMorte - Finish Lua sorting before opening any ImGui/theme scope.
+    local allItems = AA.getFilteredSortedAAs and AA.getFilteredSortedAAs() or {}
     core.pushTheme()
     ImGui.SetNextWindowSize(core.px(760), core.px(560), ImGuiCond.FirstUseEver)
     core.preBeginWindow('auto_aa')
@@ -3018,7 +3020,6 @@ function AA.drawWindow()
     ImGui.Separator()
 
     -- Compact Row 2: Search, Sort & View Filter Toggles
-    local allItems = AA.getFilteredSortedAAs and AA.getFilteredSortedAAs() or {}
     local prioCount = 0
     if ctrl.auto_aa_priorities then
         for _, enabled in pairs(ctrl.auto_aa_priorities) do
@@ -3599,3 +3600,4 @@ plugin.help = {
 plugin.AA = AA
 
 return plugin
+

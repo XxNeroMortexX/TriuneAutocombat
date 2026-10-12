@@ -7981,9 +7981,8 @@ function runtime.initPluginManager()
         end
     end
 
-    -- Render hook. A draw error is fatal for that plugin: an exception between
-    -- ImGui.Begin and ImGui.End leaves the ImGui stack unbalanced, so we flag the
-    -- plugin as Error (which stops drawing it) rather than retrying every frame.
+    -- Edited By: NeroMorte - A render error can leave ImGui stacks unbalanced.
+    -- Record the plugin failure and propagate it to MQ's callback failure/reset handler.
     function pm.drawUI()
         pm.inDraw = true
         for _, id in ipairs(pm.pluginOrder) do
@@ -7992,6 +7991,10 @@ function runtime.initPluginManager()
                 local ok, err = xpcall(p.instance.onDrawUI, debug.traceback)
                 if not ok then
                     pm.reportError(p, 'onDrawUI', err)
+                    -- Edited By: NeroMorte - Stop this callback so MQ can reset an unbalanced overlay.
+                    -- Continuing into another plugin would reuse the failed plugin's ImGui window stack.
+                    pm.inDraw = false
+                    error(err, 0)
                 end
             end
         end
@@ -8036,7 +8039,8 @@ function runtime.initPluginManager()
         pm.inDraw = wasInDraw
         if not ok then
             pm.reportError(p, 'onDrawSettings', err)
-            return false
+            -- Edited By: NeroMorte - Let MQ handle a render failure before the parent window draws again.
+            error(err, 0)
         end
         return true
     end

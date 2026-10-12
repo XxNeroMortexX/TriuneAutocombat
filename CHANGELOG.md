@@ -10,6 +10,9 @@
 
 - **Edited By: NeroMorte — Restore extended Hunt Combat Radius input and native Hunt map markers**: use the same distance control as Camp/Search, draw the active Hunt anchor or a moving Search Radius circle, refresh setting edits immediately, and clear Hunt markers at Travel waypoints. Back up and verify the main Lua link in the focused installer; test large saved radii and actual map helper behavior.
 
+- **Edited By: NeroMorte — Propagate plugin render failures to MacroQuest's overlay failure/reset handler** instead of drawing later plugins into an unfinished window. Keep the original traceback and restore the draw-dispatch flag. Sort AA rows before opening ImGui/theme scopes. Add injected render/sort failure regressions. This fixes a verified unsafe error path; the reported native SetNavFocusScope crash still requires fresh-client/dump confirmation.
+- **Edited By: NeroMorte — Back up and hash-check locally modified ingame.cfg during test installation**, while continuing to block other tracked source changes and staged changes.
+
 ### 3.1-Morte.9 — zone lists (completed)
 
 - **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.
