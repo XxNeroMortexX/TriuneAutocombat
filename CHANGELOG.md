@@ -1,5 +1,12 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-13 — target / group XTarget test
+
+- **Edited By: NeroMorte — Apply Ignore Distant XTargets across Hunt, Camp and pet pulling**, including shared combat counters and pet-camp acquisition. Keep direct player/pet threats and current pull tags/batches active, retain unreachable local threats as fight blockers, and expose the existing chase-distance option in all pull submodes. Distant group combat no longer blocks Hunt idle movement through an inconsistent slot policy.
+- **Edited By: NeroMorte — Finish an engaged valid current target before automatic aggro/add switches**. Release dead, ignored or unreachable targets; preserve forced targets, Main Assist selection and closer-target travel rules. Add actual-source regressions and a backed-up link-preserving Windows installer. Both reported gameplay issues remain pending in-game confirmation.
+
+---
+
 ## 2026-10-12 — Morte.10 test
 
 - **Edited By: NeroMorte — Render Bot Net Connection text without MQ2Lua's formatter**, using TextUnformatted inside a balanced wrap scope for status, local addresses, errors and instructions. This targets the reported immediate Connection-tab snprintf crash; confirmation still requires a clean-client test. Add actual-tab tests with literal percent sequences, long/empty text, password controls and queued network actions; extend the backed-up installer to verify boxnet.lua.

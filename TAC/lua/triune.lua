@@ -3062,7 +3062,23 @@ end
 -- this server, so a second character pulling on its own across the zone used
 -- to make isCombat() true here, count toward every Min XT gate and fire each
 -- 'in combat' AA / disc / ability while this character stood idle.
+-- Edited By: NeroMorte - Our pull must stay active even after aggro moves to an ally.
+function runtime.ownsPullXtarget(id)
+    if not id or id <= 0 then return false end
+    if runtime.pullTargetId == id and runtime.pullState ~= 'IDLE' then return true end
+    local pet = runtime.petCamp
+    return pet and ((pet.batch and pet.batch[id]) or (pet.tag and pet.tag.id == id)
+        or pet.fightId == id) and true or false
+end
+
 local function xtSlotCounts(xt, id)
+    -- Edited By: NeroMorte - Apply the same distant-group policy to every Puller path.
+    if ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true then
+        if xtSlotFightingMe(xt) or runtime.ownsPullXtarget(id) then return true end
+        local ok, d = pcall(function() return xt.Distance3D() or xt.Distance() end)
+        -- A failed distance read must not hide a possible threat.
+        return not ok or type(d) ~= 'number' or d <= (ctrl.xtar_nav_dist or 150)
+    end
     if not ctrl or ctrl.mode ~= 'Manual' then return true end
     if xtSlotFightingMe(xt) then return true end
     if ctrl.manual_auto_xtarget == false then return false end
@@ -12697,6 +12713,23 @@ function UI.drawControlTab()
         end
 
 
+        -- Edited By: NeroMorte - Share distance controls across all pull modes.
+        ImGui.SetNextItemWidth(UI.px(180))
+        ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25,
+            300)
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip(
+                'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
+        end
+
+        ctrl.ignore_distant_xtargets = ImGui.Checkbox('Ignore Distant XTargets When Pulling##pullerHuntXtarIgnore',
+            ctrl.ignore_distant_xtargets == true)
+        if ImGui.IsItemHovered() then
+            ImGui.SetTooltip(
+                'Applies to Hunt, Camp and pet pulling. Ignore shared group enemies beyond this chase range.\nEnemies attacking you or your pets, and your active pull batch, still block new pulls.')
+        end
+
+
         if ctrl.submode == 'Hunt' then
             accent(ARC, 'Puller (Hunt)')
             ImGui.SetNextItemWidth(UI.px(180))
@@ -12739,21 +12772,6 @@ function UI.drawControlTab()
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_max_level = ImGui.SliderInt('Max NPC Level', ctrl.hunter_max_level or 100, 1, 100)
             if ctrl.hunter_min_level > ctrl.hunter_max_level then ctrl.hunter_min_level = ctrl.hunter_max_level end
-
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25,
-                300)
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip(
-                    'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
-            end
-
-            ctrl.ignore_distant_xtargets = ImGui.Checkbox('Ignore Distant XTargets When Pulling##pullerHuntXtarIgnore',
-                ctrl.ignore_distant_xtargets == true)
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip(
-                    'When checked, an XTarget enemy farther than Max XTarget Chase Range is skipped entirely\ninstead of being chased -- Puller looks for a new mob to pull instead.')
-            end
 
             ImGui.Dummy(0, UI.px(2))
 
@@ -17534,7 +17552,7 @@ local function isCombat()
         -- The hater / aggro counters cover the whole group's haters. Manual
         -- mode judges each slot below (xtSlotCounts) so a second character's
         -- pulls elsewhere in the zone do not read as this character's combat.
-        if not (ctrl and ctrl.mode == 'Manual') then
+        if not (ctrl and (ctrl.mode == 'Manual' or (ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true))) then
             local hCount = mq.TLO.Me.XTHaterCount() or 0
             if hCount > 0 then return true end
             local aCount = mq.TLO.Me.XTAggroCount() or 0
@@ -17597,10 +17615,13 @@ function runtime.medBreakCombatThreat()
             pcall(function()
                 if mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() then threatened = true end
                 if mq.TLO.Me.CombatState() == 'COMBAT' then threatened = true end
-                local hCount = mq.TLO.Me.XTHaterCount() or 0
-                if hCount > 0 then threatened = true end
-                local aCount = mq.TLO.Me.XTAggroCount() or 0
-                if aCount > 0 then threatened = true end
+                -- Edited By: NeroMorte - Shared counters cannot bypass filtered group XTargets.
+                if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+                    local hCount = mq.TLO.Me.XTHaterCount() or 0
+                    if hCount > 0 then threatened = true end
+                    local aCount = mq.TLO.Me.XTAggroCount() or 0
+                    if aCount > 0 then threatened = true end
+                end
             end)
         end
         return threatened, threatened and 'combat / hostile on XTarget' or nil
@@ -22881,10 +22902,13 @@ function runtime.checkPullHpRest()
         pcall(function()
             if mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() then inCombatOrXtar = true end
             if mq.TLO.Me.CombatState() == 'COMBAT' then inCombatOrXtar = true end
-            local hCount = mq.TLO.Me.XTHaterCount() or 0
-            if hCount > 0 then inCombatOrXtar = true end
-            local aCount = mq.TLO.Me.XTAggroCount() or 0
-            if aCount > 0 then inCombatOrXtar = true end
+            -- Edited By: NeroMorte - Shared counters cannot bypass filtered group XTargets.
+            if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+                local hCount = mq.TLO.Me.XTHaterCount() or 0
+                if hCount > 0 then inCombatOrXtar = true end
+                local aCount = mq.TLO.Me.XTAggroCount() or 0
+                if aCount > 0 then inCombatOrXtar = true end
+            end
         end)
     end
 
@@ -23281,12 +23305,26 @@ function runtime.playerIsEngagingTarget(tid)
     return false
 end
 
+-- Edited By: NeroMorte - Finish a valid current fight before an add/closer-mob switch.
+function runtime.keepCurrentCombatTarget(id)
+    if not id or id <= 0 or not isHostileTarget(id) or isUnreachable(id) then return false end
+    local ok, keep = pcall(function()
+        local s = mq.TLO.Spawn(id)
+        if not s or not s() or isIgnored(s.CleanName()) then return false end
+        return isXTargetId(id) or runtime.playerIsEngagingTarget(id) or runtime.targetIsEngaged(id)
+    end)
+    return ok and keep or false
+end
+
 function runtime.checkAggroSwitch()
     if isCastingOrStarting() or getActiveTargetRequiredCastingId() then return false end
     if runtime.forcedTargetId() then return false end
     if (os.clock() - (runtime.lastAggroSwitchAt or 0)) < 2.0 then return false end
     local cur = mq.TLO.Target
     local curId = (cur() and cur.Type() == 'NPC') and cur.ID() or 0
+    if runtime.keepCurrentCombatTarget(curId) then return false end
+    -- Edited By: NeroMorte - Dead/ignored/unreachable targets must release selection immediately.
+    if curId > 0 and (not isHostileTarget(curId) or isUnreachable(curId) or isIgnored(cur.CleanName())) then curId = 0 end
     local curDist = (curId > 0) and (cur.Distance3D() or 999) or 999
     local bestId, bestDist = 0, 999
     local bestIsHittingMe = false
@@ -23504,8 +23542,11 @@ function runtime.hasDowntimeAggroThreat()
     local cs = nil
     pcall(function() cs = mq.TLO.Me.CombatState() end)
     if cs == 'COMBAT' then return true end
-    if (mq.TLO.Me.XTHaterCount() or 0) > 0 then return true end
-    if (mq.TLO.Me.XTAggroCount() or 0) > 0 then return true end
+    -- Edited By: NeroMorte - Ignore distant shared combat only when explicitly enabled.
+    if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+        if (mq.TLO.Me.XTHaterCount() or 0) > 0 then return true end
+        if (mq.TLO.Me.XTAggroCount() or 0) > 0 then return true end
+    end
     if runtime.anyXtarAlive and runtime.anyXtarAlive(true) then return true end
     local isAggroed = false
     pcall(function()
@@ -24285,7 +24326,7 @@ local function combatTick()
             if xtarId then
                 if pursuit.unreachableIds then pursuit.unreachableIds[xtarId] = nil end
                 local curId = haveNPC and mq.TLO.Target.ID() or 0
-                if curId ~= xtarId and (curId == 0 or not isXTargetId(curId)) then
+                if curId ~= xtarId and not runtime.keepCurrentCombatTarget(curId) then
                     stopMoving()
                     pursuit.id = 0
                     pursuit.lastNavTargetId = 0
@@ -24344,7 +24385,8 @@ local function combatTick()
                 local id = huntNPCXtarget(maxHuntXtarZ, maxHuntXtarDist)
                 -- Edited By: NeroMorte - Preserve fight-before-pull gating alongside upstream waypoint completion.
                 local scanComplete = false
-                if not id and (not anyXtarAlive(true) or ctrl.ignore_distant_xtargets == true) then
+                -- Edited By: NeroMorte - The shared slot policy already removes distant group targets.
+                if not id and not anyXtarAlive(true) then
                     -- In anchor patrol an uncached scan makes each empty result
                     -- safe to use for completion; legacy scan caching is unchanged.
                     id, scanComplete = findRoamTarget(scanRadius, maxHuntZ, ctrl.hunter_min_level,
@@ -26387,7 +26429,8 @@ function runtime.initPetCamp()
             for i = 1, (mq.TLO.Me.XTargetSlots() or 13) do
                 local xt = mq.TLO.Me.XTarget(i)
                 local id = xt.ID() or 0
-                if id > 0 and isSpawnAlive(id) and isHostileTarget(id) then ids[#ids + 1] = id end
+                -- Edited By: NeroMorte - Match Camp/Hunt while retaining our tagged/batched mobs.
+                if id > 0 and isSpawnAlive(id) and isHostileTarget(id) and xtSlotCounts(xt, id) then ids[#ids + 1] = id end
             end
             return ids
         end,
