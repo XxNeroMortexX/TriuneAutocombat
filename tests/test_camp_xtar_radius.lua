@@ -91,4 +91,9 @@ env.ImGui = { TextDisabled = function() end, SetNextItemWidth = function() end,
 local draw = compile('return function()\n' .. source:sub(beginUI, endUI - 1) .. '\nend\nend', env)
 ctrl.submode = 'Camp'; draw(); assert(widgets == 0)
 ctrl.submode = 'Hunt'; draw(); assert(widgets == 1)
+-- Edited By: NeroMorte - Catch the separate legacy Camp slider, not only the shared prefix.
+assert(not source:find('Max XTarget Chase Range##pullerCampXtar', 1, true))
+for _, id in ipairs({ 'manualXtarDist', 'pullerHuntXtar', 'assistXtarDist' }) do
+    assert(source:find('Max XTarget Chase Range##' .. id, 1, true), id .. ' slider removed')
+end
 print('PASS: fixed Camp circle, opposite edge, outside-but-close exclusion, whole-circle scan, movement, large/live radii and Hunt-only slider')

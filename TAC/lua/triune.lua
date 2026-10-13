@@ -12901,7 +12901,7 @@ function UI.drawControlTab()
                 if mx and my and mz then ctrl.camp_loc = { x = mx, y = my, z = mz } end
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Set the current location as the Puller Camp anchor point. Puller returns here after pulling.')
+                ImGui.SetTooltip('Set the center of the Pull Radius circle. Ordinary Camp fights at the mob; stationary pet return requires its pull-back option.')
             end
             ImGui.SameLine()
             if ImGui.Button('Clear Camp##pullerCampClear') then
@@ -12949,13 +12949,7 @@ function UI.drawControlTab()
             end
             if ctrl.pull_min_level > ctrl.pull_max_level then ctrl.pull_min_level = ctrl.pull_max_level end
 
-            ImGui.SetNextItemWidth(UI.px(180))
-            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerCampXtar', ctrl.xtar_nav_dist or 150, 25,
-                300)
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip(
-                    'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
-            end
+            -- Edited By: NeroMorte - Camp XTargets share Pull Radius; no second chase slider.
         end
 
         -- Puller Waypoint Patrol Section
