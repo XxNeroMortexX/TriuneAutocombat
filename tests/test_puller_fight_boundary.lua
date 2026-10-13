@@ -36,9 +36,11 @@ local hunt = assert(load('return function() '..source:sub(start, finish - 1)..' 
 xt, candidate, fresh = true, nil, 0; hunt(); assert(fresh == 0)
 xt = false; hunt(); assert(fresh == 1)
 xt, candidate = true, 101; assert(hunt() == 101 and fresh == 1)
--- Deliberate Ignore Distant XTargets retains Gennro's opt-in behavior.
-candidate, ctrl.ignore_distant_xtargets = nil, true; hunt(); assert(fresh == 2)
-print('PASS: ordinary Camp/Hunt finish XTargets, engaged closer-target lock, explicit Hunt ignore option preserved')
+-- Edited By: NeroMorte - Distance filtering happens before this gate; nearby threats still block pulls.
+candidate, ctrl.ignore_distant_xtargets = nil, true; hunt(); assert(fresh == 1)
+-- The per-slot policy excludes distant shared mobs (executed in test_target_xtar_policy.lua).
+xt = false; hunt(); assert(fresh == 2)
+print('PASS: ordinary Camp/Hunt finish eligible XTargets, engaged closer-target lock, distant filter retains nearby fight gate')
 
 -- Edited By: NeroMorte - Execute the merged scanner with pet exclusions and waypoint fresh scans.
 do
