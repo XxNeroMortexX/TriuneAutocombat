@@ -10,8 +10,7 @@ local connection = { enabled = true, status = 'Connection 100%: %s %n', servers 
 function connection:request(action, server, password)
     requests[#requests + 1] = { action = action, server = server, password = password }
 end
-local trace = {}
-local net = { connection = connection, traceConnection = function(step) trace[#trace + 1] = step end }
+local net = { connection = connection }
 local function formatted() error('Connection tab must not enter a native text formatter') end
 local env = setmetatable({ net = net,
     core = { saveLoadout = function() error('Opening the tab must not change settings') end },
@@ -59,19 +58,3 @@ clicked = 'Connect##bnConnect'; net.drawConnection()
 assert(requests[#requests].action == 'connect')
 assert(requests[#requests].server.host == connection.host)
 print('PASS: actual Connection tab uses literal wrapped text, handles percent/long/blank content, and queues network actions')
-
--- Edited By: NeroMorte - A breadcrumb is closed on disk before its associated native call.
-local writes, flushes, closes = {}, 0, 0
-local traceEnv = setmetatable({ net = { connectionTraceEnabled = true, connectionTracePath = 'trace.log' },
-    io = { open = function(path, mode)
-        assert(path == 'trace.log' and mode == 'a')
-        return { write = function(_, step) writes[#writes + 1] = step end,
-            flush = function() flushes = flushes + 1 end, close = function() closes = closes + 1 end }
-    end },
-}, { __index = _G })
-assert(load(assert(source:match('(function net%.traceConnection.-\nend)')), 'actualTraceWriter', 't', traceEnv))()
-traceEnv.net.traceConnection('before native widget')
-assert(writes[1] == 'before native widget' and flushes == 1 and closes == 1)
-traceEnv.net.connectionTraceEnabled = false; traceEnv.net.traceConnection('ignored')
-assert(#writes == 1)
-print('PASS: one-shot Connection trace flushes/closes each breadcrumb and stops when disabled')

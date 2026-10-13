@@ -6,6 +6,8 @@
 
 - **Edited By: NeroMorte — Add a temporary one-shot Connection rendering trace after the unformatted-text change failed to resolve the native crash**. Flush and close constant step labels before tab/widget/native-TLO calls and window cleanup, without writing addresses or passwords. Stop tracing after the first completed Connection frame. Do not claim the reported snprintf crash is fixed before the diagnostic result.
 
+- **Edited By: NeroMorte — Evaluate indexed EQBC discovery members before building server labels**: DiscoveryHost/Port/Password and Setting(control) now return plain Lua values; skip expired or malformed rows instead of letting native MQ objects enter labels or connection state. The flushed trace ends during discovered-row construction, and actual snapshot/renderer tests reproduce the raw-host defect with callable MQ objects before the fix. Remove the temporary render trace after identifying this path.
+
 ---
 
 ## 2026-10-11 — Morte.10 test / 3.1-Morte.9
