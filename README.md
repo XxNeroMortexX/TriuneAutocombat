@@ -236,4 +236,6 @@ Auto AA honors the **Auto-buy selection**: Checked priorities only, or All stand
 
 ### Pull and Hunt radius markers
 
+**Camp XTargets use the same fixed Pull Radius circle as the map**, measured from the camp marker. The bot can approach eligible mobs anywhere inside that circle, even when it is standing at the opposite edge. Camp hides the separate Max XTarget Chase Range / Ignore Distant XTargets controls; their saved values still apply in the other modes that use them. Height, ignored-target and unreachable-target checks still apply. Hunt retains its own chase controls and anchor rules.
+
 The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X and circle through MQ2Map. Camp uses the camp position and Pull Radius. Hunt uses the active Combat Anchor (including a Hunt waypoint); without an active anchor, Search Radius follows the toon. Travel waypoints clear the circle. Search Radius and Combat Radius are separate limits: increase both when you want a larger search inside an anchored hunt area. Camp, Search and Combat Radius use the same 10,000-unit drag scale and accept larger values by Ctrl+clicking the number.

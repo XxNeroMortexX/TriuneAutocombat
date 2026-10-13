@@ -3071,10 +3071,31 @@ function runtime.ownsPullXtarget(id)
         or pet.fightId == id) and true or false
 end
 
+-- Edited By: NeroMorte - Camp XTargets use the fixed map circle, never distance from the toon.
+-- nil means native coordinates are unavailable; scanners fail closed and threat gates retain it.
+function runtime.campXtargetInRadius(id)
+    local camp = ctrl and ctrl.camp_loc
+    if not camp or not id or id <= 0 then return nil end
+    local ok, inside = pcall(function()
+        local spawn = mq.TLO.Spawn(id)
+        if not spawn or not spawn() then return nil end
+        local x, y = spawn.X(), spawn.Y()
+        local radius = ctrl.camp_radius or 100
+        if type(x) ~= 'number' or type(y) ~= 'number' or type(camp.x) ~= 'number'
+            or type(camp.y) ~= 'number' or type(radius) ~= 'number' then return nil end
+        local dx, dy = x - camp.x, y - camp.y
+        return dx * dx + dy * dy <= math.max(0, radius) ^ 2
+    end)
+    if not ok then return nil end
+    return inside
+end
+
 local function xtSlotCounts(xt, id)
     -- Edited By: NeroMorte - Apply the same distant-group policy to every Puller path.
-    if ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true then
+    if ctrl and ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets == true) then
         if xtSlotFightingMe(xt) or runtime.ownsPullXtarget(id) then return true end
+        -- Edited By: NeroMorte - Ignore unrelated group fights outside Camp's Pull Radius.
+        if ctrl.submode == 'Camp' then return runtime.campXtargetInRadius(id) ~= false end
         local ok, d = pcall(function() return xt.Distance3D() or xt.Distance() end)
         -- A failed distance read must not hide a possible threat.
         return not ok or type(d) ~= 'number' or d <= (ctrl.xtar_nav_dist or 150)
@@ -3233,7 +3254,9 @@ function runtime.pruneXtOverrides()
 end
 
 function runtime.findFirstNPCXtarget(unmezzedOnly, isIgnoredFn, isUnreachableFn, maxDist, maxZ, isBuffActiveFn)
-    maxDist = maxDist or (ctrl and ctrl.xtar_nav_dist) or 150
+    local campMode = ctrl and ctrl.mode == 'Puller' and ctrl.submode == 'Camp'
+    -- Edited By: NeroMorte - A mob in the circle can be up to two radii from the toon.
+    maxDist = campMode and math.huge or (maxDist or (ctrl and ctrl.xtar_nav_dist) or 150)
     -- A forced spawn (Extended Target window) wins over every distance / HP
     -- rule while it is a live hostile we can path to.
     local forceId = runtime.xtForceId or 0
@@ -3258,6 +3281,7 @@ function runtime.findFirstNPCXtarget(unmezzedOnly, isIgnoredFn, isUnreachableFn,
                         local okZ, sz = pcall(function() return s.Z() end)
                         local zOk = (not maxZ) or (okZ and sz and math.abs(sz - myZ) <= maxZ)
                         if dist <= maxDist
+                            and (not campMode or runtime.campXtargetInRadius(id) == true)
                             and zOk
                             and (not isIgnoredFn or not isIgnoredFn(cname))
                             and (not isUnreachableFn or not isUnreachableFn(id)) then
@@ -12713,24 +12737,30 @@ function UI.drawControlTab()
         end
 
 
-        -- Edited By: NeroMorte - Share distance controls across all pull modes.
-        ImGui.SetNextItemWidth(UI.px(180))
-        ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25,
-            300)
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip(
-                'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
+        if ctrl.submode == 'Camp' then
+            -- Edited By: NeroMorte - Explain the shared Camp boundary without a second distance slider.
+            ImGui.TextDisabled('XTargets use the Pull Radius circle around the camp marker.')
         end
-
-        ctrl.ignore_distant_xtargets = ImGui.Checkbox('Ignore Distant XTargets When Pulling##pullerHuntXtarIgnore',
-            ctrl.ignore_distant_xtargets == true)
-        if ImGui.IsItemHovered() then
-            ImGui.SetTooltip(
-                'Applies to Hunt, Camp and pet pulling. Ignore shared group enemies beyond this chase range.\nEnemies attacking you or your pets, and your active pull batch, still block new pulls.')
-        end
-
 
         if ctrl.submode == 'Hunt' then
+            -- Edited By: NeroMorte - Hunt keeps its separate player-centered XTarget chase controls.
+            ImGui.SetNextItemWidth(UI.px(180))
+            ctrl.xtar_nav_dist = ImGui.SliderInt('Max XTarget Chase Range##pullerHuntXtar', ctrl.xtar_nav_dist or 150, 25,
+                300)
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip(
+                    'Maximum distance (units) to navigate toward an active NPC on Extended Target (XTarget).')
+            end
+
+            ctrl.ignore_distant_xtargets = ImGui.Checkbox('Ignore Distant XTargets When Pulling##pullerHuntXtarIgnore',
+                ctrl.ignore_distant_xtargets == true)
+            if ImGui.IsItemHovered() then
+                ImGui.SetTooltip(
+                    'Hunt only: ignore shared group enemies beyond this chase range.\nEnemies attacking you or your pets, and your active pull batch, still block new pulls.')
+            end
+
+
+
             accent(ARC, 'Puller (Hunt)')
             ImGui.SetNextItemWidth(UI.px(180))
             -- Edited By: NeroMorte - Accept search radii above the original 2000-unit drag scale.
@@ -17552,7 +17582,7 @@ local function isCombat()
         -- The hater / aggro counters cover the whole group's haters. Manual
         -- mode judges each slot below (xtSlotCounts) so a second character's
         -- pulls elsewhere in the zone do not read as this character's combat.
-        if not (ctrl and (ctrl.mode == 'Manual' or (ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true))) then
+        if not (ctrl and (ctrl.mode == 'Manual' or (ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets == true)))) then
             local hCount = mq.TLO.Me.XTHaterCount() or 0
             if hCount > 0 then return true end
             local aCount = mq.TLO.Me.XTAggroCount() or 0
@@ -17616,7 +17646,7 @@ function runtime.medBreakCombatThreat()
                 if mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() then threatened = true end
                 if mq.TLO.Me.CombatState() == 'COMBAT' then threatened = true end
                 -- Edited By: NeroMorte - Shared counters cannot bypass filtered group XTargets.
-                if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+                if not (ctrl and ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets == true)) then
                     local hCount = mq.TLO.Me.XTHaterCount() or 0
                     if hCount > 0 then threatened = true end
                     local aCount = mq.TLO.Me.XTAggroCount() or 0
@@ -20554,7 +20584,10 @@ function runtime.moveToward(id, dist, followOnly)
     if not id or id <= 0 then return false end
     local d = distToId(id)
     local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
-    if isXTargetId(id) and d > maxNav then
+    -- Edited By: NeroMorte - Camp movement follows the fixed Pull Radius, not Hunt's chase slider.
+    local campInside = ctrl and ctrl.mode == 'Puller' and ctrl.submode == 'Camp'
+        and runtime.campXtargetInRadius(id) == true
+    if isXTargetId(id) and d > maxNav and not campInside then
         stopMoving()
         return false
     end
@@ -22711,6 +22744,14 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
 
     local function scanSpawns(maxZ)
         local radius = searchRadius or 100
+        -- Edited By: NeroMorte - Camp scans the whole fixed circle even from its opposite edge.
+        if isCampMode and anchorLoc and anchorRadius > 0 then
+            local ok, mx, my = pcall(function() return mq.TLO.Me.X(), mq.TLO.Me.Y() end)
+            if ok and type(mx) == 'number' and type(my) == 'number' then
+                local ax, ay = anchorLoc.x or anchorLoc[2] or 0, anchorLoc.y or anchorLoc[1] or 0
+                radius = math.ceil(math.sqrt((mx - ax) ^ 2 + (my - ay) ^ 2) + anchorRadius)
+            end
+        end
         -- Nothing inside the anchor circle is farther from us than the anchor
         -- plus its radius: tighten the query so the 100-candidate cap below is
         -- spent on mobs we may actually take, not on the ones ringing us
@@ -22903,7 +22944,7 @@ function runtime.checkPullHpRest()
             if mq.TLO.Me.Combat() or mq.TLO.Me.AutoFire() then inCombatOrXtar = true end
             if mq.TLO.Me.CombatState() == 'COMBAT' then inCombatOrXtar = true end
             -- Edited By: NeroMorte - Shared counters cannot bypass filtered group XTargets.
-            if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+            if not (ctrl and ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets == true)) then
                 local hCount = mq.TLO.Me.XTHaterCount() or 0
                 if hCount > 0 then inCombatOrXtar = true end
                 local aCount = mq.TLO.Me.XTAggroCount() or 0
@@ -23326,7 +23367,8 @@ function runtime.checkAggroSwitch()
         if xt() and (xt.ID() or 0) > 0 and xt.ID() ~= curId and (xt.Type() == 'NPC' or xt.Type() == 'Pet') and not isUnreachable(xt.ID())
             and not isGroupOrRaidMember(xt.ID()) and not isSpawnPetOrPlayer(xt.ID()) and isHostileTarget(xt.ID())
             and not isIgnored(xt.CleanName()) and xtSlotCounts(xt, xt.ID())
-            and (not runtime.wpAutoTargetAllowed or runtime.wpAutoTargetAllowed(xt.ID())) then
+            and (not runtime.wpAutoTargetAllowed or runtime.wpAutoTargetAllowed(xt.ID()))
+            and (ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Camp' or runtime.campXtargetInRadius(xt.ID()) == true) then
             local d = xt.Distance3D() or 999
             local isHittingMe = false
             pcall(function()
@@ -23336,7 +23378,8 @@ function runtime.checkAggroSwitch()
             end)
             local isHunterMode = (ctrl.mode == 'Manual' or (ctrl.mode == 'Puller' and ctrl.submode == 'Hunt') or ctrl.mode == 'Assist')
             local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
-            local maxRange = isHittingMe and 999 or (isHunterMode and maxNav or 40)
+            local maxRange = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp') and math.huge
+                or (isHittingMe and 999 or (isHunterMode and maxNav or 40))
             if d < maxRange and d < bestDist then
                 bestDist = d
                 bestId = xt.ID()
@@ -23525,7 +23568,7 @@ function runtime.hasDowntimeAggroThreat()
     pcall(function() cs = mq.TLO.Me.CombatState() end)
     if cs == 'COMBAT' then return true end
     -- Edited By: NeroMorte - Ignore distant shared combat only when explicitly enabled.
-    if not (ctrl and ctrl.mode == 'Puller' and ctrl.ignore_distant_xtargets == true) then
+    if not (ctrl and ctrl.mode == 'Puller' and (ctrl.submode == 'Camp' or ctrl.ignore_distant_xtargets == true)) then
         if (mq.TLO.Me.XTHaterCount() or 0) > 0 then return true end
         if (mq.TLO.Me.XTAggroCount() or 0) > 0 then return true end
     end
@@ -24205,7 +24248,10 @@ local function combatTick()
             pullerTick()
             local pt = mq.TLO.Target
             haveNPC = pt() and (pt.Type() == 'NPC' or pt.Type() == 'Pet') and not pt.Dead() and pt.Type() ~= 'Corpse'
-            if haveNPC and (isUnreachable(pt.ID()) or isIgnored(pt.CleanName())) then
+            -- Edited By: NeroMorte - A normal Camp target leaving the circle releases pursuit.
+            if haveNPC and (isUnreachable(pt.ID()) or isIgnored(pt.CleanName())
+                or (not forceId and runtime.campXtargetInRadius(pt.ID()) ~= true)) then
+                stopMoving()
                 haveNPC = false
                 clearTarget()
                 runtime.pullState = 'IDLE'
@@ -24217,7 +24263,8 @@ local function combatTick()
                     engage = true
                 -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
                 elseif ((runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee' then
-                    engage = (distToId(id) <= maxMeleeDistance(id) or isXTargetId(id))
+                    -- Edited By: NeroMorte - Finish closing before offensive casts/pets can cancel the approach.
+                    engage = (distToId(id) <= maxMeleeDistance(id)) and hasLoS(id)
                 else
                     -- Ranged/Spell: only engage once inside Combat Distance with
                     -- LoS. Engaging on "it's on XTarget" while still closing let

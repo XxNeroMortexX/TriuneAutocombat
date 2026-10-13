@@ -2,6 +2,8 @@
 
 ## 2026-10-13 — target / group XTarget test
 
+- **Edited By: NeroMorte — Camp XTargets follow the fixed Pull Radius circle**, using camp-centered XY bounds for shared-group eligibility, acquisition and movement instead of Hunt/Manual's saved chase limit. Hide the separate chase controls in Camp without changing their saved value or other modes. Scan the whole circle from either edge, retain owned/direct threats as combat safety gates, and require melee reach/LoS before releasing Camp offensive combat. Add actual-selector, movement, scanner and UI regressions for opposite-edge, outside-but-close, large-radius and live-edit cases. Game confirmation remains pending.
+
 - **Edited By: NeroMorte — Ordinary Camp fights at the mob instead of bringing it to camp**, for Melee, Ranged, Spell and non-stationary Pet methods, including incoming adds and legacy return states. Returning mobs is exclusive to stationary pet camp when its visible Pet Pull Back to Camp option is checked. Add actual-state regressions and update the mode description; keep this behavior on the unmerged test branch pending game confirmation.
 
 - **Edited By: NeroMorte — Apply Ignore Distant XTargets across Hunt, Camp and pet pulling**, including shared combat counters and pet-camp acquisition. Keep direct player/pet threats and current pull tags/batches active, retain unreachable local threats as fight blockers, and expose the existing chase-distance option in all pull submodes. Distant group combat no longer blocks Hunt idle movement through an inconsistent slot policy.

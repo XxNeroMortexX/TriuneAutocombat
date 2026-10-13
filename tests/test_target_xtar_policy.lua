@@ -11,7 +11,7 @@ local function compile(code, env)
     return assert(load(code, 'actualTargetPolicy', 't', env))()
 end
 local ctrl = { mode = 'Puller', submode = 'Hunt', ignore_distant_xtargets = true,
-    xtar_nav_dist = 150, manual_auto_xtarget = true }
+    xtar_nav_dist = 150, manual_auto_xtarget = true, camp_radius = 150, camp_loc = { x = 0, y = 0 } }
 local runtime = { pullState = 'IDLE', pullTargetId = 0 }
 local state = { meCombat = false, combatState = 'RESTING', current = 0, changed = 0 }
 local mobs = {
@@ -28,6 +28,7 @@ local function spawn(id)
         Distance3D = function() if m and m.distanceError then error('native distance failed') end; return m and m.distance end,
         Distance = function() return m and m.distance end,
         PctHPs = function() return m and m.hp end, Z = function() return 0 end,
+        X = function() if m and m.distanceError then error('native coordinates failed') end; return m and m.distance end, Y = function() return 0 end,
         TargetOfTarget = { ID = function() return m and m.owner or 0 end },
         AggroHolder = { ID = function() return m and m.owner or 0 end },
         PctAggro = function() return m and m.aggro or 0 end,
@@ -64,7 +65,7 @@ runtime.forcedTargetId = function() return state.force end
 runtime.setTarget = function(id) state.current = id; state.changed = state.changed + 1; return true end
 runtime.playerIsEngagingTarget = function() return state.meCombat end
 runtime.targetIsEngaged = function(id) return mobs[id] and mobs[id].engaged or false end
-compile(helper('ownsPullXtarget') .. '\n' .. helper('xtSlotCounts', 'local function ') ..
+compile(helper('campXtargetInRadius') .. '\n' .. helper('ownsPullXtarget') .. '\n' .. helper('xtSlotCounts', 'local function ') ..
     '\nreturn xtSlotCounts', env)
 -- Export the actual local so independently extracted callers use the shipped gate.
 env.xtSlotCounts = compile(helper('xtSlotCounts', 'local function ') .. '\nreturn xtSlotCounts', env)
@@ -111,7 +112,7 @@ assert(not runtime.anyXtarAlive(true))
 mobs[2].distanceError = true
 assert(runtime.anyXtarAlive(true), 'failed native read must retain threat')
 mobs[2].distanceError = nil; mobs[2].distance = 900
-ctrl.ignore_distant_xtargets = false
+ctrl.submode = 'Hunt'; ctrl.ignore_distant_xtargets = false
 assert(runtime.anyXtarAlive(true) and env.isCombat() and #petXT() == 1, 'disabled option changed behavior')
 ctrl.ignore_distant_xtargets = true; ctrl.mode = 'Assist'
 assert(runtime.anyXtarAlive(true) and env.isCombat(), 'Assist policy changed')
