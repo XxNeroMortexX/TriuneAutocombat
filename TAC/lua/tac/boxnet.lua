@@ -1620,46 +1620,77 @@ end
 
 -- Edited By: NeroMorte - Connection tab queues every network action for the main tick.
 -- Edited By: NeroMorte - Wrap connection text without invoking MQ2Lua's native formatter.
+-- Edited By: NeroMorte - Flush one-shot Connection render breadcrumbs before native calls.
+function net.traceConnection(step)
+    if not net.connectionTraceEnabled or not net.connectionTracePath then return end
+    local f = io.open(net.connectionTracePath, 'a')
+    if f then
+        f:write(step, '\n')
+        f:flush()
+        f:close()
+    end
+end
+
 function net.connectionText(text)
+    net.traceConnection('text: before PushTextWrapPos')
     ImGui.PushTextWrapPos(0)
+    net.traceConnection('text: before TextUnformatted')
     ImGui.TextUnformatted(tostring(text or ''))
+    net.traceConnection('text: before PopTextWrapPos')
     ImGui.PopTextWrapPos()
 end
 
 function net.drawConnection()
     local connection=net.connection
+    net.traceConnection('before automatic-networking Checkbox')
     local enabled=ImGui.Checkbox('Automatic EQBC networking##bnConnectAuto',connection.enabled)
     if enabled~=connection.enabled then
         connection.enabled=enabled
         if not enabled then connection:request('disconnect') end
         core.saveLoadout(true)
     end
+    net.traceConnection('before status text')
     net.connectionText(connection.status)
+    net.traceConnection('before EQBC.LocalIPs getter')
     local ips=tlo(function() return mq.TLO.EQBC.LocalIPs() end,'')
+    net.traceConnection('before address text')
     net.connectionText('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
+    net.traceConnection('before setup text')
     net.connectionText('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
+    net.traceConnection('before Find LAN Button')
     if ImGui.Button('Find LAN servers##bnDiscover') then connection:request('scan') end
     ImGui.SameLine()
+    net.traceConnection('before Disconnect Button')
     if ImGui.Button('Disconnect / use local Actors##bnDisconnect') then connection:request('disconnect') end
+    net.traceConnection('before discovered-server rows')
     for i,server in ipairs(connection.servers) do
         local label=server.host..':'..tostring(server.port)..(server.password and ' (password)' or '')
+        net.traceConnection('before discovered-server Selectable')
         if ImGui.Selectable(label..'##bnServer'..i,false) then
             net.connectionHost=server.host; net.connectionPort=tostring(server.port); net.connectionProtected=server.password
         end
     end
+    net.traceConnection('before host InputText')
     net.connectionHost=ImGui.InputText('Server address##bnHost',net.connectionHost or connection.host)
+    net.traceConnection('before port InputText')
     net.connectionPort=ImGui.InputText('Port##bnPort',net.connectionPort or tostring(connection.port))
     if net.connectionProtected==nil then net.connectionProtected=connection.protected end
+    net.traceConnection('before password-required Checkbox')
     net.connectionProtected=ImGui.Checkbox('Password required##bnPasswordRequired',net.connectionProtected)
     if net.connectionProtected then
+        net.traceConnection('before password InputText')
         connection.manualPassword=ImGui.InputText('Password##bnPassword',connection.manualPassword,ImGuiInputTextFlags.Password)
         net.connectionText('Leave blank to reuse the password saved by MQ2EQBC.')
     end
+    net.traceConnection('before Connect Button')
     if ImGui.Button('Connect##bnConnect') then
         connection:request('connect',{host=net.connectionHost,port=tonumber(net.connectionPort),password=net.connectionProtected},connection.manualPassword)
     end
+    net.traceConnection('before EQBC.DiscoveryError getter')
     local error=tlo(function() return mq.TLO.EQBC.DiscoveryError() end,'')
+    net.traceConnection('before discovery-error text')
     if error~='' then net.connectionText(error) end
+    net.traceConnection('before firewall/help text')
     net.connectionText('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
 end
 
@@ -1715,16 +1746,30 @@ local function drawWindow()
 
             ImGui.EndTabItem()
         end
+        if not net.connectionTabTraced then
+            net.traceConnection('before Connection BeginTabItem')
+            net.connectionTabTraced = true
+        end
         if ImGui.BeginTabItem('Connection##bnConnection') then
+            net.connectionTraceInFrame = net.connectionTraceEnabled
             net.drawConnection()
+            net.traceConnection('before Connection EndTabItem')
             ImGui.EndTabItem()
         end
+        if net.connectionTraceInFrame then net.traceConnection('before EndTabBar') end
         ImGui.EndTabBar()
     end
 
+    if net.connectionTraceInFrame then net.traceConnection('before window context-menu cleanup') end
     if core.preEndWindow then core.preEndWindow('boxnet', false) end
+    if net.connectionTraceInFrame then net.traceConnection('before window End') end
     ImGui.End()
+    if net.connectionTraceInFrame then net.traceConnection('before theme cleanup') end
     core.popTheme()
+    if net.connectionTraceInFrame then
+        net.traceConnection('Connection frame completed')
+        net.connectionTraceEnabled, net.connectionTraceInFrame = false, false
+    end
 end
 
 -- ----------------------------------------------------------------------------
@@ -1747,6 +1792,12 @@ function plugin.onInit(coreApi)
     net.startedAt = nowSec()
     net.generation = (net.generation or 0) + 1
     refreshName()
+    -- Edited By: NeroMorte - Diagnostic only: no server addresses or password values are logged.
+    net.connectionTracePath = tostring(mq.configDir or '.') .. '/triune_connection_trace_' ..
+        tostring(net.pid or 'unknown'):gsub('[^%w_-]', '_') .. '.log'
+    net.connectionTraceEnabled, net.connectionTabTraced, net.connectionTraceInFrame = true, false, false
+    net.traceConnection('=== Connection diagnostic start ' .. os.date('%Y-%m-%d %H:%M:%S') .. ' ===')
+    print('[Triune Connection trace] ' .. net.connectionTracePath)
     -- Other plugins' subscriptions live in the once-per-state registry (like
     -- the dropbox) so a reload of this plugin does not orphan them.
     local reg = registry()

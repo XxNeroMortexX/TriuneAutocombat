@@ -4,6 +4,8 @@
 
 - **Edited By: NeroMorte — Render Bot Net Connection text without MQ2Lua's formatter**, using TextUnformatted inside a balanced wrap scope for status, local addresses, errors and instructions. This targets the reported immediate Connection-tab snprintf crash; confirmation still requires a clean-client test. Add actual-tab tests with literal percent sequences, long/empty text, password controls and queued network actions; extend the backed-up installer to verify boxnet.lua.
 
+- **Edited By: NeroMorte — Add a temporary one-shot Connection rendering trace after the unformatted-text change failed to resolve the native crash**. Flush and close constant step labels before tab/widget/native-TLO calls and window cleanup, without writing addresses or passwords. Stop tracing after the first completed Connection frame. Do not claim the reported snprintf crash is fixed before the diagnostic result.
+
 ---
 
 ## 2026-10-11 — Morte.10 test / 3.1-Morte.9
