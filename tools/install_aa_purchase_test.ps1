@@ -55,7 +55,7 @@ function Resolve-LinkPath([string]$Path, [ref]$Linked, [int]$Depth = 0) {
     $ResolvedParent = Resolve-LinkPath $Parent $Linked ($Depth + 1)
     return [IO.Path]::GetFullPath((Join-Path $ResolvedParent (Split-Path -Leaf $Full)))
 }
-$Files = @('TAC/lua/triune.lua', 'TAC/lua/tac/auto_aa.lua', 'TAC/lua/TAC_support_modules/morte_version.lua')
+$Files = @('TAC/lua/triune.lua', 'TAC/lua/tac/auto_aa.lua', 'TAC/lua/tac/boxnet.lua', 'TAC/lua/TAC_support_modules/morte_version.lua')
 $Links = @()
 foreach ($Relative in $Files) {
     $Dest = Join-Path $Dev $Relative

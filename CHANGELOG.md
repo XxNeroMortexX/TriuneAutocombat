@@ -1,5 +1,11 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-12 — Morte.10 test
+
+- **Edited By: NeroMorte — Render Bot Net Connection text without MQ2Lua's formatter**, using TextUnformatted inside a balanced wrap scope for status, local addresses, errors and instructions. This targets the reported immediate Connection-tab snprintf crash; confirmation still requires a clean-client test. Add actual-tab tests with literal percent sequences, long/empty text, password controls and queued network actions; extend the backed-up installer to verify boxnet.lua.
+
+---
+
 ## 2026-10-11 — Morte.10 test / 3.1-Morte.9
 
 - **Edited By: NeroMorte — Guard AA purchases against wrong/changed rows and duplicate Train clicks**: unwrap callable native list indices, validate exact AA row identity and known Fireworks aliases, verify the active tab/selected row immediately before Train, and send one /notify click pair. Defer queued scans/Special-tab reads while training so they cannot change the trainer's selection. Consume Experience can no longer fall back to a Fireworks row.

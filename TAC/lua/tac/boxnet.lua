@@ -1619,6 +1619,13 @@ local function drawLog(MUTED, WARN, ERR)
 end
 
 -- Edited By: NeroMorte - Connection tab queues every network action for the main tick.
+-- Edited By: NeroMorte - Wrap connection text without invoking MQ2Lua's native formatter.
+function net.connectionText(text)
+    ImGui.PushTextWrapPos(0)
+    ImGui.TextUnformatted(tostring(text or ''))
+    ImGui.PopTextWrapPos()
+end
+
 function net.drawConnection()
     local connection=net.connection
     local enabled=ImGui.Checkbox('Automatic EQBC networking##bnConnectAuto',connection.enabled)
@@ -1627,10 +1634,10 @@ function net.drawConnection()
         if not enabled then connection:request('disconnect') end
         core.saveLoadout(true)
     end
-    ImGui.TextWrapped(connection.status)
+    net.connectionText(connection.status)
     local ips=tlo(function() return mq.TLO.EQBC.LocalIPs() end,'')
-    ImGui.TextWrapped('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
-    ImGui.TextWrapped('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
+    net.connectionText('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
+    net.connectionText('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
     if ImGui.Button('Find LAN servers##bnDiscover') then connection:request('scan') end
     ImGui.SameLine()
     if ImGui.Button('Disconnect / use local Actors##bnDisconnect') then connection:request('disconnect') end
@@ -1646,14 +1653,14 @@ function net.drawConnection()
     net.connectionProtected=ImGui.Checkbox('Password required##bnPasswordRequired',net.connectionProtected)
     if net.connectionProtected then
         connection.manualPassword=ImGui.InputText('Password##bnPassword',connection.manualPassword,ImGuiInputTextFlags.Password)
-        ImGui.TextDisabled('Leave blank to reuse the password saved by MQ2EQBC.')
+        net.connectionText('Leave blank to reuse the password saved by MQ2EQBC.')
     end
     if ImGui.Button('Connect##bnConnect') then
         connection:request('connect',{host=net.connectionHost,port=tonumber(net.connectionPort),password=net.connectionProtected},connection.manualPassword)
     end
     local error=tlo(function() return mq.TLO.EQBC.DiscoveryError() end,'')
-    if error~='' then ImGui.TextWrapped(error) end
-    ImGui.TextWrapped('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
+    if error~='' then net.connectionText(error) end
+    net.connectionText('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
 end
 
 local function drawWindow()
