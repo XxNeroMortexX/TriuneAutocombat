@@ -22965,12 +22965,19 @@ function runtime.checkPullHpRest()
     return false
 end
 
--- Puller: IDLE (find a mob) -> TO_MOB (close in, tag it) -> TO_CAMP (drag it home)
--- -> FIGHTING (normal combat loop takes over via the target already being set).
+-- Edited By: NeroMorte - Ordinary Camp: IDLE -> TO_MOB -> FIGHTING at the mob.
+-- Returning pets remain controlled by the separate Pet Pull Back to Camp option.
 function runtime.pullerTick()
     if runtime.combatHold() then
         stopMoving()
         return
+    end
+
+    -- Edited By: NeroMorte - Ordinary Camp fights at the mob, including any legacy return state.
+    if runtime.pullState == 'TO_CAMP' then
+        stopMoving()
+        runtime.clearBreadcrumbs()
+        runtime.pullState = 'FIGHTING'
     end
 
     local hasWps = (ctrl.waypoints and #ctrl.waypoints > 0)
@@ -23054,7 +23061,7 @@ function runtime.pullerTick()
         return
     end
 
-    -- If another mob attacks while heading out to pull (TO_MOB state), switch to incoming aggro immediately and pull back
+    -- If another mob attacks while heading out to pull (TO_MOB state), switch to incoming aggro and fight there
     if runtime.pullState == 'TO_MOB' then
         local maxCampZ = ctrl.camp_z or 75
         local aggroId = firstNPCXtarget(false, maxCampZ)
@@ -23068,10 +23075,10 @@ function runtime.pullerTick()
             stopMoving()
             if runtime.setTarget(aggroId) then
                 print(string.format(
-                    '\ay[Triune]\ax Puller aggro on path to mob -- switching to XTarget #%d (%s) and pulling back',
+                    '\ay[Triune]\ax Puller aggro on path to mob -- switching to XTarget #%d (%s) and fighting there',
                     aggroId, tostring(mq.TLO.Target.CleanName())))
                 runtime.pullTargetId = aggroId
-                runtime.pullState = 'TO_CAMP'
+                runtime.pullState = 'FIGHTING'
             end
         -- Edited By: NeroMorte - Never swap an engaged pull for a fresh closer mob.
         elseif not runtime.anyXtarAlive(true) and not mq.TLO.Me.Combat() and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
@@ -23132,8 +23139,8 @@ function runtime.pullerTick()
             -- turns melee on at all). tagStyle picks that tag branch.
             -- Ranged / Spell / Pet methods stop at the Engagement Distance
             -- (capped by what the bow or spell can actually reach), fire the
-            -- tag from there, and then bring the mob home -- the stance takes
-            -- over once the fight starts at camp.
+            -- tag from there, then the combat stance takes over at the mob.
+            -- Edited By: NeroMorte - Pet return is handled only by the opt-in stationary controller.
             -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
             local combatStyle = (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee'
             local tagStyle = pullStyle
@@ -23161,8 +23168,8 @@ function runtime.pullerTick()
                         runtime.meleeAttackOn()
                     end
                     -- Confirm the tag like the other styles do: the mob is on
-                    -- XTarget or has us as its target. Turning around on the
-                    -- same tick as /attack on left the puller walking home alone.
+                    -- XTarget or has us as its target. Keep approaching/tagging
+                    -- until the fight is confirmed before releasing normal combat.
                     if isXTargetId(tid) or runtime.playerHasAggro(tid) then
                         tagged = true
                     end
@@ -23199,34 +23206,9 @@ function runtime.pullerTick()
                 end
 
                 if tagged then
-                    runtime.pullState = 'TO_CAMP'
+                    runtime.pullState = 'FIGHTING'
                 end
             end
-        end
-    elseif runtime.pullState == 'TO_CAMP' then
-        local c = ctrl.camp_loc
-        local bc = runtime.pullBreadcrumbs
-        if ctrl.nav_reverse_breadcrumbs and bc and #bc > 0 then
-            local nextWp = bc[#bc]
-            local d = distToLoc(nextWp.x, nextWp.y, nextWp.z)
-            if d <= 12 then
-                table.remove(bc, #bc)
-                if #bc == 0 and c then
-                    runtime.moveTowardLoc(c.x, c.y, c.z, 15)
-                end
-            else
-                runtime.moveTowardLoc(nextWp.x, nextWp.y, nextWp.z, 10)
-            end
-        else
-            if c and runtime.moveTowardLoc(c.x, c.y, c.z, 15) then runtime.pullState = 'FIGHTING' end
-        end
-        -- Arrival is a small fixed radius (matching moveTowardLoc's 15), NOT
-        -- ctrl.camp_radius: that is the pull-search radius (default 100) and
-        -- every roam candidate is already inside it, so using it here flipped
-        -- straight to FIGHTING and the drag-home leg never happened.
-        if c and distToLoc(c.x, c.y, c.z) <= 15 then
-            runtime.clearBreadcrumbs()
-            runtime.pullState = 'FIGHTING'
         end
     elseif runtime.pullState == 'FIGHTING' then
         runtime.clearBreadcrumbs()
@@ -24884,8 +24866,8 @@ local function combatTick()
     local canCommandPets = hasActivePet()
     local petHoldEnabled = (ctrl.pet_hold_enabled ~= false) and canCommandPets
 
-    -- Puller Camp Mode: Keep pets on HOLD while traveling to mob or dragging mob back to camp,
-    -- until the mob is brought within camp fight range.
+    -- Edited By: NeroMorte - Hold supporting pets during ordinary Camp acquisition,
+    -- then release them when combat starts at the mob.
     local isPullingToCamp = (ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and runtime.pullState ~= 'FIGHTING')
     -- Edited By: NeroMorte - Spell pulling temporarily falls back to melee; pets/ranged remain available.
     if ctrl.mode == 'Puller' and ctrl.submode == 'Camp' and ((runtime.trashMode and ctrl.pull_style == 'Spell' and 'Melee' or ctrl.pull_style) or 'Melee') == 'Pet' and runtime.pullState == 'TO_MOB' then

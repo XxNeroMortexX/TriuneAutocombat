@@ -53,7 +53,7 @@ Lists are saved per character in `config/triune_loadout_<server>_<character>.lua
 | Mode | Use it when | What Triune does |
 |---|---|---|
 | **Manual** | You want to drive | You move and pick targets. Triune attacks, casts, heals and uses your abilities. |
-| **Puller - Camp** | You are the puller | Runs out, tags a mob, brings it back to camp and fights it there. |
+| **Puller - Camp** | You are the puller | Approaches and fights the mob there. Returning mobs requires stationary pet pulling with the visible **Pet Pull Back to Camp** option checked. |
 | **Puller - Hunt** | Solo roaming | Wanders the zone and kills mobs where they stand. |
 | **Assist - Chase** | Boxed melee | Follows the Main Assist and attacks their target. |
 | **Assist - Camp** | Boxed, stay put | Holds at camp and only fights what comes in. |

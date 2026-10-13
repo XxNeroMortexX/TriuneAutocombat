@@ -2,6 +2,8 @@
 
 ## 2026-10-13 — target / group XTarget test
 
+- **Edited By: NeroMorte — Ordinary Camp fights at the mob instead of bringing it to camp**, for Melee, Ranged, Spell and non-stationary Pet methods, including incoming adds and legacy return states. Returning mobs is exclusive to stationary pet camp when its visible Pet Pull Back to Camp option is checked. Add actual-state regressions and update the mode description; keep this behavior on the unmerged test branch pending game confirmation.
+
 - **Edited By: NeroMorte — Apply Ignore Distant XTargets across Hunt, Camp and pet pulling**, including shared combat counters and pet-camp acquisition. Keep direct player/pet threats and current pull tags/batches active, retain unreachable local threats as fight blockers, and expose the existing chase-distance option in all pull submodes. Distant group combat no longer blocks Hunt idle movement through an inconsistent slot policy.
 - **Edited By: NeroMorte — Finish an engaged valid current target before automatic aggro/add switches**. Release dead, ignored or unreachable targets; preserve forced targets, Main Assist selection and closer-target travel rules. Add actual-source regressions and a backed-up link-preserving Windows installer. Both reported gameplay issues remain pending in-game confirmation.
 
