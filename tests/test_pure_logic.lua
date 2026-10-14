@@ -2298,7 +2298,10 @@ local checkCloserTarget = loadFunc(src, 'checkCloserTarget', {
             }
         }
     },
-    -- Edited By: NeroMorte - This legacy distance/cone/quota fixture assumes an unengaged approach.\n    -- test_approach_retarget_guard.lua executes the actual engagement/attack-toggle guard.\n    canReconsiderApproach = function() return true end,\n    findRoamTarget = function() return dummyRoamCandidate end,
+    -- Edited By: NeroMorte - This legacy distance/cone/quota fixture assumes an unengaged approach.
+    -- test_approach_retarget_guard.lua executes the actual engagement/attack-toggle guard.
+    canReconsiderApproach = function() return true end,
+    findRoamTarget = function() return dummyRoamCandidate end,
     isSpawnInForwardCone = function() return dummyForwardConeResult end
 })
 
