@@ -24,9 +24,9 @@ game confirmation; Camp/nearest pulling has positive game feedback. Actual AA bu
 and remaining group/Hunt/pet/radius cases are not all game-verified. Repository checks
 validate code behavior, not every live server case.
 
-Existing installations should use the in-game updater against **main**. New installations
-should use this release's **TriuneAutocombat-Install.zip**, not the older Morte.1 archive.
-Preserve character settings. Native binaries require the matching RoF2 32-bit MacroQuest build.
+Existing installations should use the in-game updater against **main**. These notes
+approve main updates; they do not publish a new first-install archive. Preserve character
+settings. Native binaries require the matching RoF2 32-bit MacroQuest build.
 
 ---
 
