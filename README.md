@@ -247,3 +247,7 @@ Closer-mob travel checks distinguish a genuinely engaged target from an enabled 
 The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X and circle through MQ2Map. Camp uses the camp position and Pull Radius. Hunt uses the active Combat Anchor (including a Hunt waypoint); without an active anchor, Search Radius follows the toon. Travel waypoints clear the circle. Search Radius and Combat Radius are separate limits: increase both when you want a larger search inside an anchored hunt area. Camp, Search and Combat Radius use the same 10,000-unit drag scale and accept larger values by Ctrl+clicking the number.
 
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
+
+Puller Hunt automatically sets a missing Combat Anchor at your current position on START. Clear while running reanchors at your current position; while paused, the next START sets it. Combat Radius changes immediately refresh the anchored MQ2Map circle. Waypoint patrol keeps its own anchors.
+
+For non-waypoint Puller Hunt, Search Radius is the single radius for the anchored hunting area and map circle. Combat Radius is removed from Hunt; existing legacy anchor-radius values no longer restrict Search Radius. Waypoint nodes retain their own settings.

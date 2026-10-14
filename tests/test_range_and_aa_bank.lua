@@ -94,5 +94,6 @@ points = 0; aa.lastAutoSpendAAAt = nil; aa.lastPrioEvalAt = nil
 assert(not aa.checkAutoSpendAA(false))
 print('PASS: actual automatic AA evaluator accepts 1-4 points, honors a higher bank, and rejects an empty bank')
 
--- Edited By: NeroMorte - Hunt Combat Radius must use the same extended input as Camp/Search.
-assert(source:find("UI.distanceSlider('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)", 1, true))
+-- Edited By: NeroMorte - Hunt uses the remaining unrestricted Search Radius only.
+assert(not source:find("Combat Radius##pullerAnchorRadius", 1, true))
+assert(source:find("UI.distanceSlider('Search Radius', ctrl.hunter_radius or 1500, 50, 2000)", 1, true))

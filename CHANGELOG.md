@@ -2,6 +2,10 @@
 
 ## 2026-10-13 — Morte.10
 
+- **Edited By: NeroMorte — Use Search Radius as the single non-waypoint Hunt control**, removing Combat Radius. The anchor circle, fresh search coverage, roaming and movement share this radius; old saved anchor radii cannot shrink it. Keep waypoint node radii and other modes unchanged.
+
+- **Edited By: NeroMorte — Initialize a missing Hunt Combat Anchor at the player on START and recreate it after Clear while running.** Preserve existing anchors and waypoint patrol; Combat Radius edits immediately redraw the existing native map circle. Add actual-helper regressions for startup, reanchoring, invalid positions, waypoint exclusion, and radius redraw.
+
 - **Edited By: NeroMorte — Display the installed Morte release beside the Gennro version in both main and compact window titles.** Explain shared-client DLL locks and running server EXEs beside update actions; name the blocked plugin and unloading steps when a DLL handoff cannot replace it.
 
 - **Edited By: NeroMorte — Approve the cumulative Morte.10 changes for main**, following James's explicit approval on October 13. Include AA purchase guards/order fixes, safe plugin error propagation and Connection values, Camp circles/boundaries and optional pet return, nearest reachable fresh pulls, current-fight protection and target-aware approach retargeting. Connection rendering, AA order controls and ordinary Camp/nearest behavior have game feedback; actual AA purchasing and remaining group/Hunt/pet/radius cases retain their recorded test gaps.
