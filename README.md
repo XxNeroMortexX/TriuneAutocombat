@@ -188,6 +188,8 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 
 Current version: **3.1**
 
+NeroMorte release: **Morte.10** | MQ2WebUpdate: **4.1.8**
+
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 

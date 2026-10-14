@@ -18,13 +18,13 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - AA purchase guard test; engine version remains independent.
+    -- Edited By: NeroMorte - Approved cumulative Morte.10 release; engine remains independent.
     version = 'Morte.10',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.1',
 
-    channel = 'test',
+    channel = 'stable',
 }
 
 ---------------------------------------------------------------------------
