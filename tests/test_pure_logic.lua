@@ -15057,6 +15057,8 @@ end)()
     local code = slice('local MODES = {', '\nlocal ctrl ') .. '\nMODES = MODES\n'
         .. slice('UI.SCALE_MIN, UI.SCALE_MAX = 0.75, 2.0', '\n-- UI: theme and style helpers')
         .. '\n' .. slice('-- Engine start / pause behind the START / PAUSE buttons', 'function UI.drawActionControls()')
+        -- Edited By: NeroMorte - Compact titles use the actual optional release helper.
+        .. '\n' .. slice('function UI.releaseLabel()', 'function UI.drawHeaderBar()')
         .. '\n' .. slice('UI.MINI_SECTIONS = {', 'function UI.drawFullGui()')
     local chunk = assert((loadstring or load)(code, 'mini'))
     setfenv(chunk, env)
