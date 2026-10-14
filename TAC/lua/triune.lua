@@ -388,7 +388,7 @@ local function defaultCtrl()
         hunter_z             = 75,
         hunter_min_level     = 1,
         hunter_max_level     = 100,
-        hunter_combat_radius = 250, -- max roam distance from anchor when anchor is set
+        hunter_combat_radius = 250, -- legacy saved field; Hunt uses hunter_radius only
         hunter_combat_loc    = nil, -- {x,y,z} anchor; nil = no constraint
         hunter_anchor_roam   = true, -- idle: wander to random points inside the anchor circle
         zone_anchors         = {}, -- per-zone saved anchors: [zoneShort] = { x, y, z, radius }
@@ -5498,7 +5498,7 @@ function runtime.saveZoneAnchor()
     if type(ctrl.zone_anchors) ~= 'table' then ctrl.zone_anchors = {} end
     local a = ctrl.hunter_combat_loc
     if type(a) == 'table' and a.x and a.y then
-        ctrl.zone_anchors[zs] = { x = a.x, y = a.y, z = a.z or 0, radius = ctrl.hunter_combat_radius or 250 }
+        ctrl.zone_anchors[zs] = { x = a.x, y = a.y, z = a.z or 0, radius = ctrl.hunter_radius or 1500 }
     else
         ctrl.zone_anchors[zs] = nil
     end
@@ -5513,7 +5513,7 @@ function runtime.loadZoneAnchor(zs)
     local saved = zs and type(ctrl.zone_anchors) == 'table' and ctrl.zone_anchors[zs] or nil
     if type(saved) ~= 'table' or not saved.x or not saved.y then return false end
     ctrl.hunter_combat_loc = { x = saved.x, y = saved.y, z = saved.z or 0 }
-    if (tonumber(saved.radius) or 0) > 0 then ctrl.hunter_combat_radius = saved.radius end
+    -- Edited By: NeroMorte - Search Radius is authoritative; old saved anchor radii cannot shrink it.
     runtime.anchorReturning = false
     return true
 end
@@ -12781,21 +12781,21 @@ function UI.drawControlTab()
             if huntRChanged then
                 ctrl.hunter_radius = huntR
                 -- Edited By: NeroMorte - Redraw the free Hunt search circle as its distance changes.
-                runtime.refreshEqCampMapFromUI(false)
-                runtime.saveLoadout(true)
+                runtime.refreshEqCampMapFromUI(true)
+                if ctrl.hunter_combat_loc then runtime.saveZoneAnchor() else runtime.saveLoadout(true) end
             end
             if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
                 runtime.refreshEqCampMapFromUI(true)
             end
             -- Edited By: NeroMorte - Explain unrestricted Ctrl+click search-radius entry.
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('%s', 'Search distance from the toon. Ctrl+click to type a larger value. An active Combat Anchor adds its own fixed boundary; changing Search Radius does not change that anchor circle.')
+                ImGui.SetTooltip('%s', 'Hunt radius around the anchor. Controls fresh pull selection, idle roaming, movement boundary and the map circle. START sets a missing anchor at your position. Ctrl+click to type a larger value. Waypoint patrol uses its own node settings.')
             end
             -- Edited By: NeroMorte - Identify which Hunt radius the native map currently represents.
             local mapAnchor = runtime.huntAnchor()
             local mapNode = runtime.wpNode()
             ImGui.TextDisabled(mapNode and mapNode.kind == 'Travel' and 'EQ map circle: none at a Travel waypoint'
-                or mapAnchor and 'EQ map circle: active Combat Radius anchor'
+                or mapAnchor and 'EQ map circle: Search Radius around anchor'
                 or 'EQ map circle: Search Radius (moves with toon)')
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
@@ -12818,7 +12818,7 @@ function UI.drawControlTab()
 
             ImGui.Dummy(0, UI.px(2))
 
-            accent(GOLD, 'Combat Radius Anchor (optional)')
+            accent(GOLD, 'Hunt Anchor')
             local anchorPatrol = runtime.wpAnchorActive()
             if anchorPatrol then ImGui.TextDisabled('Combat Anchor Patrol is active. The single combat anchor is not used.') end
             ImGui.BeginDisabled(anchorPatrol)
@@ -12839,8 +12839,8 @@ function UI.drawControlTab()
                 local mx, my, mz = mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
                 if mx and my and mz then
                     ctrl.hunter_combat_loc = { x = mx, y = my, z = mz }
-                    if (ctrl.hunter_combat_radius or 0) <= 0 then
-                        ctrl.hunter_combat_radius = 250
+                    if (ctrl.hunter_radius or 0) <= 0 then
+                        ctrl.hunter_radius = 1500
                     end
                     runtime.anchorReturning = false
                     runtime.saveZoneAnchor()
@@ -12850,8 +12850,8 @@ function UI.drawControlTab()
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Saves your current position as the anchor. The Puller never walks outside Combat Radius of it:\n'
-                    .. 'it only takes mobs inside the circle, kills a mob outside only when that mob has aggro on it\n'
+                    'Saves your current position as the anchor. The Puller never walks outside Search Radius of it:\n'
+                    .. 'it only takes mobs inside Search Radius, kills a mob outside only when that mob has aggro on it\n'
                     .. '(within Max XTarget Chase Range), and walks back in when it ends up outside with nothing to fight.\n'
                     .. 'Remembered per zone: it comes back when you zone in here again or restart the script.')
             end
@@ -12866,27 +12866,6 @@ function UI.drawControlTab()
             end
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip('Clear this zone anchor. Running Hunt recreates it at your current position; when paused, START sets it.')
-            end
-
-            ImGui.SetNextItemWidth(UI.px(220))
-            local curRadius = (ctrl.hunter_combat_radius and ctrl.hunter_combat_radius > 0) and ctrl
-                .hunter_combat_radius or 250
-            -- Edited By: NeroMorte - Use the same unrestricted distance input as Camp and Search Radius.
-            local newRadius, changed = UI.distanceSlider('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)
-            if changed then
-                ctrl.hunter_combat_radius = newRadius
-                -- Edited By: NeroMorte - Preview the actual combat circle, even after Clear.
-                if runtime.ensureHuntAnchor then runtime.ensureHuntAnchor() end
-                runtime.refreshEqCampMapFromUI(true)
-                if ctrl.hunter_combat_loc then runtime.saveZoneAnchor() else runtime.saveLoadout(true) end
-            end
-            if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
-                runtime.refreshEqCampMapFromUI(true)
-            end
-            if ImGui.IsItemHovered() then
-                ImGui.SetTooltip(
-                    'How far from the anchor the Puller may go. This caps Search Radius: a 2000 search with a 500 anchor\n'
-                    .. 'still only takes mobs within 500 of the anchor and never walks past that line.')
             end
 
             local roamOn, roamChanged = ImGui.Checkbox('Roam Inside the Circle While Idle##pullerAnchorRoam',
@@ -22532,8 +22511,8 @@ function runtime.ensureHuntAnchor()
         x ~= x or y ~= y or z ~= z or math.abs(x) == math.huge or
         math.abs(y) == math.huge or math.abs(z) == math.huge then return false end
     ctrl.hunter_combat_loc = { x = x, y = y, z = z }
-    if not tonumber(ctrl.hunter_combat_radius) or ctrl.hunter_combat_radius <= 0 then
-        ctrl.hunter_combat_radius = 250
+    if not tonumber(ctrl.hunter_radius) or ctrl.hunter_radius <= 0 then
+        ctrl.hunter_radius = 1500
     end
     runtime.anchorReturning, pursuit.wanderLoc = false, nil
     runtime.saveZoneAnchor()
@@ -22551,7 +22530,7 @@ function runtime.huntAnchor()
     end
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then return nil end
     local a = ctrl.hunter_combat_loc
-    local r = tonumber(ctrl.hunter_combat_radius) or 0
+    local r = tonumber(ctrl.hunter_radius) or 0
     if type(a) ~= 'table' or not a.x or not a.y or r <= 0 then return nil end
     return a, r
 end
@@ -22794,7 +22773,7 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
         -- outside the circle.
         if huntAnchor and not isCampMode then
             local md = runtime.anchorDist(mq.TLO.Me.X() or 0, mq.TLO.Me.Y() or 0) or 0
-            radius = math.min(radius, math.ceil(md + huntRadius))
+            radius = math.ceil(md + huntRadius) -- Edited By: NeroMorte - Cover the full anchor circle from either edge.
         end
         local p = string.format('npc radius %d zradius %d targetable', radius, maxZ)
         for i = 1, 100 do
@@ -23587,7 +23566,7 @@ runtime.onZoned = function()
     if runtime.loadZoneAnchor() then
         print(string.format('\ag[Triune]\ax Loaded saved combat anchor for %s (%.0f, %.0f, %.0f; radius %d).',
             runtime.getZoneDisplayName(runtime.getCurrentZoneShortName()),
-            ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y, ctrl.hunter_combat_loc.z, ctrl.hunter_combat_radius or 250))
+            ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y, ctrl.hunter_combat_loc.z, ctrl.hunter_radius or 1500))
     elseif hadAnchor then
         print('\ay[Triune]\ax zoned -- clearing Hunter combat anchor (it was set in the previous zone).')
     end
@@ -24531,9 +24510,9 @@ local function combatTick()
                         local zDiff = ctrl.hunter_z or 75
                         local zPlane = ctrl.hunter_z_plane or 15
                         local anchorKey = ''
-                        if ctrl.hunter_combat_loc and (ctrl.hunter_combat_radius or 0) > 0 then
+                        if ctrl.hunter_combat_loc and (ctrl.hunter_radius or 0) > 0 then
                             anchorKey = string.format('; anchor R%d @ %.0f,%.0f,%.0f',
-                                ctrl.hunter_combat_radius, ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y,
+                                ctrl.hunter_radius, ctrl.hunter_combat_loc.x, ctrl.hunter_combat_loc.y,
                                 ctrl.hunter_combat_loc.z)
                         end
                         local currentKey = string.format('%d-%d-%d-%d-%d-%s', minLv, maxLv, radius, zDiff, zPlane, anchorKey)

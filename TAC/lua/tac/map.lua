@@ -1665,7 +1665,8 @@ local function syncTriuneLoadout(verbose)
     end
 
     -- Hunter / Puller Combat Anchor (roam point)
-    td.hunterCombatRadius = tonumber(charCtrl.hunter_combat_radius or 250) or 250
+    -- Edited By: NeroMorte - Hunt has one authoritative Search Radius.
+    td.hunterCombatRadius = tonumber(charCtrl.hunter_radius or 1500) or 1500
     if type(charCtrl.hunter_combat_loc) == 'table' and charCtrl.hunter_combat_loc.x and charCtrl.hunter_combat_loc.y then
         td.hunterAnchor = {
             x = tonumber(charCtrl.hunter_combat_loc.x) or 0,

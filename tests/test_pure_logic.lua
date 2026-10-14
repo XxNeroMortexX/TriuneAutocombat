@@ -11304,7 +11304,7 @@ do
         ctrl.camp_loc = { x = 10, y = 20, z = 30 }
         ctrl.camp_radius = 80
         ctrl.hunter_combat_loc = { x = 1, y = 2, z = 3 }
-        ctrl.hunter_combat_radius = 300
+        ctrl.hunter_radius = 300
         ctrl.zone_waypoints = { gfaydark = { waypoints = { { x = 5, y = 6, z = 7, name = 'Orc Hill' } }, waypoint_radius = 25, waypoint_loop = true } }
         ctrl.zone_hazards = { gfaydark = { { x = 9, y = 9, z = 9, hits = 4 } } }
         map.state.currentZoneShort = 'gfaydark'
@@ -20006,7 +20006,7 @@ print('--- Suite 112: Puller (Hunt) combat anchor ---')
 do
     local function makeCtrl(over)
         local c = { mode = 'Puller', submode = 'Hunt', hunter_combat_loc = { x = 0, y = 0, z = 0 },
-            hunter_combat_radius = 500, use_waypoints = false, waypoints = {}, combat_style = 'Melee' }
+            hunter_radius = 500, use_waypoints = false, waypoints = {}, combat_style = 'Melee' }
         for k, v in pairs(over or {}) do c[k] = v end
         if c.no_anchor then c.hunter_combat_loc = nil end
         return c
@@ -20019,7 +20019,7 @@ do
     assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ submode = 'Camp' }) })(), 'Suite 112: Camp submode has no hunt anchor')
     assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ mode = 'Manual' }) })(), 'Suite 112: Manual mode has no hunt anchor')
     assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ no_anchor = true }) })(), 'Suite 112: no anchor set -> none')
-    assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ hunter_combat_radius = 0 }) })(), 'Suite 112: zero radius -> none')
+    assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ hunter_radius = 0 }) })(), 'Suite 112: zero radius -> none')
     assert_nil(loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ use_waypoints = true, waypoints = { { x = 1, y = 1, z = 0 } } }) })(),
         'Suite 112: Waypoint Patrol overrides the anchor')
     local wpOff = loadFunc(src, 'huntAnchor', { ctrl = makeCtrl({ use_waypoints = false, waypoints = { { x = 1, y = 1, z = 0 } } }) })
@@ -20120,7 +20120,7 @@ do
     W.x = 700
     assert_eq(W.rt.anchorLeashed(2), true, 'Suite 112: past the edge the leash holds')
     assert_eq(W.rt.anchorLeashed(1), false, 'Suite 112: a mob inside the circle is never leashed, even from outside')
-    local small = makeWorld({ hunter_combat_radius = 20 })
+    local small = makeWorld({ hunter_radius = 20 })
     small.spawns[2] = { x = 60, y = 0 }
     small.x = 17
     assert_eq(small.rt.anchorLeashed(2), false, 'Suite 112: the inner margin scales down with a small radius')
@@ -20207,12 +20207,12 @@ do
     W = makeWorld()
     W.ctrl.zone_anchors = {}
     W.ctrl.hunter_combat_loc = { x = 10, y = 20, z = 30 }
-    W.ctrl.hunter_combat_radius = 400
+    W.ctrl.hunter_radius = 400
     assert_eq(W.rt.saveZoneAnchor(), true, 'Suite 112: the anchor is saved for the zone')
     assert_tbl_eq(W.ctrl.zone_anchors.gfaydark, { x = 10, y = 20, z = 30, radius = 400 }, 'Suite 112: ... with its radius')
     assert_eq(W.saves, 1, 'Suite 112: ... and the loadout written')
     W.ctrl.hunter_combat_loc = nil
-    W.ctrl.hunter_combat_radius = 250
+    W.ctrl.hunter_radius = 250
     W.zone = 'crushbone'
     assert_eq(W.rt.loadZoneAnchor(), false, 'Suite 112: a zone without a saved anchor loads nothing')
     assert_nil(W.ctrl.hunter_combat_loc, 'Suite 112: ... and leaves the live anchor alone')
@@ -20220,7 +20220,7 @@ do
     W.rt.anchorReturning = true
     assert_eq(W.rt.loadZoneAnchor(), true, 'Suite 112: zoning back restores the anchor')
     assert_tbl_eq(W.ctrl.hunter_combat_loc, { x = 10, y = 20, z = 30 }, 'Suite 112: ... position')
-    assert_eq(W.ctrl.hunter_combat_radius, 400, 'Suite 112: ... and radius')
+    assert_eq(W.ctrl.hunter_radius, 250, 'Suite 112: restoring anchor does not override chosen Search Radius')
     assert_eq(W.rt.anchorReturning, false, 'Suite 112: ... with any return in progress cancelled')
     W.ctrl.hunter_combat_loc = nil
     W.rt.saveZoneAnchor()

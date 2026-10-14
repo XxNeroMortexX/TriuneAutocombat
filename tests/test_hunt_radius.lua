@@ -5,7 +5,7 @@ local function helper(name)
     return assert(source:match('(function runtime%.' .. name .. '.-\nend)'))
 end
 local ctrl = { mode = 'Puller', submode = 'Hunt', hunter_combat_loc = { x = 0, y = 0, z = 0 },
-    hunter_combat_radius = 100, hunter_anchor_roam = true }
+    hunter_radius = 100, hunter_anchor_roam = true }
 local runtime = { wpNode = function() end, wpAnchorActive = function() return false end,
     ANCHOR_ROAM = { ARRIVE_DIST = 10, LEG_MAX_SECS = 40, PAUSE_SECS = 5 },
     petCampActive = function() return false end, isPlayerOffMesh = function() return false end,
@@ -47,12 +47,12 @@ assert(load(helper('huntAnchor') .. '\n' .. helper('anchorDist') .. '\n' ..
     helper('anchorRoamTick') .. '\n' .. helper('findRoamTarget'), 'actualHuntRadius', 't', env))()
 -- Nearest eligible spawn is outside the fixed anchor but inside the player-centered scan.
 assert(runtime.findRoamTarget(1000, 75, 1, 100, nil, true) == 2)
-ctrl.hunter_combat_radius = 9
+ctrl.hunter_radius = 9
 assert(runtime.findRoamTarget(1000, 75, 1, 100, nil, true) == nil)
-ctrl.hunter_combat_radius = 10
+ctrl.hunter_radius = 10
 assert(runtime.findRoamTarget(1000, 75, 1, 100, nil, true) == 2) -- exact boundary accepted
 -- A radius shrink must cancel a leg chosen inside the old 100-unit circle.
-mx = 0; ctrl.hunter_combat_radius = 40
+mx = 0; ctrl.hunter_radius = 40
 pursuit.wanderLoc = { x = 80, y = 0, z = 0, at = now }
 assert(runtime.anchorRoamTick() == false)
 assert(stopped == 1 and moved == 0 and pursuit.wanderLoc == nil)
@@ -62,4 +62,9 @@ assert(runtime.anchorRoamTick() == true and moved == 1 and stopped == 1)
 -- Changing anchor location invalidates the previous leg as well.
 ctrl.hunter_combat_loc = { x = 200, y = 0, z = 0 }
 assert(runtime.anchorRoamTick() == false and stopped == 2 and pursuit.wanderLoc == nil)
+-- Edited By: NeroMorte - Scan the opposite edge even beyond player-centered radius.
+ctrl.hunter_combat_loc = { x = 0, y = 0, z = 0 }; ctrl.hunter_radius = 100; mx = 90
+candidates = { { id = 3, x = -90 } }
+assert(runtime.findRoamTarget(100, 75, 1, 100, nil, true) == 3)
+assert(not source:find('Combat Radius##pullerAnchorRadius', 1, true))
 print('PASS: actual Hunt scan enforces fixed radius, accepts its boundary, and cancels old roam legs after shrink/anchor edits')

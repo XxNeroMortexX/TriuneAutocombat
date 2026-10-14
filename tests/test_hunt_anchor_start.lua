@@ -1,6 +1,6 @@
 -- Created By: NeroMorte - Execute Hunt startup and native circle helpers.
 local f = assert(io.open('TAC/lua/triune.lua')); local source = f:read('*a'); f:close()
-local ctrl = { mode = 'Puller', submode = 'Hunt', hunter_combat_radius = 200 }
+local ctrl = { mode = 'Puller', submode = 'Hunt', hunter_radius = 200 }
 local commands, saved, messages = {}, 0, 0
 local x, y, z = 10, 20, 30
 local pursuit = { wanderLoc = { x = 99 } }
@@ -24,10 +24,10 @@ x = 100
 assert(not runtime.ensureHuntAnchor() and ctrl.hunter_combat_loc.x == 10) -- no moving anchor
 ctrl.hunter_combat_loc = nil
 assert(runtime.ensureHuntAnchor() and ctrl.hunter_combat_loc.x == 100) -- Clear then resume
-ctrl.hunter_combat_radius = 750
+ctrl.hunter_radius = 750
 runtime.refreshEqCampMapFromUI(true)
 assert(commands[#commands]:find('radius 750', 1, true))
-ctrl.hunter_combat_radius = 1200
+ctrl.hunter_radius = 1200
 runtime.refreshEqCampMapFromUI(true) -- same instant, next slider drag frame
 assert(commands[#commands]:find('radius 1200', 1, true))
 ctrl.hunter_combat_loc = nil; ctrl.use_waypoints = true; ctrl.waypoints = { { x = 5 } }
@@ -36,7 +36,7 @@ ctrl.use_waypoints = false; ctrl.submode = 'Camp'
 assert(not runtime.ensureHuntAnchor() and not ctrl.hunter_combat_loc)
 ctrl.submode = 'Hunt'; x = nil
 assert(not runtime.ensureHuntAnchor() and not ctrl.hunter_combat_loc)
-x = 0; y = 0; z = 0; ctrl.hunter_combat_radius = 0
-assert(runtime.ensureHuntAnchor() and ctrl.hunter_combat_radius == 250)
+x = 0; y = 0; z = 0; ctrl.hunter_radius = 0
+assert(runtime.ensureHuntAnchor() and ctrl.hunter_radius == 1500)
 assert(source:match('function UI.startEngine%(%)%s.-ensureHuntAnchor'))
 print('PASS: Hunt missing/cleared anchor, waypoint/Camp exclusions, invalid position and immediate radius redraw')

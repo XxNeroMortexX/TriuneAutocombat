@@ -249,3 +249,5 @@ The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X a
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
 
 Puller Hunt automatically sets a missing Combat Anchor at your current position on START. Clear while running reanchors at your current position; while paused, the next START sets it. Combat Radius changes immediately refresh the anchored MQ2Map circle. Waypoint patrol keeps its own anchors.
+
+For non-waypoint Puller Hunt, Search Radius is the single radius for the anchored hunting area and map circle. Combat Radius is removed from Hunt; existing legacy anchor-radius values no longer restrict Search Radius. Waypoint nodes retain their own settings.
