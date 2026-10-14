@@ -5,6 +5,7 @@ local ctrl = { camp_loc = { x = 0, y = 0, z = 0 }, camp_radius = 500 }
 local runtime = { wpAnchorActive = function() return false end, pullState = 'IDLE', combatHold = function() return false end,
     anyXtarAlive = function(include) assert(include == true); return xt end,
     checkPullHpRest = function() return false end,
+    canReconsiderApproach = function() return true end,
     findRoamTarget = function() fresh = fresh + 1 end, setTarget = function() return true end,
     boxnetYieldTarget = function() end,
     checkCloserTarget = function() closer = closer + 1 end }
@@ -36,9 +37,11 @@ local hunt = assert(load('return function() '..source:sub(start, finish - 1)..' 
 xt, candidate, fresh = true, nil, 0; hunt(); assert(fresh == 0)
 xt = false; hunt(); assert(fresh == 1)
 xt, candidate = true, 101; assert(hunt() == 101 and fresh == 1)
--- Deliberate Ignore Distant XTargets retains Gennro's opt-in behavior.
-candidate, ctrl.ignore_distant_xtargets = nil, true; hunt(); assert(fresh == 2)
-print('PASS: ordinary Camp/Hunt finish XTargets, engaged closer-target lock, explicit Hunt ignore option preserved')
+-- Edited By: NeroMorte - Distance filtering happens before this gate; nearby threats still block pulls.
+candidate, ctrl.ignore_distant_xtargets = nil, true; hunt(); assert(fresh == 1)
+-- The per-slot policy excludes distant shared mobs (executed in test_target_xtar_policy.lua).
+xt = false; hunt(); assert(fresh == 2)
+print('PASS: ordinary Camp/Hunt finish eligible XTargets, engaged closer-target lock, distant filter retains nearby fight gate')
 
 -- Edited By: NeroMorte - Execute the merged scanner with pet exclusions and waypoint fresh scans.
 do
@@ -51,6 +54,8 @@ do
             Dead = function() return false end, Type = function() return 'NPC' end,
             State = function() return 'ACTIVE' end, X = function() return x end,
             Y = function() return 0 end, Z = function() return 0 end,
+            -- Edited By: NeroMorte - Provide distance used by the shared nearest-target scanner.
+            Distance3D = function() return math.abs(x) end,
             Level = function() return 50 end }, { __call = function() return true end })
     end
     local absent = setmetatable({}, { __call = function() return false end })
@@ -88,3 +93,4 @@ do
     assert(id == nil and complete == true and scans == before)
     print('PASS: merged scanner keeps pet exclusions, uncached waypoint scans, camp bounds and Travel-node policy')
 end
+

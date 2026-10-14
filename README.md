@@ -53,7 +53,7 @@ Lists are saved per character in `config/triune_loadout_<server>_<character>.lua
 | Mode | Use it when | What Triune does |
 |---|---|---|
 | **Manual** | You want to drive | You move and pick targets. Triune attacks, casts, heals and uses your abilities. |
-| **Puller - Camp** | You are the puller | Runs out, tags a mob, brings it back to camp and fights it there. |
+| **Puller - Camp** | You are the puller | Approaches and fights the mob there. Returning mobs requires stationary pet pulling with the visible **Pet Pull Back to Camp** option checked. |
 | **Puller - Hunt** | Solo roaming | Wanders the zone and kills mobs where they stand. |
 | **Assist - Chase** | Boxed melee | Follows the Main Assist and attacks their target. |
 | **Assist - Camp** | Boxed, stay put | Holds at camp and only fights what comes in. |
@@ -188,6 +188,8 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 
 Current version: **3.1**
 
+NeroMorte release: **Morte.10** | MQ2WebUpdate: **4.1.8**
+
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 
@@ -229,3 +231,17 @@ New files: `TAC/lua/TAC_support_modules/boxnet_eqbc.lua`,
 Start EQBCS-Go on one LAN machine and open Triune on each toon. The Connection tab discovers its actual address/port, automatically selects EQBC transport and enables command control. With several servers, select one; the choice is saved. Disconnect switches to local Actors and disables reconnect. Password-protected servers need a password once, saved by MQ2EQBC rather than Triune. Manual address/port entry supports the standard RedGuides server.
 
 LAN discovery requires the NeroMorte MQ2EQBC client and Go server 1.0-NeroMorte.3. Allow UDP 2114 and the server's TCP port through Windows Firewall for the intended network. Internal Triune frames are hidden automatically; ordinary EQBC chat/commands keep their existing settings. The RoF2 Win32 client DLL is published with verified hashes after a Windows build and successful two-PC game testing. Triune registers updater mappings for the client DLL, both server EXEs and required Lua files automatically, preserving existing custom mappings and user INIs. The updater uses its existing Check/Stage/Apply and verified DLL handoff for all published payloads; it does not replace a running server EXE.
+
+### AA purchase checks
+
+Auto AA honors the **Auto-buy selection**: Checked priorities only, or All standard AAs. The separately configured cap spender can run when selected AAs are finished; an unchecked Prio box alone does not disable that cap choice. Ignore and Stop at remain automatic purchase limits; explicit per-row Train keeps its manual override behavior. Purchases wait for safe combat state, verify the active AA tab and selected row, and send one Train click. A queued automatic purchase is cancelled if its selection is removed, Auto-Spend is disabled, or its limits change before training.
+
+### Pull and Hunt radius markers
+
+**Fresh automatic pulls choose the nearest eligible, reachable mob from the player's current position across the full Max Height Diff.** Within five units of the nearest eligible distance, the configured same-floor band breaks the tie; a farther flat-ground mob no longer wins merely because a nearer mob is up or down a hill. When a navmesh is available, path checks and the existing detour-ratio limit help exclude blocked or inconvenient floors. Without a usable mesh, existing movement recovery remains in effect. The shared rule covers Camp, Hunt, stationary pet gathering and closer-target travel; XTargets still prefer lowest HP, and current fights, Manual/MA selections, forced targets and camp boundaries keep their existing protections.
+
+Closer-mob travel checks distinguish a genuinely engaged target from an enabled `/attack` toggle while still approaching. Casts, XTarget fights, actual aggro, pet threats and forced targets remain protected; existing forward-cone, distance-savings, retarget quota and cycle limits still apply. `/ac dump` includes the last fresh selection's eligible shortlist and the player position when it was chosen.
+
+**Camp XTargets use the same fixed Pull Radius circle as the map**, measured from the camp marker. The bot can approach eligible mobs anywhere inside that circle, even when it is standing at the opposite edge. Camp hides the separate Max XTarget Chase Range / Ignore Distant XTargets controls; their saved values still apply in the other modes that use them. Height, ignored-target and unreachable-target checks still apply. Hunt retains its own chase controls and anchor rules.
+
+The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X and circle through MQ2Map. Camp uses the camp position and Pull Radius. Hunt uses the active Combat Anchor (including a Hunt waypoint); without an active anchor, Search Radius follows the toon. Travel waypoints clear the circle. Search Radius and Combat Radius are separate limits: increase both when you want a larger search inside an anchored hunt area. Camp, Search and Combat Radius use the same 10,000-unit drag scale and accept larger values by Ctrl+clicking the number.

@@ -4,6 +4,32 @@ Short, human-readable notes for each release. The GitHub release page is built
 from the entry that matches the tag (`v3.0` -> `## 3.0`). The full, detailed
 history of every change stays in [CHANGELOG.md](CHANGELOG.md).
 
+## 3.1-Morte.10
+
+Cumulative October 13 NeroMorte update, based on Gennro **3.1**. Includes the current
+verified RoF2 Win32 MQ2WebUpdate **4.1.8**, MQ2Nav **1.3.3.5**, and EQBC discovery payloads.
+
+- Fix Auto AA order sorting, exact purchase-row checks, duplicate Train actions and queued combat guards.
+- Fix Bot Net Connection crashes caused by unevaluated indexed EQBC values; render literal wrapped text.
+- Propagate plugin render errors to MacroQuest's overlay handler safely.
+- Camp uses its fixed Pull Radius circle for XTargets and movement, with no competing chase slider.
+- Ordinary Camp fights at the mob. Stationary pets return mobs only through the visible checked pet return option.
+- Fresh pulls choose nearest eligible reachable mobs across the allowed height range; similar elevation only breaks close ties.
+- Keep current fights and XTarget lowest-HP priority; distinguish an attack toggle from an engaged target during approach.
+- Include Hunt map/radius updates, consistent distant-group gates and improved diagnostic selection details.
+- Retain the completed per-zone Attack/Ignore sharing, management and updater improvements from Morte.9 and earlier.
+
+James authorizes this cumulative main release. Connection and AA order controls have
+game confirmation; Camp/nearest pulling has positive game feedback. Actual AA buying
+and remaining group/Hunt/pet/radius cases are not all game-verified. Repository checks
+validate code behavior, not every live server case.
+
+Existing installations should use the in-game updater against **main**. These notes
+approve main updates; they do not publish a new first-install archive. Preserve character
+settings. Native binaries require the matching RoF2 32-bit MacroQuest build.
+
+---
+
 ## 3.1-Morte.5
 
 September 30 cumulative NeroMorte update. Gennro's base remains **3.1** and

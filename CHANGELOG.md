@@ -1,6 +1,50 @@
 # Triune AutoCombat Change Log
 
-## 2026-10-11 — 3.1-Morte.9
+## 2026-10-13 — Morte.10
+
+- **Edited By: NeroMorte — Approve the cumulative Morte.10 changes for main**, following James's explicit approval on October 13. Include AA purchase guards/order fixes, safe plugin error propagation and Connection values, Camp circles/boundaries and optional pet return, nearest reachable fresh pulls, current-fight protection and target-aware approach retargeting. Connection rendering, AA order controls and ordinary Camp/nearest behavior have game feedback; actual AA purchasing and remaining group/Hunt/pet/radius cases retain their recorded test gaps.
+
+- **Edited By: NeroMorte — Let an unengaged approach reconsider closer mobs despite an enabled attack toggle**, after the Windows dump shows TO_MOB, an untouched distant target, active navigation and Me.Combat=true. Use target-specific engagement/aggro/pet/cast/force guards in Camp/Hunt and the shared closer scanner; retain cone, distance-savings, interval, cycle and quota limits. Add the bounded eligible shortlist and original player position to diagnostic dumps; the skipped mob's initial filter results were absent from the submitted dump, so not every reported bypass is claimed resolved. Add actual-call regressions and preserve other fight/selection rules.
+
+- **Edited By: NeroMorte — Rank fresh automatic pulls by nearest reachable distance across the full allowed height range**, replacing the separate same-floor-first scan. Use the existing floor band only within a five-unit distance tie; reject failed native path reads and excessive route detours even for close mobs. Share the rule with Camp/Hunt, stationary pet gathering and closer-target travel, retaining all existing exclusions, camp/anchor bounds and movement gates. XTarget lowest-HP selection, current-fight locks, Main Assist and forced overrides are unchanged. Update height tooltips and add hill/downhill/floor/path/claim/level/exclusion regressions; gameplay confirmation remains pending.
+
+- **Edited By: NeroMorte — Remove the separate legacy Camp XTarget chase slider** missed by the earlier contextual-control change. Keep Manual, Hunt and Assist sliders and saved values intact; extend the UI regression to cover all slider IDs and clarify the Camp marker tooltip. The fixed-radius gameplay logic is unchanged.
+
+- **Edited By: NeroMorte — Camp XTargets follow the fixed Pull Radius circle**, using camp-centered XY bounds for shared-group eligibility, acquisition and movement instead of Hunt/Manual's saved chase limit. Hide the separate chase controls in Camp without changing their saved value or other modes. Scan the whole circle from either edge, retain owned/direct threats as combat safety gates, and require melee reach/LoS before releasing Camp offensive combat. Add actual-selector, movement, scanner and UI regressions for opposite-edge, outside-but-close, large-radius and live-edit cases. Game confirmation remains pending.
+
+- **Edited By: NeroMorte — Ordinary Camp fights at the mob instead of bringing it to camp**, for Melee, Ranged, Spell and non-stationary Pet methods, including incoming adds and legacy return states. Returning mobs is exclusive to stationary pet camp when its visible Pet Pull Back to Camp option is checked. Add actual-state regressions and update the mode description; keep this behavior on the unmerged test branch pending game confirmation.
+
+- **Edited By: NeroMorte — Apply Ignore Distant XTargets across Hunt, Camp and pet pulling**, including shared combat counters and pet-camp acquisition. Keep direct player/pet threats and current pull tags/batches active, retain unreachable local threats as fight blockers, and expose the existing chase-distance option in all pull submodes. Distant group combat no longer blocks Hunt idle movement through an inconsistent slot policy.
+- **Edited By: NeroMorte — Finish an engaged valid current target before automatic aggro/add switches**. Release dead, ignored or unreachable targets; preserve forced targets, Main Assist selection and closer-target travel rules. Add actual-source regressions and a backed-up link-preserving Windows installer. Both reported gameplay issues remain pending in-game confirmation.
+
+---
+
+## 2026-10-12 — Morte.10 test
+
+- **Edited By: NeroMorte — Render Bot Net Connection text without MQ2Lua's formatter**, using TextUnformatted inside a balanced wrap scope for status, local addresses, errors and instructions. This targets the reported immediate Connection-tab snprintf crash; confirmation still requires a clean-client test. Add actual-tab tests with literal percent sequences, long/empty text, password controls and queued network actions; extend the backed-up installer to verify boxnet.lua.
+
+- **Edited By: NeroMorte — Add a temporary one-shot Connection rendering trace after the unformatted-text change failed to resolve the native crash**. Flush and close constant step labels before tab/widget/native-TLO calls and window cleanup, without writing addresses or passwords. Stop tracing after the first completed Connection frame. Do not claim the reported snprintf crash is fixed before the diagnostic result.
+
+- **Edited By: NeroMorte — Evaluate indexed EQBC discovery members before building server labels**: DiscoveryHost/Port/Password and Setting(control) now return plain Lua values; skip expired or malformed rows instead of letting native MQ objects enter labels or connection state. The flushed trace ends during discovered-row construction, and actual snapshot/renderer tests reproduce the raw-host defect with callable MQ objects before the fix. Remove the temporary render trace after identifying this path.
+
+---
+
+## 2026-10-11 — Morte.10 test / 3.1-Morte.9
+
+- **Edited By: NeroMorte — Guard AA purchases against wrong/changed rows and duplicate Train clicks**: unwrap callable native list indices, validate exact AA row identity and known Fireworks aliases, verify the active tab/selected row immediately before Train, and send one /notify click pair. Defer queued scans/Special-tab reads while training so they cannot change the trainer's selection. Consume Experience can no longer fall back to a Fireworks row.
+- **Edited By: NeroMorte — Recheck queued automatic AA selection and share combat guards across all purchase entry points**, including hostile XTargets during pending training. Preserve All standard mode, separate cap spending, Ignore, target ranks, purchase order, bank settings, repeatable controls and quiet messages. Treat a failed combat-state read as unsafe to train.
+- **Created By: NeroMorte — Add actual-trainer regressions and a small backed-up Windows test installer**. This addresses verified code defects; the reports from other players still require in-game confirmation.
+
+- **Edited By: NeroMorte — Fix the Auto AA Order sort when changing its number**: use mutually exclusive ascending/descending comparisons so editing Order cannot make both rows compare as first and interrupt ImGui rendering. Exercise the actual browser sorter with repeated order edits, ties and unassigned values in both directions.
+
+- **Edited By: NeroMorte — Restore extended Hunt Combat Radius input and native Hunt map markers**: use the same distance control as Camp/Search, draw the active Hunt anchor or a moving Search Radius circle, refresh setting edits immediately, and clear Hunt markers at Travel waypoints. Back up and verify the main Lua link in the focused installer; test large saved radii and actual map helper behavior.
+
+- **Edited By: NeroMorte — Propagate plugin render failures to MacroQuest's overlay failure/reset handler** instead of drawing later plugins into an unfinished window. Keep the original traceback and restore the draw-dispatch flag. Sort AA rows before opening ImGui/theme scopes. Add injected render/sort failure regressions. This fixes a verified unsafe error path; the reported native SetNavFocusScope crash still requires fresh-client/dump confirmation.
+- **Edited By: NeroMorte — Back up and hash-check locally modified ingame.cfg during test installation**, while continuing to block other tracked source changes and staged changes.
+
+- **Edited By: NeroMorte — Cancel idle Hunt roaming legs outside a changed anchor/radius** instead of continuing to a destination chosen under the old boundary. Clarify the displayed map circle beside Search Radius. Actual Hunt scanner tests cover inside/outside/exact boundary targets, radius shrink and anchor relocation; the friend's reported behavior still needs its mode/radius/anchor details.
+
+### 3.1-Morte.9 — zone lists (completed)
 
 - **Edited By: NeroMorte — Finalize Morte.9 after Windows game testing**: James confirms the zone-specific NPC lists are obeyed in gameplay and approves merge; the release channel is stable.
 

@@ -1222,18 +1222,29 @@ end
 -- Tick
 -- ----------------------------------------------------------------------------
 -- Edited By: NeroMorte - read optional native discovery without assuming a loaded plugin.
+-- Edited By: NeroMorte - Evaluate indexed MQ members before crossing into Lua/UI state.
+function net.connectionServer(index)
+    local host = tlo(function() return mq.TLO.EQBC.DiscoveryHost(index)() end, '')
+    local port = tlo(function() return mq.TLO.EQBC.DiscoveryPort(index)() end, 0)
+    local password = tlo(function() return mq.TLO.EQBC.DiscoveryPassword(index)() end, false) == true
+    if type(host) ~= 'string' or host == '' or
+        (type(port) ~= 'number' and type(port) ~= 'string') then return nil end
+    port = tonumber(port)
+    if not port or port < 1 or port > 65535 or port ~= math.floor(port) then return nil end
+    return { host = host, port = port, password = password }
+end
+
 function net.connectionView()
     local view={ loaded=eqbcConnected() or tlo(function() return mq.TLO.EQBC() end,nil)~=nil,
-        connected=eqbcConnected(), control=tlo(function() return mq.TLO.EQBC.Setting('control') end,false),
+        connected=eqbcConnected(), control=tlo(function() return mq.TLO.EQBC.Setting('control')() end,false),
         connecting=tlo(function() return mq.TLO.EQBC.Connecting() end,false),
         discovery=tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryVersion() end,0))==1,
         scanning=tlo(function() return mq.TLO.EQBC.DiscoveryScanning() end,false),
         host=tlo(function() return mq.TLO.EQBC.Server() end,''), port=tlo(function() return mq.TLO.EQBC.Port() end,''), servers={} }
     local count=math.min(32,tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryCount() end,0)) or 0)
     for i=1,count do
-        view.servers[#view.servers+1]={host=tlo(function() return mq.TLO.EQBC.DiscoveryHost(i) end,''),
-            port=tonumber(tlo(function() return mq.TLO.EQBC.DiscoveryPort(i) end,0)),
-            password=tlo(function() return mq.TLO.EQBC.DiscoveryPassword(i) end,false)==true}
+        local server = net.connectionServer(i)
+        if server then view.servers[#view.servers+1] = server end
     end
     return view
 end
@@ -1591,7 +1602,7 @@ local function drawStatusLine(GOOD, WARN, ERR, MUTED)
     -- Edited By: NeroMorte — distinguish EQBC control/routing failures from local launcher failures.
     local warn = cfg.transport == 'actors' and probeHint() or nil
     if cfg.transport == 'eqbc' then
-        if tlo(function() return mq.TLO.EQBC.Setting('control') end, false) ~= true then
+        if tlo(function() return mq.TLO.EQBC.Setting('control')() end, false) ~= true then
             warn = 'EQBC remote control is off on this box: /bccmd set control on'
         elseif pst ~= 'ok' and pst ~= 'pending' then
             warn = 'EQBC loopback did not answer. Check the EQBC connection and remote control on each box.'
@@ -1619,6 +1630,13 @@ local function drawLog(MUTED, WARN, ERR)
 end
 
 -- Edited By: NeroMorte - Connection tab queues every network action for the main tick.
+-- Edited By: NeroMorte - Wrap connection text without invoking MQ2Lua's native formatter.
+function net.connectionText(text)
+    ImGui.PushTextWrapPos(0)
+    ImGui.TextUnformatted(tostring(text or ''))
+    ImGui.PopTextWrapPos()
+end
+
 function net.drawConnection()
     local connection=net.connection
     local enabled=ImGui.Checkbox('Automatic EQBC networking##bnConnectAuto',connection.enabled)
@@ -1627,10 +1645,10 @@ function net.drawConnection()
         if not enabled then connection:request('disconnect') end
         core.saveLoadout(true)
     end
-    ImGui.TextWrapped(connection.status)
+    net.connectionText(connection.status)
     local ips=tlo(function() return mq.TLO.EQBC.LocalIPs() end,'')
-    ImGui.TextWrapped('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
-    ImGui.TextWrapped('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
+    net.connectionText('This machine: '..(ips~='' and ips or 'Addresses available after discovery'))
+    net.connectionText('Start EQBCS-Go on one PC. One discovered server connects automatically; choose if several are found.')
     if ImGui.Button('Find LAN servers##bnDiscover') then connection:request('scan') end
     ImGui.SameLine()
     if ImGui.Button('Disconnect / use local Actors##bnDisconnect') then connection:request('disconnect') end
@@ -1646,14 +1664,14 @@ function net.drawConnection()
     net.connectionProtected=ImGui.Checkbox('Password required##bnPasswordRequired',net.connectionProtected)
     if net.connectionProtected then
         connection.manualPassword=ImGui.InputText('Password##bnPassword',connection.manualPassword,ImGuiInputTextFlags.Password)
-        ImGui.TextDisabled('Leave blank to reuse the password saved by MQ2EQBC.')
+        net.connectionText('Leave blank to reuse the password saved by MQ2EQBC.')
     end
     if ImGui.Button('Connect##bnConnect') then
         connection:request('connect',{host=net.connectionHost,port=tonumber(net.connectionPort),password=net.connectionProtected},connection.manualPassword)
     end
     local error=tlo(function() return mq.TLO.EQBC.DiscoveryError() end,'')
-    if error~='' then ImGui.TextWrapped(error) end
-    ImGui.TextWrapped('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
+    if error~='' then net.connectionText(error) end
+    net.connectionText('Discovery uses UDP 2114. If no server appears, check the server and Windows Firewall, or enter its address and TCP port here.')
 end
 
 local function drawWindow()
@@ -1987,7 +2005,7 @@ function plugin.onCommand(cmd, args)
         local pid = myPid()
         chat('Box Network diagnostics:')
         -- Edited By: NeroMorte — show EQBC connection/control alongside the legacy diagnostics.
-        print(string.format('  transport: %s EQBC connected: %s control: %s', cfg.transport, tostring(eqbcConnected()), tostring(tlo(function() return mq.TLO.EQBC.Setting('control') end, false))))
+        print(string.format('  transport: %s EQBC connected: %s control: %s', cfg.transport, tostring(eqbcConnected()), tostring(tlo(function() return mq.TLO.EQBC.Setting('control')() end, false))))
         print(string.format('  me: %s  pid: %s  zone: %s  script mailbox: %s', myName(), tostring(pid), myZone(), MAILBOX))
         print(string.format('  actor: %s  available: %s  err: %s', tostring(net.actor), tostring(net.available), tostring(net.err)))
         print(string.format('  sent: %d  received: %d  dropped: %d  self-echo dropped: %d  inbox: %d  last drop: %s',

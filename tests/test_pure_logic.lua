@@ -2298,6 +2298,9 @@ local checkCloserTarget = loadFunc(src, 'checkCloserTarget', {
             }
         }
     },
+    -- Edited By: NeroMorte - This legacy distance/cone/quota fixture assumes an unengaged approach.
+    -- test_approach_retarget_guard.lua executes the actual engagement/attack-toggle guard.
+    canReconsiderApproach = function() return true end,
     findRoamTarget = function() return dummyRoamCandidate end,
     isSpawnInForwardCone = function() return dummyForwardConeResult end
 })
@@ -7521,9 +7524,10 @@ do
     assert_true(AA_CONTENT:find("if %(not specialList or #specialList == 0%) and not AA%.specialTabReadDone then") ~= nil,
         'Suite 62: scanPlayerAAs respects specialTabReadDone')
 
-    -- 3. Verify main loop honors paused and auto_spend_aa states
-    assert_true(AA_CONTENT:find("if not ctrl%.paused and ctrl%.auto_spend_aa and not mq%.TLO%.Me%.Combat") ~= nil,
-        'Suite 62: main loop only executes pending read when not paused and auto_spend_aa is enabled')
+    -- Edited By: NeroMorte — preserve an active trainer while honoring pause and Auto Spend.
+    -- 3. Verify main loop honors trainer, paused and auto_spend_aa states
+    assert_true(AA_CONTENT:find("if not AA%.pendingAATrain and not ctrl%.paused and ctrl%.auto_spend_aa and not mq%.TLO%.Me%.Combat") ~= nil,
+        'Suite 62: pending read requires no active trainer, not paused, and auto_spend_aa enabled')
     assert_true(AA_CONTENT:find("elseif not ctrl%.auto_spend_aa or ctrl%.paused then%s*AA%.pendingReadSpecialTab = false") ~= nil,
         'Suite 62: main loop clears pending read when auto_spend_aa disabled or paused')
 
@@ -7790,7 +7794,7 @@ do
     assert_true(AA_CONTENT:find("AA.isSpecialTabAA") ~= nil, 'Suite 64: auto_aa.lua defines isSpecialTabAA')
     assert_true(AA_CONTENT:find("function AA.startAATrainWorkflow") ~= nil, 'Suite 64: auto_aa.lua defines the AA window trainer')
     assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(target.name, allowStop, true)", 1, true) ~= nil, 'Suite 64: prioritized auto-spend goes straight to the window trainer')
-    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop, true)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
+    assert_true(AA_CONTENT:find("return AA.startAATrainWorkflow(effectiveName, allowStop, true, true)", 1, true) ~= nil, 'Suite 64: cap spender goes straight to the window trainer')
     assert_true(AA_CONTENT:find("if unspent < AA.threshold() then return false end", 1, true) ~= nil, 'Suite 64: prioritized auto-spend waits for the Bank threshold')
 end
 
@@ -8880,7 +8884,7 @@ do
     local triuneContent = readFile('TAC/lua/triune.lua')
     assert_true(AA_CONTENT:find("function AA%.checkAutoSpendAA%(allowStop%)") ~= nil,
         'Suite 73: triune.lua defines AA.checkAutoSpendAA(allowStop)')
-    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop, automatic%)") ~= nil,
+    assert_true(AA_CONTENT:find("function AA%.startAATrainWorkflow%(targetName, allowStop, automatic, capSpender%)") ~= nil,
         'Suite 73: triune.lua defines AA.startAATrainWorkflow(targetName, allowStop)')
     assert_true(triuneContent:find("Let plugins %(e%.g%. Auto AA purchases%) use the gap between pulls") ~= nil,
         'Suite 73: triune.lua offers the gap between pulls to plugins')
@@ -10270,9 +10274,9 @@ do
         'Suite 85: processAATrainWorkflow has triedUncheckTrainFilter fallback')
 
     -- 4. Verify direct listbox lookup aliases in findAAInWindowLists
-    assert_true(AA_CONTENT:find("List('=Summon Firework')", 1, true) ~= nil,
+    assert_true(AA_CONTENT:find("AA.listIndex(child, '=Summon Firework')", 1, true) ~= nil,
         'Suite 85: findAAInWindowLists supports direct List lookup for Summon Firework')
-    assert_true(AA_CONTENT:find("List('=Alternately Advanced Fireworks')", 1, true) ~= nil,
+    assert_true(AA_CONTENT:find("AA.listIndex(child, '=Alternately Advanced Fireworks')", 1, true) ~= nil,
         'Suite 85: findAAInWindowLists supports direct List lookup for Alternately Advanced Fireworks')
 
     -- 5. Functional simulation of multi-path readiness check
@@ -10911,12 +10915,16 @@ do
     assert_eq(ctrlNew.plugins.auto_accept.runInCombat, true, 'Suite 88: collectSettings persists runInCombat')
     assert_true(ctrlNew.plugins.auto_accept.settings == nil, 'Suite 88: auto_accept does not double-persist ctrl keys')
 
-    -- 7. A crashing render hook flags the plugin instead of retrying every frame
+    -- Edited By: NeroMorte - A draw failure must escape to MQ, while flagging the plugin and preserving its traceback.
+    -- 7. A crashing render hook stops the callback instead of reusing its ImGui stack.
     pm.plugins.hud_group.enabled = true
     pm.plugins.hud_group.status = 'Active'
     local realDraw = pm.plugins.hud_group.instance.onDrawUI
     pm.plugins.hud_group.instance.onDrawUI = function() error('boom') end
-    pm.drawUI()
+    local drawOK, drawError = pcall(pm.drawUI)
+    assert_eq(drawOK, false, 'Suite 88: render failure escapes to the MQ callback handler')
+    assert_true(tostring(drawError):find('boom', 1, true) ~= nil, 'Suite 88: original render error survives dispatch')
+    assert_eq(pm.inDraw, false, 'Suite 88: render failure clears the draw dispatch flag')
     assert_eq(pm.plugins.hud_group.status, 'Error', 'Suite 88: onDrawUI error transitions plugin to Error')
     assert_true(tostring(pm.plugins.hud_group.errorMsg):find('onDrawUI: ') ~= nil, 'Suite 88: onDrawUI error message recorded')
     local drawCalls = 0

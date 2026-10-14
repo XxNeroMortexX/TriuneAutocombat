@@ -24,7 +24,7 @@
 local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
-    version            = '1.2.0',
+    version            = '1.2.1',
     author             = 'Triune',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
@@ -343,6 +343,83 @@ function AA.applyRowInfo(name, row)
     AA.aaFilterDirty = true
 end
 
+-- Edited By: NeroMorte - Native List lookups may return callable MQ integer values.
+function AA.listIndex(child, query)
+    local index = 0
+    pcall(function()
+        local value = child.List(query)
+        if type(value) == 'userdata' or type(value) == 'table' or type(value) == 'function' then value = value() end
+        index = tonumber(value) or 0
+    end)
+    return index
+end
+
+-- Edited By: NeroMorte - Exact AA identity; preserve only the known Fireworks aliases.
+function AA.rowMatches(target, row)
+    local function key(name) return tostring(name or ''):lower():gsub('[^%a%d]', '') end
+    local a, b = key(target), key(row)
+    if a == '' or b == '' then return false end
+    if a == b then return true end
+    local aliases = { alternatelyadvancedfireworks = true, summonfirework = true, summonfireworks = true }
+    return aliases[a] == true and aliases[b] == true
+end
+
+-- Edited By: NeroMorte - Probe combat signals independently and fail closed on errors.
+-- A failure in one TLO must not bypass the remaining hostile/XTarget checks.
+function AA.purchaseCombatBlocked()
+    local probes = {
+        function() return mq.TLO.Me.Combat and mq.TLO.Me.Combat() end,
+        function() return mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT' end,
+        function() return mq.TLO.Me.AutoFire and mq.TLO.Me.AutoFire() end,
+        function() return mq.TLO.Me.XTHaterCount and (tonumber(mq.TLO.Me.XTHaterCount()) or 0) > 0 end,
+        function() return rt.isCombat and rt.isCombat() end,
+        function() return rt.anyXtarAlive and rt.anyXtarAlive(true) end,
+    }
+    for _, probe in ipairs(probes) do
+        local ok, blocked = pcall(probe)
+        if not ok or blocked then return true end
+    end
+    return false
+end
+
+-- Edited By: NeroMorte - Recheck the current auto-selection, not the old queued choice.
+function AA.automaticAllowed(name, capSpender)
+    if not ctrl.auto_spend_aa or AA.isIgnored(name) then return false end
+    if capSpender then
+        if not AA.rowMatches(name, ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks') then return false end
+        local names = AA.automaticNames()
+        if not names then return false end
+        for _, selected in ipairs(names) do
+            if not AA.isIgnored(selected) then
+                local info = AA.purchaseInfo(selected)
+                if not info.fullyTrained and not info.invalid and not AA.repeatableLimitReached(selected)
+                    and (info.isSpecial or info.rank < AA.targetRank(selected, info.maxRank)) then return false end
+            end
+        end
+        return true
+    end
+    if ctrl.auto_aa_priorities and ctrl.auto_aa_priorities[name] == true then return true end
+    return ctrl.auto_aa_selection == 'all' and not AA.isSpecialTabAA(name)
+        and AA.scannedAAMap ~= nil and AA.scannedAAMap[name] ~= nil
+end
+
+-- Edited By: NeroMorte - Verify the actual active tab and selected row before Train.
+function AA.selectedTrainRow(task)
+    local row, index, tab
+    local ok = pcall(function()
+        local win = AA.getAAWindow()
+        local sub = win and (win.Child('AAW_Subwindows') or win.Child('Subwindows'))
+        if not sub and win then sub = AA.findChildRecursive(win, 'AAW_Subwindows') or AA.findChildRecursive(win, 'Subwindows') end
+        if sub and sub.CurrentTabIndex then tab = tonumber(sub.CurrentTabIndex()) end
+        local list = task.listObj
+        if list and list.SelectedIndex then index = tonumber(list.SelectedIndex()) end
+        if not index and list and list.GetCurSel then index = tonumber(list.GetCurSel()) end
+        if index and index > 0 then row = AA.readRowInfo(list, index) end
+    end)
+    if not ok or tab ~= task.targetTab or not row or not AA.rowMatches(task.name, row.name) then return nil end
+    return row
+end
+
 function AA.findAAInWindowLists(targetName, preferredTab)
     local win = AA.getAAWindow()
     if not win then return nil, nil, nil, nil end
@@ -376,7 +453,7 @@ function AA.findAAInWindowLists(targetName, preferredTab)
     }
 
     local cleanTarget = tostring(targetName or ''):lower():gsub('[^%a%d]', '')
-    local isSpecial = cleanTarget:find('firework') ~= nil or (AA.isSpecialTabAA and AA.isSpecialTabAA(targetName))
+    local isSpecial = cleanTarget:find('firework', 1, true) ~= nil
 
     -- If a preferred/active tab is specified, check that tab's lists first; otherwise prioritize Special tab if special
     if preferredTab and preferredTab >= 1 and preferredTab <= 4 then
@@ -417,13 +494,13 @@ function AA.findAAInWindowLists(targetName, preferredTab)
             -- 1. Try native MacroQuest List text lookup first
             pcall(function()
                 if targetName and targetName ~= '' and child.List then
-                    local dIdx = tonumber(child.List('=' .. targetName) or 0) or 0
-                    if dIdx <= 0 then dIdx = tonumber(child.List(targetName) or 0) or 0 end
+                    local dIdx = AA.listIndex(child, '=' .. targetName)
+                    if dIdx <= 0 then dIdx = AA.listIndex(child, targetName) end
                     if dIdx <= 0 and isSpecial then
-                        dIdx = tonumber(child.List('=Summon Firework') or 0) or 0
-                        if dIdx <= 0 then dIdx = tonumber(child.List('Summon Firework') or 0) or 0 end
-                        if dIdx <= 0 then dIdx = tonumber(child.List('=Alternately Advanced Fireworks') or 0) or 0 end
-                        if dIdx <= 0 then dIdx = tonumber(child.List('Alternately Advanced Fireworks') or 0) or 0 end
+                        dIdx = AA.listIndex(child, '=Summon Firework')
+                        if dIdx <= 0 then dIdx = AA.listIndex(child, 'Summon Firework') end
+                        if dIdx <= 0 then dIdx = AA.listIndex(child, '=Alternately Advanced Fireworks') end
+                        if dIdx <= 0 then dIdx = AA.listIndex(child, 'Alternately Advanced Fireworks') end
                     end
                     if dIdx > 0 then
                         child = child -- retain
@@ -432,20 +509,17 @@ function AA.findAAInWindowLists(targetName, preferredTab)
                 end
             end)
             if cand.directIdx and cand.directIdx > 0 then
-                return cand.name, cand.directIdx, cand.tab, child
+                local row = AA.readRowInfo(child, cand.directIdx)
+                if row and AA.rowMatches(targetName, row.name) then
+                    return cand.name, cand.directIdx, cand.tab, child
+                end
             end
 
-            -- 2. Fallback to iterating rows: an exact match (after stripping
-            -- everything but letters and digits) wins; a row that merely
-            -- starts with the target is remembered as a fallback; a row that
-            -- only contains it somewhere ("Innate Run Speed" for "Run
-            -- Speed") never matches. For the Special-tab fireworks AA (whose
-            -- row text varies by server) a row naming fireworks is the last
-            -- resort.
+            -- Edited By: NeroMorte - Exact row identity, plus known Fireworks aliases.
             local count = 0
             pcall(function() count = tonumber(child.Items() or 0) or 0 end)
             if count > 0 and count <= 500 then
-                local prefixRow, fireworkRow = nil, nil
+                local fireworkRow = nil
                 for row = 1, count do
                     local rowText = nil
                     pcall(function()
@@ -476,15 +550,13 @@ function AA.findAAInWindowLists(targetName, preferredTab)
                         local cleanRow = rowText:lower():gsub('[^%a%d]', '')
                         if cleanRow ~= '' and cleanRow == cleanTarget then
                             return cand.name, row, cand.tab, child
-                        elseif not prefixRow and cleanTarget ~= '' and cleanRow:sub(1, #cleanTarget) == cleanTarget then
-                            prefixRow = row
-                        elseif not fireworkRow and isSpecial and cleanRow:find('firework', 1, true) then
+                        elseif not fireworkRow and isSpecial and AA.rowMatches(targetName, rowText) then
                             fireworkRow = row
                         end
                     end
                 end
-                if prefixRow or fireworkRow then
-                    return cand.name, prefixRow or fireworkRow, cand.tab, child
+                if fireworkRow then
+                    return cand.name, fireworkRow, cand.tab, child
                 end
             end
         end
@@ -1558,6 +1630,8 @@ end
 
 -- Tick side of AA.requestScan.
 function AA.runPendingScan()
+    -- Edited By: NeroMorte - Defer scans until the trainer releases its AA window selection.
+    if AA.pendingAATrain then return end
     if AA.scanRequestAt and os.clock() >= AA.scanRequestAt then
         AA.scanRequestAt = nil
         AA.lastAAScanAt = 0
@@ -1627,7 +1701,10 @@ function AA.getFilteredSortedAAs()
             local aOrder, bOrder = tonumber(orders[a.name]), tonumber(orders[b.name])
             aOrder = aOrder and aOrder > 0 and aOrder or math.huge
             bOrder = bOrder and bOrder > 0 and bOrder or math.huge
-            if aOrder ~= bOrder then return asc and aOrder < bOrder or aOrder > bOrder end
+            -- Edited By: NeroMorte - Keep ascending/descending Order comparisons mutually exclusive.
+            if aOrder ~= bOrder then
+                if asc then return aOrder < bOrder else return aOrder > bOrder end
+            end
             if ctrl.auto_aa_buy_order ~= 'list' and a.cost ~= b.cost then
                 return (a.cost or 0) < (b.cost or 0)
             end
@@ -1655,12 +1732,13 @@ function AA.getFilteredSortedAAs()
 end
 
 -- Edited By: NeroMorte - Recheck automatic purchase limits and Power Source requirements.
-function AA.startAATrainWorkflow(targetName, allowStop, automatic)
-    if AA.pendingAATrain then return false end
+function AA.startAATrainWorkflow(targetName, allowStop, automatic, capSpender)
+    if AA.pendingAATrain or AA.purchaseCombatBlocked() then return false end
     targetName = targetName or ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     if type(targetName) == 'string' then targetName = targetName:match('^%s*(.-)%s*$') end
     -- Edited By: NeroMorte - Check automatic limits and Power Source before opening the purchase workflow.
     if automatic then
+        if not AA.automaticAllowed(targetName, capSpender) then return false end
         if AA.repeatableLimitReached(targetName) then return false end
         if targetName:lower() == 'consume experience' and ctrl.auto_consume_experience and
             (AA.pendingConsumeExperience or not AA.powerSourceEquipped()) then return false end
@@ -1749,6 +1827,7 @@ function AA.startAATrainWorkflow(targetName, allowStop, automatic)
         allowStop = allowStop or false,
         -- Edited By: NeroMorte - Remember whether this workflow must enforce automatic purchase limits.
         automatic = automatic == true,
+        capSpender = capSpender == true,
         startedAt = os.clock(),
         nextStepAt = os.clock() + 0.5,
         retries = 0
@@ -1809,14 +1888,7 @@ function AA.processAATrainWorkflow()
     end
 
     -- Strict out-of-combat enforcement: if combat engages mid-train, close window immediately and abort
-    local inCombat = false
-    pcall(function()
-        if mq.TLO.Me.Combat and mq.TLO.Me.Combat() then inCombat = true return end
-        if mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT' then inCombat = true return end
-        if mq.TLO.Me.AutoFire and mq.TLO.Me.AutoFire() then inCombat = true return end
-        if rt.isCombat and rt.isCombat() then inCombat = true return end
-        if rt.anyXtarAlive and rt.anyXtarAlive(true) then inCombat = true return end
-    end)
+    local inCombat = AA.purchaseCombatBlocked()
     if inCombat then
         AA.abortAATrain(task)
         return
@@ -1980,6 +2052,7 @@ function AA.processAATrainWorkflow()
             end)
             mq.cmdf('/nomodkey /notify %s %s listselect %d', winName, listName, listIdx)
             mq.cmdf('/nomodkey /notify %s %s leftmouseup', winName, listName)
+            task.listObj = listObj
             task.step = 'click_train'
             task.nextStepAt = now + 0.25
             return
@@ -2040,12 +2113,25 @@ function AA.processAATrainWorkflow()
         -- Edited By: NeroMorte - Recheck ignore and purchase targets immediately before training.
         if task.automatic then
             local info = AA.purchaseInfo(task.name)
-            if AA.isIgnored(task.name) or AA.repeatableLimitReached(task.name) or (not info.isSpecial and info.maxRank > 0 and
+            if not AA.automaticAllowed(task.name, task.capSpender) or AA.isIgnored(task.name) or AA.repeatableLimitReached(task.name) or (not info.isSpecial and info.maxRank > 0 and
                 info.rank >= AA.targetRank(task.name, info.maxRank)) then
                 AA.abortAATrain(task)
                 return
             end
         end
+        -- Edited By: NeroMorte - A changed selection/filter/tab must never buy another AA.
+        local row = AA.selectedTrainRow(task)
+        if not row then
+            AA.abortAATrain(task)
+            AA.lastAATrainAttempt[task.name] = now
+            AA.routineMessage('\ay[Triune]\ax AA selection changed or could not be verified; no Train click sent.')
+            return
+        end
+        local have = 0
+        pcall(function() have = tonumber(mq.TLO.Me.AAPoints() or 0) or 0 end)
+        if row.cost and row.cost > have then AA.abortAATrain(task); return end
+        if task.automatic and not AA.isSpecialTabAA(task.name) and row.rank and row.maxRank and row.maxRank > 0
+            and row.rank >= AA.targetRank(task.name, row.maxRank) then AA.abortAATrain(task); return end
         local win = AA.getAAWindow()
         local winName = AA.getAAWindowName()
         local trainButtons = { 'AAW_TrainButton', 'TrainButton', 'AA_TrainButton' }
@@ -2060,10 +2146,7 @@ function AA.processAATrainWorkflow()
                     btn = AA.findChildRecursive(win, btnName)
                 end
                 if btn then
-                    pcall(function()
-                        if btn.LeftMouseDown then btn.LeftMouseDown() end
-                        if btn.LeftMouseUp then btn.LeftMouseUp() end
-                    end)
+                    -- Edited By: NeroMorte - Send one click pair through /notify only.
                     mq.cmdf('/nomodkey /notify %s %s leftmousedown', winName, btnName)
                     mq.cmdf('/nomodkey /notify %s %s leftmouseup', winName, btnName)
                     clicked = true
@@ -2072,10 +2155,10 @@ function AA.processAATrainWorkflow()
             end
         end
         if not clicked then
-            mq.cmdf('/nomodkey /notify %s AAW_TrainButton leftmousedown', winName)
-            mq.cmdf('/nomodkey /notify %s AAW_TrainButton leftmouseup', winName)
-            mq.cmdf('/nomodkey /notify %s TrainButton leftmousedown', winName)
-            mq.cmdf('/nomodkey /notify %s TrainButton leftmouseup', winName)
+            AA.abortAATrain(task)
+            AA.lastAATrainAttempt[task.name] = now
+            print('\ay[Triune]\ax No AA Train button was found; no purchase sent.')
+            return
         end
 
         AA.routineMessage(string.format('\ag[Triune]\ax Clicked Train Button in AA Window for "%s".', task.name))
@@ -2187,15 +2270,7 @@ function AA.checkAutoSpendAA(allowStop)
     end
 
     -- Strict out-of-combat enforcement: never spend AAs while engaged in combat to avoid pauses
-    local inCombat = false
-    pcall(function()
-        if mq.TLO.Me.Combat and mq.TLO.Me.Combat() then inCombat = true return end
-        if mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT' then inCombat = true return end
-        if mq.TLO.Me.AutoFire and mq.TLO.Me.AutoFire() then inCombat = true return end
-        if rt.isCombat and rt.isCombat() then inCombat = true return end
-        if rt.anyXtarAlive and rt.anyXtarAlive(true) then inCombat = true return end
-        if mq.TLO.Me.XTHaterCount and (mq.TLO.Me.XTHaterCount() or 0) > 0 then inCombat = true return end
-    end)
+    local inCombat = AA.purchaseCombatBlocked()
     if inCombat then return false end
 
     local now = os.clock()
@@ -2343,7 +2418,7 @@ function AA.checkAutoSpendAA(allowStop)
             AA.routineMessage(string.format('\ag[Triune]\ax Auto-spending AA cap protection on Special tab "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
-            return AA.startAATrainWorkflow(effectiveName, allowStop, true)
+            return AA.startAATrainWorkflow(effectiveName, allowStop, true, true)
         end
 
         if cost > 0 and unspent >= cost then
@@ -2351,7 +2426,7 @@ function AA.checkAutoSpendAA(allowStop)
             AA.routineMessage(string.format('\ag[Triune]\ax Auto-spending AA cap protection on "%s" (Threshold: %d AA, Cost: %d AA, Unspent: %d AA)...',
                 effectiveName, threshold, cost, unspent))
             -- Edited By: NeroMorte - Enforce automatic purchase guards for the cap workflow.
-            return AA.startAATrainWorkflow(effectiveName, allowStop, true)
+            return AA.startAATrainWorkflow(effectiveName, allowStop, true, true)
         end
     end
     return false
@@ -2693,6 +2768,8 @@ end
 -- Edited By: NeroMorte - AA ignore/target/order controls and visible repeatable spender options.
 function AA.drawWindow()
     if not ctrl.show_auto_aa then return end
+    -- Edited By: NeroMorte - Finish Lua sorting before opening any ImGui/theme scope.
+    local allItems = AA.getFilteredSortedAAs and AA.getFilteredSortedAAs() or {}
     core.pushTheme()
     ImGui.SetNextWindowSize(core.px(760), core.px(560), ImGuiCond.FirstUseEver)
     core.preBeginWindow('auto_aa')
@@ -2943,7 +3020,6 @@ function AA.drawWindow()
     ImGui.Separator()
 
     -- Compact Row 2: Search, Sort & View Filter Toggles
-    local allItems = AA.getFilteredSortedAAs and AA.getFilteredSortedAAs() or {}
     local prioCount = 0
     if ctrl.auto_aa_priorities then
         for _, enabled in pairs(ctrl.auto_aa_priorities) do
@@ -3267,7 +3343,7 @@ function AA.tick()
         AA.requestScan(0)
     end
     if AA.pendingReadSpecialTab then
-        if not ctrl.paused and ctrl.auto_spend_aa and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not rt.isCasting() then
+        if not AA.pendingAATrain and not ctrl.paused and ctrl.auto_spend_aa and not mq.TLO.Me.Combat() and not mq.TLO.Me.Moving() and not rt.isCasting() then
             AA.pendingReadSpecialTab = false
             if AA.readSpecialTabOnce then AA.readSpecialTabOnce(false) end
             AA.requestScan(0)
@@ -3524,3 +3600,4 @@ plugin.help = {
 plugin.AA = AA
 
 return plugin
+

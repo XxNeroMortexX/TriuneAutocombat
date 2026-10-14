@@ -5,7 +5,7 @@ local now, packets, boxes = 100, {}, {}
 local function box(name, zone)
     local b = { name = name, zone = zone or 'shadowhaven', connected = true, commands = {}, group = {} }
     local mq = { TLO = {
-        EQBC = { Connected = function() return b.connected end, Setting = function() return true end },
+        EQBC = { Connected = function() return b.connected end, Setting = function() return setmetatable({}, { __call = function() return true end }) end },
         EverQuest = { PID = function() return 1234 end, Server = function() return 'NMS' end },
         Me = { CleanName = function() return name end },
         Zone = { ShortName = function() return b.zone end },
