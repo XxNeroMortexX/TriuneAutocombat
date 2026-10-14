@@ -20231,8 +20231,8 @@ do
     local roam = src:match('function runtime%.findRoamTarget.-\nend\n')
     assert_true(roam:find('local huntAnchor, huntRadius = runtime.huntAnchor()', 1, true) ~= nil,
         'Suite 112: the roam scan takes its anchor from huntAnchor')
-    assert_true(roam:find('radius = math.min(radius, math.ceil(md + huntRadius))', 1, true) ~= nil,
-        'Suite 112: the roam scan query is tightened to the anchor circle')
+    assert_true(roam:find('radius = math.ceil(md + huntRadius)', 1, true) ~= nil,
+        'Suite 112: the roam scan covers the whole anchor circle from either edge')
     local mover = src:match('function runtime%.moveToward%(id, dist, followOnly%).-\nend\n')
     assert_true(mover:find('if not followOnly and runtime.anchorLeashed(id) then', 1, true) ~= nil,
         'Suite 112: moveToward is leashed to the anchor')
