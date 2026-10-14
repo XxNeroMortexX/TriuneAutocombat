@@ -29,6 +29,8 @@ local mq = { TLO = { Me = { X = function() return mx end, Y = function() return 
         return setmetatable({ ID = function() return item.id end,
             CleanName = function() return 'NPC ' .. item.id end,
             X = function() return item.x end, Y = function() return 0 end, Z = function() return 0 end,
+            -- Edited By: NeroMorte - Fresh ranking reads real player-to-spawn distance.
+            Distance3D = function() return math.abs(item.x - mx) end,
             Level = function() return 65 end, Dead = function() return false end,
             Type = function() return 'NPC' end, State = function() return 'STANDING' end,
         }, { __call = function() return item ~= nil end })

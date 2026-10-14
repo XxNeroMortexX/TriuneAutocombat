@@ -2,6 +2,8 @@
 
 ## 2026-10-13 — target / group XTarget test
 
+- **Edited By: NeroMorte — Rank fresh automatic pulls by nearest reachable distance across the full allowed height range**, replacing the separate same-floor-first scan. Use the existing floor band only within a five-unit distance tie; reject failed native path reads and excessive route detours even for close mobs. Share the rule with Camp/Hunt, stationary pet gathering and closer-target travel, retaining all existing exclusions, camp/anchor bounds and movement gates. XTarget lowest-HP selection, current-fight locks, Main Assist and forced overrides are unchanged. Update height tooltips and add hill/downhill/floor/path/claim/level/exclusion regressions; gameplay confirmation remains pending.
+
 - **Edited By: NeroMorte — Remove the separate legacy Camp XTarget chase slider** missed by the earlier contextual-control change. Keep Manual, Hunt and Assist sliders and saved values intact; extend the UI regression to cover all slider IDs and clarify the Camp marker tooltip. The fixed-radius gameplay logic is unchanged.
 
 - **Edited By: NeroMorte — Camp XTargets follow the fixed Pull Radius circle**, using camp-centered XY bounds for shared-group eligibility, acquisition and movement instead of Hunt/Manual's saved chase limit. Hide the separate chase controls in Camp without changing their saved value or other modes. Scan the whole circle from either edge, retain owned/direct threats as combat safety gates, and require melee reach/LoS before releasing Camp offensive combat. Add actual-selector, movement, scanner and UI regressions for opposite-edge, outside-but-close, large-radius and live-edit cases. Game confirmation remains pending.

@@ -53,6 +53,8 @@ do
             Dead = function() return false end, Type = function() return 'NPC' end,
             State = function() return 'ACTIVE' end, X = function() return x end,
             Y = function() return 0 end, Z = function() return 0 end,
+            -- Edited By: NeroMorte - Provide distance used by the shared nearest-target scanner.
+            Distance3D = function() return math.abs(x) end,
             Level = function() return 50 end }, { __call = function() return true end })
     end
     local absent = setmetatable({}, { __call = function() return false end })
@@ -90,3 +92,4 @@ do
     assert(id == nil and complete == true and scans == before)
     print('PASS: merged scanner keeps pet exclusions, uncached waypoint scans, camp bounds and Travel-node policy')
 end
+

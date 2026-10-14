@@ -12788,13 +12788,13 @@ function UI.drawControlTab()
             ctrl.hunter_z_plane = ImGui.SliderInt('Floor Height (Z Plane)', ctrl.hunter_z_plane or 15, 5, 50)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Tier 1 vertical search threshold. Triune prioritizes NPCs on the same floor or Z plane\nwithin this height difference before searching other floors.')
+                    'Same-floor height band used only to break close-distance ties (within 5 units).\nFresh pulls search the full Max Height Diff and prefer the nearest eligible reachable mob.')
             end
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_z = ImGui.SliderInt('Max Height Diff (Z)', ctrl.hunter_z or 75, 10, 300)
             if ImGui.IsItemHovered() then
                 ImGui.SetTooltip(
-                    'Tier 2 vertical search limit. If no valid NPCs are found on your immediate floor,\nTriune expands search up to this maximum height difference across floors and ledges.')
+                    'Maximum vertical height difference for fresh pulls. Nearby hills are eligible inside this limit;\nvalid navigation paths and the detour limit help reject unreachable or inconvenient floors.')
             end
             ImGui.SetNextItemWidth(UI.px(180))
             ctrl.hunter_min_level = ImGui.SliderInt('Min NPC Level', ctrl.hunter_min_level or 1, 1, 100)
@@ -22736,7 +22736,12 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
         return ok, v
     end
 
+    -- Edited By: NeroMorte - Rank fresh targets by player distance across the full height band.
+    -- Same-floor preference is only a close-distance tie (five units), never a separate scan tier.
+    local myZ = mq.TLO.Me.Z() or 0
+    local floorZ = isCampMode and (ctrl.camp_z_plane or 15) or (ctrl.hunter_z_plane or 15)
     local function scanSpawns(maxZ)
+        local candidates, nearest = {}, math.huge
         local radius = searchRadius or 100
         -- Edited By: NeroMorte - Camp scans the whole fixed circle even from its opposite edge.
         if isCampMode and anchorLoc and anchorRadius > 0 then
@@ -22786,15 +22791,21 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
                                     -- Only melee has to walk into the hazard; ranged/spell can hit it from outside.
                                     -- Edited By: NeroMorte - Use temporary melee positioning/attack without changing saved style.
                                     local isMeleeStyle = (ctrl and (runtime.trashMode and 'Melee' or ctrl.combat_style) or 'Melee') == 'Melee'
-                                    local pathOk = not (inHaz and isMeleeStyle)
+                                    local okDist, candidateDist = pcall(function() return s.Distance3D() or s.Distance() end)
+                                    local candidateZ = math.abs(sz - myZ)
+                                    local pathOk = okDist and type(candidateDist) == 'number' and candidateDist >= 0
+                                        and candidateZ <= maxZ and candidateDist <= nearest + 5
+                                        and not (inHaz and isMeleeStyle)
                                     if pathOk and navLoaded() and not playerOffMesh then
                                             local meshOk, meshLoaded = pcall(function() return mq.TLO.Navigation.MeshLoaded() end)
                                             if meshOk and meshLoaded then
-                                                local dist = s.Distance3D() or 999
+                                                local dist = candidateDist
                                                 local closeReach = desiredRange(sid) or 14
                                                 if dist > closeReach or not hasLoS(sid) then
                                                     local ok, hasPath = pathExists(sid)
-                                                    if ok and not hasPath then
+                                                    if not ok then
+                                                        pathOk = false -- unknown native path is not proof of reachability
+                                                    elseif not hasPath then
                                                         pathOk = false
                                                         noPath.count = noPath.count + 1
                                                         if noPath.id == 0 then
@@ -22804,15 +22815,17 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
                                                         local pathLen = 0
                                                         pcall(function() pathLen = mq.TLO.Navigation.PathLength('id ' .. sid)() or 0 end)
                                                         local maxRatio = ctrl.nav_max_path_ratio or 2.5
-                                                        if pathLen > 0 and dist > 20 and (pathLen / dist) > maxRatio then
+                                                        if pathLen > 0 and dist > 0 and (pathLen / dist) > maxRatio then
                                                             pathOk = false
                                                         end
                                                     end
                                                 end
                                             end
                                         end
-                                        if pathOk then
-                                        return sid
+                                    if pathOk then
+                                        nearest = math.min(nearest, candidateDist)
+                                        candidates[#candidates + 1] = { id = sid, distance = candidateDist,
+                                            sameFloor = candidateZ <= floorZ, z = candidateZ }
                                     end
                                 end
                             end
@@ -22821,22 +22834,24 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
                 end
             end
         end
-        return nil
+        local chosen
+        for _, candidate in ipairs(candidates) do
+            if candidate.distance <= nearest + 5 then
+                if not chosen or (candidate.sameFloor and not chosen.sameFloor)
+                    or (candidate.sameFloor == chosen.sameFloor and
+                        (candidate.distance < chosen.distance or
+                            (candidate.distance == chosen.distance and candidate.z < chosen.z))) then
+                    chosen = candidate
+                end
+            end
+        end
+        return chosen and chosen.id or nil
     end
 
-    -- Two-Tier Z-Plane Target Acquisition:
-    -- Tier 1: Look for NPCs within the player's immediate Z plane (same floor/elevation)
-    local floorZ = isCampMode and (ctrl.camp_z_plane or 15) or (ctrl.hunter_z_plane or 15)
-    local tier1Z = math.min(floorZ, searchMaxZ or 75)
-    local targetId = scanSpawns(tier1Z)
-    if targetId then runtime.noteMeshPathOk(); return targetId end
-
-    -- Tier 2: Expand to full maxZ range if no target on immediate floor
+    -- Edited By: NeroMorte - One shared selection rule for Camp, Hunt, pet gathers and closer scans.
     local maxZ = searchMaxZ or (isCampMode and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75))
-    if maxZ > tier1Z then
-        targetId = scanSpawns(maxZ)
-        if targetId then runtime.noteMeshPathOk(); return targetId end
-    end
+    local targetId = scanSpawns(maxZ)
+    if targetId then runtime.noteMeshPathOk(); return targetId end
 
     if noPath.count > 0 then
         -- Every otherwise-valid NPC was rejected for no-path. When known-good
