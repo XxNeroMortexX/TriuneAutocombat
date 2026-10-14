@@ -10833,6 +10833,8 @@ function UI.drawWaypointAnchorEditor(idx, wp)
 end
 
 function UI.startEngine()
+    -- Edited By: NeroMorte - Shared Start path also covers /ac run and compact START.
+    if runtime.ensureHuntAnchor then runtime.ensureHuntAnchor() end
     if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then
         if not runtime.wpAnchorActive() or (not runtime.wpPatrol and not runtime.wpKeepDestination) then
             runtime.setNearestWaypoint()
@@ -12830,7 +12832,7 @@ function UI.drawControlTab()
                     accent(WARN, 'Waypoint Patrol is on -- the route sets the ground, the anchor is ignored.')
                 end
             else
-                accent(MUTED, 'No anchor set -- Puller roams freely within Search Radius.')
+                accent(MUTED, 'No anchor set -- START sets Combat Anchor at your current position.')
             end
 
             if ImGui.Button('Set Anchor##pullerAnchorSet') then
@@ -12863,7 +12865,7 @@ function UI.drawControlTab()
                 runtime.refreshEqCampMapFromUI(true)
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip('Forget the anchor for this zone -- the Puller roams anywhere within Search Radius again.')
+                ImGui.SetTooltip('Clear this zone anchor. Running Hunt recreates it at your current position; when paused, START sets it.')
             end
 
             ImGui.SetNextItemWidth(UI.px(220))
@@ -12873,7 +12875,9 @@ function UI.drawControlTab()
             local newRadius, changed = UI.distanceSlider('Combat Radius##pullerAnchorRadius', curRadius, 1, 2000)
             if changed then
                 ctrl.hunter_combat_radius = newRadius
-                runtime.refreshEqCampMapFromUI(false)
+                -- Edited By: NeroMorte - Preview the actual combat circle, even after Clear.
+                if runtime.ensureHuntAnchor then runtime.ensureHuntAnchor() end
+                runtime.refreshEqCampMapFromUI(true)
                 if ctrl.hunter_combat_loc then runtime.saveZoneAnchor() else runtime.saveLoadout(true) end
             end
             if ImGui.IsItemDeactivatedAfterEdit and ImGui.IsItemDeactivatedAfterEdit() then
@@ -22516,6 +22520,28 @@ end
 -- own ground), else nil. Every anchor check -- the roam scan, the XTarget
 -- pick, the movement leash in moveToward and the idle return -- goes through
 -- here so they cannot drift apart.
+-- Edited By: NeroMorte - Hunt needs the same missing-anchor fallback as Camp.
+function runtime.ensureHuntAnchor()
+    if ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Hunt' then return false end
+    if ctrl.use_waypoints and ctrl.waypoints and #ctrl.waypoints > 0 then return false end
+    if type(ctrl.hunter_combat_loc) == 'table' then return false end
+    local ok, x, y, z = pcall(function()
+        return mq.TLO.Me.X(), mq.TLO.Me.Y(), mq.TLO.Me.Z()
+    end)
+    if not ok or type(x) ~= 'number' or type(y) ~= 'number' or type(z) ~= 'number' or
+        x ~= x or y ~= y or z ~= z or math.abs(x) == math.huge or
+        math.abs(y) == math.huge or math.abs(z) == math.huge then return false end
+    ctrl.hunter_combat_loc = { x = x, y = y, z = z }
+    if not tonumber(ctrl.hunter_combat_radius) or ctrl.hunter_combat_radius <= 0 then
+        ctrl.hunter_combat_radius = 250
+    end
+    runtime.anchorReturning, pursuit.wanderLoc = false, nil
+    runtime.saveZoneAnchor()
+    runtime.refreshEqCampMapFromUI(true)
+    print(string.format('\ag[Triune]\ax Puller (Hunt): Initialized Combat Anchor at current position (Y:%.1f, X:%.1f, Z:%.1f)', y, x, z))
+    return true
+end
+
 function runtime.huntAnchor()
     if not ctrl or ctrl.mode ~= 'Puller' or ctrl.submode ~= 'Hunt' then return nil end
     local wp = runtime.wpNode and runtime.wpNode()
@@ -24322,6 +24348,8 @@ local function combatTick()
                 engage = (runtime.pullState == 'FIGHTING')
             end
         else -- Submode 'Hunt'
+            -- Edited By: NeroMorte - Recreate a cleared anchor while Hunt is running.
+            runtime.ensureHuntAnchor()
             if runtime.wpAnchorActive() and haveNPC and not runtime.wpAutoTargetAllowed(mq.TLO.Target.ID() or 0) then
                 stopMoving()
                 mq.cmd('/attack off')
