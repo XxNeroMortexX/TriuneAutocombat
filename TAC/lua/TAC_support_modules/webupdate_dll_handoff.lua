@@ -283,7 +283,9 @@ if hadOld then
     while not os.rename(live, sidecar) do
         if elapsed >= 10000 then
             rollback()
-            fail('Old DLL remained locked; previous state restored.')
+            -- Edited By: NeroMorte - Identify what to unload on other clients.
+            fail(name .. '.dll could not be replaced (it may still be locked). Stop Triune and run /plugin ' ..
+                name .. ' unload on every OTHER EQ client using this MQ folder, then retry. Previous state restored.')
         end
         mq.delay(100)
         elapsed = elapsed + 100

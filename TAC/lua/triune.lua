@@ -8935,6 +8935,17 @@ function UI.toggleTool(scriptName, stopCmd)
     return 'started'
 end
 
+-- Edited By: NeroMorte - Optional metadata keeps single-file installs usable.
+function UI.releaseLabel()
+    if not UI.morteReleaseLabel then
+        local ok, metadata = pcall(require, 'TAC_support_modules.morte_version')
+        local release = ok and type(metadata) == 'table' and metadata.morte
+        UI.morteReleaseLabel = type(release) == 'table' and
+            type(release.version) == 'string' and release.version or 'Morte version unavailable'
+    end
+    return UI.morteReleaseLabel
+end
+
 function UI.drawHeaderBar()
     UI.updateTracker()
 
@@ -16044,7 +16055,7 @@ function UI.drawMiniGui()
     -- The X on the mini window returns to the full window; it used to write
     -- the script-level `open` flag and so terminated the whole script.
     local miniOpen
-    miniOpen, show = ImGui.Begin('Triune AutoCombat Mini v' .. VERSION .. '###triuneMini', true, flags)
+    miniOpen, show = ImGui.Begin('Triune AutoCombat Mini v' .. VERSION .. ' | ' .. UI.releaseLabel() .. '###triuneMini', true, flags)
     if not miniOpen then
         ctrl.compact = false
         UI.preEndWindow('mini', true)
@@ -16111,7 +16122,7 @@ function UI.drawFullGui()
     end
     local clsText = #clsList > 0 and table.concat(clsList, ' / ') or '?'
     local charName = myName or (mq.TLO.Me.CleanName and mq.TLO.Me.CleanName()) or '(no character)'
-    local winTitle = string.format('TAC v%s - %s (%s)###triune', VERSION, charName, clsText)
+    local winTitle = string.format('TAC v%s | %s - %s (%s)###triune', VERSION, UI.releaseLabel(), charName, clsText)
     UI.preBeginWindow('main')
     open, show = ImGui.Begin(winTitle, open, UI.windowFlags('main', winFlags))
     if not show then

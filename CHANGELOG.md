@@ -2,6 +2,8 @@
 
 ## 2026-10-13 — Morte.10
 
+- **Edited By: NeroMorte — Display the installed Morte release beside the Gennro version in both main and compact window titles.** Explain shared-client DLL locks and running server EXEs beside update actions; name the blocked plugin and unloading steps when a DLL handoff cannot replace it.
+
 - **Edited By: NeroMorte — Approve the cumulative Morte.10 changes for main**, following James's explicit approval on October 13. Include AA purchase guards/order fixes, safe plugin error propagation and Connection values, Camp circles/boundaries and optional pet return, nearest reachable fresh pulls, current-fight protection and target-aware approach retargeting. Connection rendering, AA order controls and ordinary Camp/nearest behavior have game feedback; actual AA purchasing and remaining group/Hunt/pet/radius cases retain their recorded test gaps.
 
 - **Edited By: NeroMorte — Let an unengaged approach reconsider closer mobs despite an enabled attack toggle**, after the Windows dump shows TO_MOB, an untouched distant target, active navigation and Me.Combat=true. Use target-specific engagement/aggro/pet/cast/force guards in Camp/Hunt and the shared closer scanner; retain cone, distance-savings, interval, cycle and quota limits. Add the bounded eligible shortlist and original player position to diagnostic dumps; the skipped mob's initial filter results were absent from the submitted dump, so not every reported bypass is claimed resolved. Add actual-call regressions and preserve other fight/selection rules.

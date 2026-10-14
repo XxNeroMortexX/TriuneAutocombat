@@ -415,6 +415,8 @@ local function drawActions(e)
     if dllStaged then
         ImGui.SameLine()
         ImGui.TextDisabled('DLL requires the independent handoff.')
+        -- Edited By: NeroMorte - Explain shared-runtime locks before the UI stops.
+        ImGui.TextWrapped('Before updating a plugin DLL: stop Triune and unload that plugin on every OTHER EQ client using this MQ folder. The Update button handles this client automatically. A DLL loaded by another client cannot be replaced.')
         beginDisabled(not e.stageReady or e.busy)
         for _, file in ipairs(e.files or {}) do
             local status = string.upper(tostring(file.status or ''))
@@ -431,6 +433,21 @@ local function drawActions(e)
             end
         end
         endDisabled(not e.stageReady or e.busy)
+    end
+
+    -- Edited By: NeroMorte - Show the actual planned executable, not a generic silent failure.
+    for _, file in ipairs(e.files or {}) do
+        local status = string.upper(tostring(file.status or ''))
+        local destination = tostring(file.destinationPath or file.name or '')
+        if (status == 'UPDATE' or status == 'MISSING') and
+            not tostring(file.protection or ''):upper():find('PROTECTED', 1, true) and
+            destination:lower():match('%.exe$') then
+            colorText(C.yellow, 'Before replacing a server executable')
+            ImGui.PushTextWrapPos(0)
+            ImGui.TextUnformatted('Close the running server that uses this file before Apply: ' .. destination ..
+                '. Closing EQBC disconnects clients using that server. Reopen the server after the update. If Apply fails, check Last Error above and Status to Chat.')
+            ImGui.PopTextWrapPos()
+        end
     end
 
     if state.pendingDllApply then
