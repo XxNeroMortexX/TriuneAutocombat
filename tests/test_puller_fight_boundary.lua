@@ -5,6 +5,7 @@ local ctrl = { camp_loc = { x = 0, y = 0, z = 0 }, camp_radius = 500 }
 local runtime = { wpAnchorActive = function() return false end, pullState = 'IDLE', combatHold = function() return false end,
     anyXtarAlive = function(include) assert(include == true); return xt end,
     checkPullHpRest = function() return false end,
+    canReconsiderApproach = function() return true end,
     findRoamTarget = function() fresh = fresh + 1 end, setTarget = function() return true end,
     boxnetYieldTarget = function() end,
     checkCloserTarget = function() closer = closer + 1 end }

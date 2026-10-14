@@ -16,12 +16,14 @@ local function spawn(id)
         X = function() return m.x end, Y = function() return 0 end, Z = function() return m.z or 0 end,
         Distance3D = function() return distance(m) end, CleanName = function() return 'mob' .. id end,
         Dead = function() return m.dead or false end, Type = function() return 'NPC' end,
+        TargetOfTarget = { ID = function() return 0 end }, AggroHolder = { ID = function() return 0 end },
         State = function() return 'STANDING' end, Level = function() return m.level or 65 end,
     }, { __call = function() return m ~= nil end })
 end
 local function native(value) return function() return value end end
 local runtime = { wpNode = function() end, petCampActive = function() return false end,
-    huntAnchor = function() end, isPlayerOffMesh = function() return false end,
+    targetIsEngaged = function() return false end, playerHasAggro = function() return false end,
+    forcedTargetId = function() end, huntAnchor = function() end, isPlayerOffMesh = function() return false end,
     boxnetClaimedTargets = function() return {} end,
     isBoxClaimedTarget = function(id) return mobs[id].claimed or false end,
     isPullAllowed = function(name) return not mobs[tonumber(name:match('%d+'))].ignored end,
@@ -29,7 +31,7 @@ local runtime = { wpNode = function() end, petCampActive = function() return fal
     isCoordInActiveHazard = function() return false end, noteMeshPathOk = function() end,
     noteMeshNoPath = function() return false end,
 }
-local mq = { TLO = { Me = { X = function() return 0 end, Y = function() return 0 end,
+local mq = { TLO = { Spawn = spawn, Me = { X = function() return 0 end, Y = function() return 0 end,
     Z = function() return 0 end, Combat = function() return false end },
     NearestSpawn = function(index, query)
         if index == 1 then queries[#queries + 1] = query end
@@ -60,8 +62,10 @@ local env = setmetatable({ ctrl = ctrl, runtime = runtime, mq = mq, pursuit = { 
     hasLoS = function() return false end, isUnreachable = function(id) return mobs[id].unreachable end,
     isHostileTarget = function(id) return not mobs[id].dead end,
     distToId = function(id) return distance(mobs[id]) end,
+    isCastingOrStarting = function() return false end, getActiveTargetRequiredCastingId = function() end,
+    isSpawnMyPet = function() return false end,
 }, { __index = _G })
-compile(helper('findRoamTarget') .. '\n' .. helper('checkCloserTarget'), env)
+compile(helper('findRoamTarget') .. '\n' .. helper('canReconsiderApproach') .. '\n' .. helper('checkCloserTarget'), env)
 local function choose(height, excluded)
     runtime.pathExistsCache = {}; runtime.roamScanEmpty = nil; queries = {}
     return runtime.findRoamTarget(500, height or 75, 1, 100, excluded, true)
@@ -94,5 +98,6 @@ mobs = { [1] = { x = 12, z = 9, pathLength = 500 }, [2] = { x = 60 } }; assert(c
 -- Closer-target travel uses this same selector, without changing its combat/retarget gates.
 mobs = { [1] = { x = 30, z = 20 }, [2] = { x = 60 }, [3] = { x = 100 } }; slots = { 1, 2 }
 runtime.pathExistsCache = {}; runtime.roamScanEmpty = nil
+assert(runtime.canReconsiderApproach(3), 'fixture approach is not eligible')
 assert(runtime.checkCloserTarget(3, 500, 75, 1, 100) == 1)
 print('PASS: actual shared fresh/closer scanner chooses nearest reachable hills, bounded floor ties, full height range, path safety and existing exclusions')

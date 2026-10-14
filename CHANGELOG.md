@@ -2,6 +2,8 @@
 
 ## 2026-10-13 — target / group XTarget test
 
+- **Edited By: NeroMorte — Let an unengaged approach reconsider closer mobs despite an enabled attack toggle**, after the Windows dump shows TO_MOB, an untouched distant target, active navigation and Me.Combat=true. Use target-specific engagement/aggro/pet/cast/force guards in Camp/Hunt and the shared closer scanner; retain cone, distance-savings, interval, cycle and quota limits. Add the bounded eligible shortlist and original player position to diagnostic dumps; the skipped mob's initial filter results were absent from the submitted dump, so not every reported bypass is claimed resolved. Add actual-call regressions and preserve other fight/selection rules.
+
 - **Edited By: NeroMorte — Rank fresh automatic pulls by nearest reachable distance across the full allowed height range**, replacing the separate same-floor-first scan. Use the existing floor band only within a five-unit distance tie; reject failed native path reads and excessive route detours even for close mobs. Share the rule with Camp/Hunt, stationary pet gathering and closer-target travel, retaining all existing exclusions, camp/anchor bounds and movement gates. XTarget lowest-HP selection, current-fight locks, Main Assist and forced overrides are unchanged. Update height tooltips and add hill/downhill/floor/path/claim/level/exclusion regressions; gameplay confirmation remains pending.
 
 - **Edited By: NeroMorte — Remove the separate legacy Camp XTarget chase slider** missed by the earlier contextual-control change. Keep Manual, Hunt and Assist sliders and saved values intact; extend the UI regression to cover all slider IDs and clarify the Camp marker tooltip. The fixed-radius gameplay logic is unchanged.

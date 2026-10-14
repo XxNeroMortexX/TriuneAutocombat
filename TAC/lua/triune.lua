@@ -22845,6 +22845,13 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
                 end
             end
         end
+        -- Edited By: NeroMorte - Explain what was eligible when chosen, rather than later guessed distances.
+        local meX, meY
+        pcall(function() meX, meY = mq.TLO.Me.X(), mq.TLO.Me.Y() end)
+        runtime.lastFreshSelection = { at = os.clock(), mode = ctrl.mode, submode = ctrl.submode,
+            playerX = meX, playerY = meY, playerZ = myZ, maxZ = maxZ, floorBand = floorZ,
+            selectedId = chosen and chosen.id or 0, selectedDistance = chosen and chosen.distance,
+            nearestEligibleDistance = nearest ~= math.huge and nearest or nil, candidates = candidates }
         return chosen and chosen.id or nil
     end
 
@@ -22876,6 +22883,22 @@ function runtime.findRoamTarget(searchRadius, searchMaxZ, minLevel, maxLevel, ex
     return nil, true
 end
 
+-- Edited By: NeroMorte - An enabled attack toggle is not proof of an engaged approach target.
+function runtime.canReconsiderApproach(id)
+    if not id or id <= 0 or not isHostileTarget(id) then return false end
+    if isCastingOrStarting() or getActiveTargetRequiredCastingId() then return false end
+    if runtime.forcedTargetId() then return false end
+    local ok, engaged = pcall(function()
+        if runtime.targetIsEngaged(id) or runtime.playerHasAggro(id) then return true end
+        local spawn = mq.TLO.Spawn(id)
+        if not spawn or not spawn() then return true end
+        local targetId = spawn.TargetOfTarget.ID() or 0
+        local holderId = spawn.AggroHolder.ID() or 0
+        return (targetId > 0 and isSpawnMyPet(targetId)) or (holderId > 0 and isSpawnMyPet(holderId))
+    end)
+    return ok and not engaged
+end
+
 function runtime.checkCloserTarget(curTargetId, searchRadius, searchMaxZ, minLevel, maxLevel)
     if not curTargetId or curTargetId <= 0 then return nil end
     if ctrl.check_closer_mobs == false then return nil end
@@ -22894,7 +22917,8 @@ function runtime.checkCloserTarget(curTargetId, searchRadius, searchMaxZ, minLev
     local maxZ = searchMaxZ or (isCampMode and (ctrl.camp_z or 75) or (ctrl.hunter_z or 75))
 
     local curDist = distToId(curTargetId)
-    if curDist <= 35 or mq.TLO.Me.Combat() then return nil end
+    -- Edited By: NeroMorte - Preserve real fights, not an out-of-range /attack toggle.
+    if curDist <= 35 or not runtime.canReconsiderApproach(curTargetId) then return nil end
 
     local candId = runtime.findRoamTarget(searchRadius, maxZ, minL, maxL)
     if candId and candId ~= curTargetId then
@@ -23131,7 +23155,8 @@ function runtime.pullerTick()
                 runtime.pullState = 'FIGHTING'
             end
         -- Edited By: NeroMorte - Never swap an engaged pull for a fresh closer mob.
-        elseif not runtime.anyXtarAlive(true) and not mq.TLO.Me.Combat() and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
+        elseif not runtime.anyXtarAlive(true) and runtime.canReconsiderApproach(runtime.pullTargetId)
+            and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
             local closerId, candDist, curDist = runtime.checkCloserTarget(runtime.pullTargetId, ctrl.camp_radius, maxCampZ,
                 ctrl.pull_min_level, ctrl.pull_max_level)
             if closerId and runtime.setTarget(closerId) then
@@ -24382,7 +24407,8 @@ local function combatTick()
                 if runtime.pullHpRest and not isCurXtar then
                     clearTarget()
                     haveNPC = false
-                elseif not isCurXtar and not anyXtarAlive() and not mq.TLO.Me.Combat() and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
+                elseif not isCurXtar and not anyXtarAlive() and runtime.canReconsiderApproach(curTid)
+                    and (ctrl.check_closer_mobs == nil or ctrl.check_closer_mobs) then
                     local curId = curTid
                     local closerId, candDist, curDist = checkCloserTarget(curId, nil, maxHuntZ, ctrl.hunter_min_level,
                         ctrl.hunter_max_level)
@@ -26251,6 +26277,8 @@ function runtime.buildDiagnosticDump()
         { title = 'Identity',          value = { name = myName, classes = myClasses, version = VERSION, dataEra = DATA.era_expansion } },
         { title = 'ctrl',              value = ctrl, depth = 4 },
         { title = 'runtime (scalars)', value = runtimeScalars },
+        -- Edited By: NeroMorte - Bounded eligible shortlist from the last fresh/closer scan.
+        { title = 'last fresh selection (eligible candidates)', value = runtime.lastFreshSelection, depth = 4 },
         { title = 'petState',          value = petState, depth = 2 },
         { title = 'pursuit',           value = pursuit, depth = 2 },
         { title = 'stuckState',        value = stuckState, depth = 2 },
