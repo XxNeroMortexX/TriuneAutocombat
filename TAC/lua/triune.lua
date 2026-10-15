@@ -13501,7 +13501,7 @@ function UI.drawControlTab()
 
         ctrl.assist_self_defense = ImGui.Checkbox('Self-Defense When Attacked##assistSelfDefense', ctrl.assist_self_defense ~= false)
         if ImGui.IsItemHovered() then
-            ImGui.SetTooltip('When enabled, if the Main Assist has no active engaged target and an enemy attacks you, defend yourself.\nWhen the MA engages a target, the assistant will strictly focus on the MA target only.')
+            ImGui.SetTooltip('When enabled, defend against an enemy directly attacking you only while the Main Assist has no active engaged target.\nAn active MA target keeps priority even while out of range or on an unreachable cooldown.\nAn Auto Hater slot alone does not trigger Self-Defense.')
         end
 
         local behindVal = ImGui.Checkbox('Position Behind NPC##assistBehind', ctrl.assist_behind ~= false)
@@ -17750,63 +17750,112 @@ end
 -- Memoized per main-loop pass: every 'Assist Target' entry re-ran the full
 -- resolution, and without a boxnet feed that meant anyNearbyEngagedNpc's
 -- SpawnCount + NearestSpawn sweep per entry.
+-- Created By: NeroMorte - Legacy /assist is asynchronous; never label an arbitrary
+-- existing target as the MA response. A verified previous response may be held
+-- while refreshing only while it is still the current target.
+function runtime.legacyMaTarget(maId)
+    local now = os.clock()
+    pcall(function() now = mq.gettime() / 1000 end) -- Edited By: NeroMorte - Network deadlines use wall time.
+    local state = runtime.legacyAssist
+    if not state or state.maId ~= maId then
+        state = { maId = maId, sentAt = -math.huge }
+        runtime.legacyAssist = state
+    end
+    local current = mq.TLO.Target.ID() or 0
+    if state.pending then
+        local ok, complete = pcall(function() return mq.TLO.Me.AssistComplete() end)
+        if ok and complete == true then
+            state.pending = false
+            state.id = current > 0 and current or nil
+            return state.id
+        end
+        -- Unsupported builds can still verify a positive direct MA target ID.
+        local direct = 0
+        if not ok or complete == nil then
+            pcall(function() direct = mq.TLO.Spawn(maId).Target.ID() or 0 end)
+        end
+        if direct > 0 and current == direct then
+            state.pending = false
+            state.id = direct
+            return direct
+        end
+        if now - state.sentAt < 2 then
+            runtime.maTargetBlocksDefense = true
+            return current == state.id and state.id or nil
+        end
+        state.pending, state.id = false, nil
+    end
+    if now - state.sentAt >= 1 then
+        local name = mq.TLO.Spawn(maId).CleanName()
+        if name and name ~= '' then
+            state.pending, state.sentAt = true, now
+            runtime.lastAssistCmdAt = now
+            mq.cmdf('/assist %s', name)
+            runtime.maTargetBlocksDefense = true
+            return current == state.id and state.id or nil
+        end
+    end
+    return current == state.id and state.id or nil
+end
+
 function runtime.maTargetId()
-    -- One resolution per main-loop pass (runtime.tickSerial); UI frames
-    -- between passes share it too.
     local mtc = runtime.maTargetCache
     if runtime.tickSerial and mtc and mtc.tick == runtime.tickSerial then return mtc.id end
+    runtime.maTargetBlocksDefense = false
     local function resolve()
         local maId = runtime.maPcId()
         if not maId then return nil end
         local gated = (ctrl.mode == 'Assist')
         local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
-        -- Box Network first: the MA's Triune reports its exact target (spawn IDs
-        -- are the same on every client in the zone), so no /assist peek, no
-        -- blocking delay, and our own target is left alone.
         local fed = runtime.boxnetMaTarget(maId)
+        local id
         if fed ~= nil then
-            if not fed then return nil end -- MA has no target right now
-            local id = fed.id
-            local valid = false
-            pcall(function()
-                local sp = mq.TLO.Spawn(id)
-                valid = sp() and (sp.Type() == 'NPC' or sp.Type() == 'Pet') and not sp.Dead() and sp.Type() ~= 'Corpse'
-            end)
-            if not valid or isSpawnPetOrPlayer(id) or not isHostileTarget(id) then return nil end
-            -- Edited By: NeroMorte - Do not retry the MA's failed approach every tick during its cooldown.
-            if gated and isUnreachable(id) then return nil end
-            if gated and not runtime.targetIsEngaged(id) then return nil end
-            if gated and distToId(id) > maxNav then return nil end
-            return id
+            runtime.legacyAssist = nil
+            if not fed then return nil end
+            id = fed.id
+        else
+            id = runtime.legacyMaTarget(maId)
         end
-        if gated and not runtime.anyNearbyEngagedNpc(maxNav) then
-            return nil -- nothing nearby is actually being fought -- don't even peek via /assist
-        end
-        local now = os.clock()
-        if (now - runtime.lastAssistCmdAt) >= 1.0 then
-            runtime.lastAssistCmdAt = now
-            local nm = mq.TLO.Spawn(maId).CleanName()
-            if nm and nm ~= '' then
-                mq.cmdf('/assist %s', nm)
-                -- No mq.delay here: the target this /assist produces is read on
-                -- the next pass; below we read whatever the previous one gave us.
-            end
-        end
-        local t = mq.TLO.Target
-        if not (t() and (t.Type() == 'NPC' or t.Type() == 'Pet') and not t.Dead() and t.Type() ~= 'Corpse' and not isSpawnPetOrPlayer(t.ID()) and isHostileTarget(t.ID())) then return nil end
-        -- Edited By: NeroMorte - Legacy /assist respects the same unreachable cooldown as Box Net.
-        if gated and isUnreachable(t.ID()) then return nil end
-        if gated and not runtime.targetIsEngaged(t.ID()) then
-            return nil
-        end
-        if gated and distToId(t.ID()) > maxNav then
-            return nil
-        end
-        return t.ID()
+        if not id then return nil end
+        local valid = false
+        pcall(function()
+            local sp = mq.TLO.Spawn(id)
+            valid = sp() and (sp.Type() == 'NPC' or sp.Type() == 'Pet') and not sp.Dead() and sp.Type() ~= 'Corpse'
+        end)
+        if not valid or isSpawnPetOrPlayer(id) then return nil end
+        local engaged = runtime.targetIsEngaged(id)
+        -- Edited By: NeroMorte - A rejected active MA target still owns priority;
+        -- reach/cooldown/ignore filters must never authorize a different add.
+        runtime.maTargetBlocksDefense = runtime.maTargetBlocksDefense or engaged or (fed and fed.engaged == true) or false
+        if not isHostileTarget(id) then return nil end
+        if gated and (isUnreachable(id) or not engaged or distToId(id) > maxNav) then return nil end
+        return id
     end
     local id = resolve()
     runtime.maTargetCache = { tick = runtime.tickSerial, id = id }
     return id
+end
+
+-- Created By: NeroMorte - Selection, ability recipients and watchdogs share one
+-- priority policy. Only a direct attacker may replace an idle MA target.
+function runtime.assistTargetId()
+    local id = runtime.maTargetId()
+    if id then return id, false end
+    if runtime.maTargetBlocksDefense or ctrl.assist_self_defense == false then return nil, false end
+    local defender = runtime.findSelfDefenseTarget((ctrl and ctrl.xtar_nav_dist) or 150)
+    return defender, defender ~= nil
+end
+
+-- Created By: NeroMorte - Positive target/aggro-holder evidence outranks a generic
+-- hater slot or a partial aggro percentage. Unsupported members are isolated.
+function runtime.isDirectAttacker(spawn, myId)
+    local target, holder, aggro = 0, 0, 0
+    pcall(function() target = spawn.TargetOfTarget.ID() or 0 end)
+    pcall(function() holder = spawn.AggroHolder.ID() or 0 end)
+    if target == myId or holder == myId then return true end
+    if target > 0 or holder > 0 then return false end
+    pcall(function() aggro = spawn.PctAggro() or 0 end)
+    return aggro >= 100
 end
 
 -- Finds a hostile NPC actively attacking the character (self-defense).
@@ -17815,103 +17864,33 @@ function runtime.findSelfDefenseTarget(maxDist)
     maxDist = maxDist or (ctrl and ctrl.xtar_nav_dist) or 150
     local myId = mq.TLO.Me.ID() or 0
     if myId <= 0 then return nil end
-    local bestId = nil
-    local bestDist = maxDist + 1
-
-    -- 1. Scan XTarget slots for any hostile mob attacking or targeting Me
+    local bestId, bestDist = nil, maxDist + 1
+    local function consider(spawn)
+        if not spawn or not spawn() then return end
+        local id = spawn.ID() or 0
+        if id <= 0 or isUnreachable(id) or isGroupOrRaidMember(id) or isSpawnPetOrPlayer(id)
+            or not isHostileTarget(id) or isIgnored(spawn.CleanName()) then return end
+        local distance = distToId(id)
+        if distance >= 0 and distance <= maxDist and distance < bestDist
+            and runtime.isDirectAttacker(spawn, myId) then
+            bestId, bestDist = id, distance
+        end
+    end
     local slots = 13
     pcall(function() slots = mq.TLO.Me.XTargetSlots() or 13 end)
-    for i = 1, slots do
-        local xt = mq.TLO.Me.XTarget(i)
-        if xt() and (xt.ID() or 0) > 0 and not isUnreachable(xt.ID())
-            and not isGroupOrRaidMember(xt.ID()) and not isSpawnPetOrPlayer(xt.ID())
-            and isHostileTarget(xt.ID()) and not isIgnored(xt.CleanName()) then
-            local xId = xt.ID()
-            local d = distToId(xId)
-            if d >= 0 and d <= maxDist then
-                local isHittingMe = false
-                pcall(function()
-                    if xt.TargetOfTarget.ID() == myId or xt.AggroHolder.ID() == myId or (xt.PctAggro() or 0) >= 100 then
-                        isHittingMe = true
-                    end
-                end)
-                if isHittingMe and d < bestDist then
-                    bestDist = d
-                    bestId = xId
-                end
-            end
-        end
-    end
+    for i = 1, slots do consider(mq.TLO.Me.XTarget(i)) end
     if bestId then return bestId end
-
-    -- 2. Scan XTarget for any Auto Hater or mob in close combat range if character is in combat
-    local inCombat = mq.TLO.Me.Combat() or (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT') or ((mq.TLO.Me.XTHaterCount() or 0) > 0)
-    if inCombat then
-        for i = 1, slots do
-            local xt = mq.TLO.Me.XTarget(i)
-            if xt() and (xt.ID() or 0) > 0 and not isUnreachable(xt.ID())
-                and not isGroupOrRaidMember(xt.ID()) and not isSpawnPetOrPlayer(xt.ID())
-                and isHostileTarget(xt.ID()) and not isIgnored(xt.CleanName()) then
-                local xId = xt.ID()
-                local d = distToId(xId)
-                if d >= 0 and d <= maxDist then
-                    local isHater = false
-                    pcall(function()
-                        local tt = xt.TargetType() or ''
-                        if tt == 'Auto Hater' or (xt.PctAggro() or 0) > 0 then
-                            isHater = true
-                        end
-                    end)
-                    if isHater and d < bestDist then
-                        bestDist = d
-                        bestId = xId
-                    end
-                end
-            end
-        end
-    end
+    consider(mq.TLO.Target)
     if bestId then return bestId end
-
-    -- 3. Check current target if it is hostile, alive, within maxDist, and hitting Me
-    local t = mq.TLO.Target
-    if t() and (t.ID() or 0) > 0 and not isUnreachable(t.ID())
-        and not isGroupOrRaidMember(t.ID()) and not isSpawnPetOrPlayer(t.ID())
-        and isHostileTarget(t.ID()) and not isIgnored(t.CleanName()) then
-        local tId = t.ID()
-        local d = distToId(tId)
-        if d >= 0 and d <= maxDist then
-            local isHittingMe = false
-            pcall(function()
-                if t.TargetOfTarget.ID() == myId or t.AggroHolder.ID() == myId or (t.PctAggro() or 0) >= 100 then
-                    isHittingMe = true
-                end
-            end)
-            if isHittingMe then return tId end
-        end
-    end
-
-    -- 4. Check nearby NPCs within melee range if in combat
+    -- Edited By: NeroMorte - Nearby scans require the same direct-attacker and XYZ gates.
+    local inCombat = mq.TLO.Me.Combat() or (mq.TLO.Me.CombatState and mq.TLO.Me.CombatState() == 'COMBAT')
+        or ((mq.TLO.Me.XTHaterCount() or 0) > 0)
     if inCombat then
-        local filt = string.format('npc radius %d', math.min(35, math.floor(maxDist)))
-        local n = mq.TLO.SpawnCount(filt)() or 0
-        for i = 1, n do
-            local s = mq.TLO.NearestSpawn(i, filt)
-            if s() and s.ID() > 0 and not isUnreachable(s.ID())
-                and not isSpawnPetOrPlayer(s.ID()) and isHostileTarget(s.ID())
-                and not isIgnored(s.CleanName()) then
-                local sId = s.ID()
-                local isHittingMe = false
-                pcall(function()
-                    if s.TargetOfTarget.ID() == myId or s.AggroHolder.ID() == myId or (s.PctAggro() or 0) >= 100 then
-                        isHittingMe = true
-                    end
-                end)
-                if isHittingMe then return sId end
-            end
-        end
+        local filter = string.format('npc radius %d', math.min(35, math.floor(maxDist)))
+        local count = mq.TLO.SpawnCount(filter)() or 0
+        for i = 1, count do consider(mq.TLO.NearestSpawn(i, filter)) end
     end
-
-    return nil
+    return bestId
 end
 
 -- Shared poison/disease probe. `kind` is 'Poison' or 'Disease'; the two
@@ -18461,13 +18440,8 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
     elseif b == 'Current Target' then
         id = mq.TLO.Target.ID()
     elseif b == 'Assist Target' then
-        id = runtime.maTargetId()
-        if not id and (ctrl and ctrl.assist_self_defense ~= false) then
-            local curT = mq.TLO.Target.ID() or 0
-            if curT > 0 and isHostileTarget(curT) and not isSpawnPetOrPlayer(curT) then
-                id = curT
-            end
-        end
+        -- Edited By: NeroMorte - Use the same verified MA/direct-attacker policy as combat.
+        id = runtime.assistTargetId()
     elseif b == 'Unmezzed Add' then
         id = firstNPCXtarget(true)
     elseif b == 'Nearest Add' then
@@ -20737,7 +20711,7 @@ function runtime.moveToward(id, dist, followOnly)
                 ('no progress for ' .. NAV_CONST.PURSUIT_STALL_TIMEOUT .. 's')))
             runtime.markUnreachable(id)
             stopMoving()
-            clearTarget()
+            if ctrl.mode ~= 'Manual' then clearTarget() end -- Edited By: NeroMorte - Manual owns selection.
             pursuit.id = 0
             pursuit.lastNavTargetId = 0
             pursuit.noPathFails = 0
@@ -20840,6 +20814,8 @@ local function repositionCloser()
     local tgt = mq.TLO.Target
     if not (tgt() and tgt.Type() == 'NPC' and not tgt.Dead()) then return end
     local tid = tgt.ID()
+    -- Edited By: NeroMorte - Respect failed-approach cooldowns without dropping the player's target.
+    if isUnreachable(tid) then return end
     if not ctrl.running then return end
     if isMoveActive() then return end
     if (os.clock() - pursuit.lastTooFarRepositionAt) < 1.0 then return end
@@ -20894,6 +20870,8 @@ local function handleCantHitFromHere()
     local tgt = mq.TLO.Target
     if not (tgt() and (tgt.Type() == 'NPC' or tgt.Type() == 'Pet') and not tgt.Dead() and tgt.Type() ~= 'Corpse') then return end
     local tid = tgt.ID()
+    -- Edited By: NeroMorte - Respect failed-approach cooldowns without dropping the player's target.
+    if isUnreachable(tid) then return end
     if not ctrl.running then return end
     local now = os.clock()
     if (now - (pursuit.lastCantHitAt or 0)) < 1.0 then return end
@@ -20907,11 +20885,11 @@ local function handleCantHitFromHere()
 
     if pursuit.cantHitCount >= 4 then
         print(string.format(
-            '\ay[Triune]\ax Target #%d (%s) obstructed after 4 "cannot hit" attempts -- marking unreachable & picking new target.',
-            tid, tostring(tgt.CleanName())))
+            '\ay[Triune]\ax Target #%d (%s) obstructed after 4 "cannot hit" attempts -- %s.',
+            tid, tostring(tgt.CleanName()), ctrl.mode == 'Manual' and 'keeping your target; automatic approach stopped' or 'marking unreachable & picking new target'))
         runtime.markUnreachable(tid)
         stopMoving()
-        clearTarget()
+        if ctrl.mode ~= 'Manual' then clearTarget() end -- Edited By: NeroMorte - Manual owns selection.
         pursuit.cantHitCount = 0
         pursuit.id = 0
         pursuit.lastNavTargetId = 0
@@ -21730,10 +21708,12 @@ function runtime.performUnstuck()
 
         if currentTgtId and currentTgtId > 0 then
             print(string.format(
-                '\ay[Triune]\ax stuck (Attempt 4) -- all directional maneuvers failed. Abandoning target #%d and searching for a new target.',
-                currentTgtId))
+                '\ay[Triune]\ax stuck (Attempt 4) -- all directional maneuvers failed on target #%d. %s.',
+                currentTgtId, ctrl.mode == 'Manual' and 'Keeping your target; automatic approach stopped' or 'Abandoning target and searching for a new target'))
             runtime.markUnreachable(currentTgtId)
-            clearTarget()
+            -- Edited By: NeroMorte - Give up movement, not the Manual player's selection.
+            if ctrl.mode ~= 'Manual' then clearTarget() end
+            stopMoving()
         else
             print(
                 '\ay[Triune]\ax stuck (Attempt 4) -- all directional maneuvers failed. Clearing pursuit to find a new target/path.')
@@ -22331,7 +22311,7 @@ function runtime.checkCombatStall()
 
     local t = mq.TLO.Target
     local haveLiveNPC = t() and (t.Type() == 'NPC' or t.Type() == 'Pet') and not t.Dead() and t.Type() ~= 'Corpse'
-    if not haveLiveNPC or not isHostileTarget(t.ID()) then
+    if not haveLiveNPC or not isHostileTarget(t.ID()) or isUnreachable(t.ID()) then
         return
     end
 
@@ -22342,12 +22322,7 @@ function runtime.checkCombatStall()
 
     -- In Assist mode, only watchdog auto-attack if this target is the active MA target or active self-defense target
     if ctrl.mode == 'Assist' then
-        local maId = runtime.maTargetId()
-        local defId = nil
-        if not maId and (ctrl.assist_self_defense ~= false) then
-            defId = runtime.findSelfDefenseTarget()
-        end
-        local expectedId = maId or defId
+        local expectedId = runtime.assistTargetId()
         if not expectedId or expectedId ~= t.ID() then
             return
         end
@@ -22378,6 +22353,8 @@ runtime.handleCannotSeeTarget = function()
     if not tgt or not tgt() then return end
 
     local tid = tgt.ID() or 0
+    -- Edited By: NeroMorte - Respect failed-approach cooldowns without dropping the player's target.
+    if isUnreachable(tid) then return end
     if tid <= 0 then return end
 
     local isNpc = (tgt.Type() == 'NPC' or tgt.Type() == 'Pet') and not tgt.Dead() and tgt.Type() ~= 'Corpse'
@@ -23939,7 +23916,6 @@ local function combatTick()
     local checkCloserTarget = runtime.checkCloserTarget
     local chaseMA = runtime.chaseMA
     local idleReturn = runtime.idleReturn
-    local maTargetId = runtime.maTargetId
     local resolveTargetId = runtime.resolveTargetId
     local castGem = runtime.castGem
     local fireAA = runtime.fireAA
@@ -24233,13 +24209,21 @@ local function combatTick()
         haveNPC, engage = runtime.petCamp:combatTick()
         manualHold = true
     elseif ctrl.mode == 'Manual' then
+        -- Edited By: NeroMorte - Keep the player's selection during a failed-approach
+        -- cooldown. Repositioning into actual reach permits an immediate retry.
+        local manualBlocked = false
         if haveNPC and isUnreachable(mq.TLO.Target.ID()) then
-            haveNPC = false
-            clearTarget()
+            local id = mq.TLO.Target.ID()
+            if distToId(id) <= styleReach(id) and hasLoS(id) then
+                pursuit.unreachableIds[id] = nil
+            else
+                haveNPC, manualBlocked = false, true
+                stopMoving()
+            end
         end
 
         local autoXtar = (ctrl.manual_auto_xtarget ~= false)
-        if not haveNPC and autoXtar then
+        if not haveNPC and autoXtar and not manualBlocked then
             local xtarId = firstNPCXtarget(false)
             if xtarId and isHostileTarget(xtarId) and setTarget(xtarId) then
                 haveNPC = true
@@ -24678,13 +24662,12 @@ local function combatTick()
         local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
         -- A forced XTarget outranks the Main Assist's target; it is engaged
         -- like a self-defense target (no assist-at % / engaged gate).
-        local maId = (not forceId) and maTargetId() or nil
-        local defendId = nil
-        if not forceId and not maId and (ctrl.assist_self_defense ~= false) then
-            defendId = runtime.findSelfDefenseTarget(maxNav)
+        local id, isSelfDefense
+        if forceId then
+            id, isSelfDefense = forceId, true
+        else
+            id, isSelfDefense = runtime.assistTargetId()
         end
-        local id = forceId or maId or defendId
-        local isSelfDefense = (forceId ~= nil) or (not maId and defendId ~= nil)
 
         if ctrl.submode == 'Backline' then
             local closingOnMob = false
@@ -24756,11 +24739,11 @@ local function combatTick()
                 pursuit.approachStartedAt = os.clock()
             elseif (os.clock() - (pursuit.approachStartedAt or os.clock())) > 15.0 then
                 print(string.format(
-                    '\ay[Triune]\ax Target #%d (%s) unreachable after 15s -- marking unreachable & moving to next NPC.',
-                    tid, tostring(mq.TLO.Target.CleanName())))
+                    '\ay[Triune]\ax Target #%d (%s) unreachable after 15s -- %s.',
+                    tid, tostring(mq.TLO.Target.CleanName()), ctrl.mode == 'Manual' and 'keeping your target; automatic approach stopped' or 'marking unreachable & moving to next NPC'))
                 markUnreachable(tid)
                 stopMoving()
-                clearTarget()
+                if ctrl.mode ~= 'Manual' then clearTarget() end -- Edited By: NeroMorte - Manual owns selection.
                 haveNPC = false
                 engage = false
                 pursuit.id = 0
@@ -26252,6 +26235,10 @@ function runtime.buildDiagnosticDump()
             live['Triune.TargetUnreachable'] = isUnreachable(id)
         end
     end)
+    -- Edited By: NeroMorte - Inspect MA priority/fallback without issuing a fresh /assist.
+    live['Triune.MaTarget'] = runtime.maTargetCache and runtime.maTargetCache.id or 0
+    live['Triune.MaBlocksDefense'] = runtime.maTargetBlocksDefense == true
+    live['Triune.LegacyAssistPending'] = runtime.legacyAssist and runtime.legacyAssist.pending == true or false
     -- Lua heap size: a large heap makes every allocation-heavy tick pay for
     -- the incremental GC, which shows up as "everything is slow".
     pcall(function() live['Lua.HeapMB'] = math.floor(collectgarbage('count') / 1024 * 10 + 0.5) / 10 end)

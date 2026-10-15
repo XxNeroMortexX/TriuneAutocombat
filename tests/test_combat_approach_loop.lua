@@ -63,6 +63,10 @@ runtime.boxnetMaTarget=function() return state.feed end
 runtime.targetIsEngaged=function() return true end
 runtime.anyNearbyEngagedNpc=function() return true end
 runtime.lastAssistCmdAt=99.5
+-- Edited By: NeroMorte - Legacy replies are accepted only after acknowledgement.
+mq.cmdf=function() end
+mq.TLO.Me.AssistComplete=function() return true end
+compile(helper('legacyMaTarget'),env)
 compile(helper('maTargetId'),env)
 state.los=true;state.unreachable=true;state.feed={id=80,engaged=true}
 assert(runtime.maTargetId()==nil,'Box Net immediately reacquired an unreachable MA target')
