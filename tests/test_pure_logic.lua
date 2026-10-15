@@ -14266,8 +14266,12 @@ end)()
     env.targetIsEngaged = loadFunc(src, 'targetIsEngaged', env)
     S.cmds = {}
     env.lastAssistCmdAt = -100
+    -- Edited By: NeroMorte - A queued /assist is not yet a verified target response.
+    env.legacyMaTarget = loadFunc(src, 'legacyMaTarget', env)
+    mockMq.TLO.Me.AssistComplete = function() return true end
     maTargetId = loadFunc(src, 'maTargetId', env)
-    assert_eq(maTargetId(), 777, 'Suite 96: without a feed the /assist path still works')
+    assert_nil(maTargetId(), 'Suite 96: legacy path waits for a completed assist response')
+    assert_eq(maTargetId(), 777, 'Suite 96: without a feed the acknowledged /assist path still works')
     assert_eq(S.cmds[1], '/assist Tank', 'Suite 96: legacy path issues /assist')
 
     -- 5. Cures: heartbeat counters replace NetBots

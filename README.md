@@ -71,6 +71,10 @@ Set the Main Assist with `/ac ma <name>` or from the Control tab.
 
 **Burn mode** (`/ac burn`) fires anything you marked *Burn Only* - flip it on for named mobs.
 
+**Manual target ownership:** A failed approach stops automatic movement and keeps your selected live target. Moving into the configured style's reach with line of sight allows an immediate retry; clearing a dead target still works normally.
+
+**Assist Self-Defense:** Assist follows the configured Main Assist. With Self-Defense enabled, a direct attacker can be selected only when the MA has no active engaged target. An active MA target keeps priority even when range or an unreachable cooldown prevents this bot from attacking it. An Auto Hater slot or partial aggro alone does not count as a direct attack. Actions using **Assist Target** follow the same policy. When Box Network target data is unavailable, the legacy `/assist` fallback waits for an acknowledged response rather than treating an arbitrary existing target as the MA target.
+
 **Trash Mode** (button beside Burn, or `/ac trash on|off|toggle`) temporarily clears easy mobs with melee, skills, disciplines and existing pets. It blocks automated spells (including heals, buffs and pet summons), activated AAs and clickies, including Buffbot and automatic repeatable-AA activations. Spell pulls temporarily use melee; other pull methods remain available. Combat mode, loadout selections and saved styles are unchanged. Turning it off restores normal behavior; restarting Triune resets it off. An already-issued cast can finish. Manual EQ commands and independent scripts remain under your control.
 
 ---
@@ -247,3 +251,4 @@ Closer-mob travel checks distinguish a genuinely engaged target from an enabled 
 The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X and circle through MQ2Map. Camp uses the camp position and Pull Radius. Hunt uses the active Combat Anchor (including a Hunt waypoint); without an active anchor, Search Radius follows the toon. Travel waypoints clear the circle. Search Radius and Combat Radius are separate limits: increase both when you want a larger search inside an anchored hunt area. Camp, Search and Combat Radius use the same 10,000-unit drag scale and accept larger values by Ctrl+clicking the number.
 
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
+
