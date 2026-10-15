@@ -14184,6 +14184,7 @@ end)()
     local ctrl96 = { mode = 'Assist', xtar_nav_dist = 150, ma_id = 50, ma_name = 'Tank' }
     local env = {
         ctrl = ctrl96, mq = mockMq, print = function() end,
+        isUnreachable = function() return false end,
         pluginManager = { coreApi = setmetatable({ boxnet = fakeApi }, { __index = function() return nil end }) },
         maPcId = function() return 50 end,
         isSpawnPetOrPlayer = function(id) return spawns[id] and spawns[id].type == 'PC' end,
@@ -20273,3 +20274,4 @@ else
     print('All tests passed.')
     os.exit(0)
 end
+

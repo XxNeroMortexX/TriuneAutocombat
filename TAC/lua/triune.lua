@@ -17773,6 +17773,8 @@ function runtime.maTargetId()
                 valid = sp() and (sp.Type() == 'NPC' or sp.Type() == 'Pet') and not sp.Dead() and sp.Type() ~= 'Corpse'
             end)
             if not valid or isSpawnPetOrPlayer(id) or not isHostileTarget(id) then return nil end
+            -- Edited By: NeroMorte - Do not retry the MA's failed approach every tick during its cooldown.
+            if gated and isUnreachable(id) then return nil end
             if gated and not runtime.targetIsEngaged(id) then return nil end
             if gated and distToId(id) > maxNav then return nil end
             return id
@@ -17792,6 +17794,8 @@ function runtime.maTargetId()
         end
         local t = mq.TLO.Target
         if not (t() and (t.Type() == 'NPC' or t.Type() == 'Pet') and not t.Dead() and t.Type() ~= 'Corpse' and not isSpawnPetOrPlayer(t.ID()) and isHostileTarget(t.ID())) then return nil end
+        -- Edited By: NeroMorte - Legacy /assist respects the same unreachable cooldown as Box Net.
+        if gated and isUnreachable(t.ID()) then return nil end
         if gated and not runtime.targetIsEngaged(t.ID()) then
             return nil
         end
@@ -19878,9 +19882,10 @@ runtime.rangedApproachDist = rangedApproachDist
 
 -- Melee approach distance (the Melee style branch of desiredRange).
 local function meleeDesiredRange(_)
-    -- Edited By: NeroMorte - Honor the configured Melee distance without hidden approach padding.
-    local userDist = (ctrl and ctrl.melee_dist) or pursuit.NAV_CONST.MELEE_RANGE
-    return math.max(0, math.floor(tonumber(userDist) or 14))
+    -- Edited By: NeroMorte - Arrival and attacks share actual weapon reach for oversized hitboxes.
+    -- Ordinary mobs still use the slider. A giant's collidable model can prevent
+    -- reaching that center-distance even while EQ permits melee attacks.
+    return math.max(0, maxMeleeDistance(_))
 end
 runtime.meleeDesiredRange = meleeDesiredRange
 
@@ -24745,7 +24750,8 @@ local function combatTick()
                 pursuit.approachStartedAt = os.clock()
             end
             local curDist = distToId(tid)
-            local inReach = (curDist <= (desiredRange(tid) + 4)) and hasLoS(tid)
+            -- Edited By: NeroMorte - The watchdog uses the same style reach as attack eligibility.
+            local inReach = (curDist <= styleReach(tid)) and hasLoS(tid)
             if inReach or (inCombatNow and engage and hasLoS(tid)) then
                 pursuit.approachStartedAt = os.clock()
             elseif (os.clock() - (pursuit.approachStartedAt or os.clock())) > 15.0 then
@@ -26224,6 +26230,9 @@ function runtime.buildDiagnosticDump()
     for _, tlo in ipairs({ 'Me.Class.ShortName', 'Me.Level', 'Me.PctHPs', 'Me.PctMana', 'Me.PctEndurance', 'Me.Combat',
         'Me.Casting', 'Me.Moving', 'Me.Sitting', 'Me.Invis', 'Me.Standing', 'Me.Grouped', 'Me.GroupSize', 'Me.XTarget',
         'Me.AutoFire', 'Me.Pet.ID', 'Target.ID', 'Target.CleanName', 'Target.Type', 'Target.PctHPs', 'Target.Distance',
+        -- Edited By: NeroMorte - Distinguish horizontal range from XYZ and collidable hitbox reach.
+        'Target.Distance3D', 'Target.MaxRangeTo', 'Target.MaxMeleeTo', 'Target.X', 'Target.Y', 'Target.Z',
+        'Me.X', 'Me.Y', 'Me.Z', 'Me.CombatState', 'Me.Underwater', 'Me.Levitating',
         'Target.LineOfSight', 'Zone.ShortName', 'Zone.ID', 'Navigation.MeshLoaded', 'Navigation.Active',
         'Stick.Active', 'Stick.Status', 'MacroQuest.GameState' }) do
         local v = '<n/a>'
@@ -26234,6 +26243,15 @@ function runtime.buildDiagnosticDump()
         end)
         live[tlo] = v
     end
+    -- Edited By: NeroMorte - Record the current range gates without changing target or movement.
+    pcall(function()
+        local id = mq.TLO.Target.ID() or 0
+        if id > 0 then
+            live['Triune.DesiredRange'] = desiredRange(id)
+            live['Triune.StyleReach'] = styleReach(id)
+            live['Triune.TargetUnreachable'] = isUnreachable(id)
+        end
+    end)
     -- Lua heap size: a large heap makes every allocation-heavy tick pay for
     -- the incremental GC, which shows up as "everything is slow".
     pcall(function() live['Lua.HeapMB'] = math.floor(collectgarbage('count') / 1024 * 10 + 0.5) / 10 end)
@@ -26765,4 +26783,5 @@ if runtime.fullStop then pcall(runtime.fullStop) end -- attack / nav / stick wer
 runtime.clearEqCampMap()
 runtime.saveLoadout(true, true)
 tlog.close('script exit')
+
 

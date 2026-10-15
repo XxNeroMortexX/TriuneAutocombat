@@ -1,5 +1,13 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-14
+
+- **Edited By: NeroMorte — Use the same oversized-target melee reach for approach completion and attack eligibility.** Ordinary melee targets retain the configured distance; Ranged/Spell retain their selected range and XYZ/LOS checks. Align the approach watchdog with style reach so a reachable large NPC does not stall while attacks consider it in range.
+- **Edited By: NeroMorte — Honor unreachable cooldowns when resolving Main Assist targets**, in both Box Net feeds and legacy /assist. Failed approaches no longer immediately reacquire the same target through a bypassed exclusion.
+- **Created By: NeroMorte — Add actual-source regressions for large-target arrival, strict ordinary/ranged ranges, blocked LOS, MA cooldowns and the existing Manual Auto-XTarget toggle.** Add XYZ distance/positions, target melee reach, active range gates and unreachable status to diagnostic dumps. The four submitted dumps support the pursuit-loop investigation; gameplay confirmation and the ranged 10-unit case remain open.
+
+---
+
 ## 2026-10-13 — Morte.10
 
 - **Edited By: NeroMorte — Display the installed Morte release beside the Gennro version in both main and compact window titles.** Explain shared-client DLL locks and running server EXEs beside update actions; name the blocked plugin and unloading steps when a DLL handoff cannot replace it.
@@ -2427,3 +2435,4 @@ The original `v3.1-Morte.1` baseline tag remains unchanged. These are the notes 
 - **Initial Multi-Class Combat Engine Release.**
   - Initial implementation of the Triune AutoCombat engine for Project Triune multi-class characters.
   - Added core combat loop, level filtering, pet hold management, and initial loadout persistence.
+
