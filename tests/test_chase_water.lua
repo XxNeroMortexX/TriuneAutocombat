@@ -122,6 +122,8 @@ runtime.moveToward(99, 5, false); assert(last() == '/nav id 99 distance=5')
 runtime.moveToward(99, 9, false); assert(last() == '/nav id 99 distance=9')
 local rangeStart = assert(source:find('local function meleeDesiredRange(_)', 1, true))
 local rangeEnd = assert(source:find('\nruntime.meleeDesiredRange', rangeStart, true))
+-- Edited By: NeroMorte - Ordinary-target reach is the configured distance.
+env.maxMeleeDistance = function() return ctrl.melee_dist or 14 end
 chunk = assert(loadstring(source:sub(rangeStart, rangeEnd - 1) .. '\nreturn meleeDesiredRange'))
 setfenv(chunk, env); local meleeRange = chunk()
 ctrl.melee_dist = 1; assert(meleeRange(99) == 1)
@@ -191,3 +193,4 @@ for _ = 1, 4 do runtime.followPlayer(99, 1); assert(#commands == count) end
 nav.path = true; runtime.followPlayer(99, 1)
 assert(nav.active and not stick.active and last() == '/nav id 99 distance=1')
 print('PASS: XYZ Chase arrival, zero range, UW down/up/levitation, steering ownership, LoS/distance handoff missing-coordinate safety, mob Nav-first, anchor permission and exact configured arrival')
+
