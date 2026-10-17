@@ -7918,6 +7918,7 @@ function runtime.initPluginManager()
             'chat.lua',
             'map.lua',
             'boxnet.lua',
+            'flag_tracker.lua', -- Created By: NeroMorte - Shared flags, keyring and quest observations.
             'buttons.lua',
             'gamedb.lua',
             'parcels.lua',
