@@ -102,6 +102,7 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Box Network | `/ac net` | See and steer boxes using local Actors or connected EQBC across PCs. `/ac net all burn on` runs a command on all of them. |
 | NMS Loot | `/ac nms` | The server's `#nms` loot system as a window, shared across your boxes. |
 | DPS Parser | `/dps` | Per-fight damage for you and your pets, plus a group meter over the Box Network. |
+| Flag Tracker | `/ac flags` | All-bot latest flags, keys and quests; saved history and live-NMS flag comparison. |
 | Auto-Accept | `/ac autoaccept` | Auto-accepts group, trade and DZ invites by your rules. |
 | Auto AA | `/ac aawin` | Spends AA points on the checked priorities only; the fireworks cap spender runs once every priority is maxed (or none is checked). `/ac aastatus` shows why each priority is or is not next. |
 | Buffbot | `/ac buffbot on` | A buff station: players `/tell` you for buffs, it casts them. Off unless you turn it on. |
@@ -252,3 +253,19 @@ The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X a
 
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
 
+
+### Flag Tracker
+
+Open **Flag Tracker** from the header or `/ac flags` (`/ac flagtracker`). Enable it on every bot under Settings → Plugins. **Bots / Recent Messages** shows all Box Net bots at once with Last Flag, Last Key, Last Quest and latest activity; select a bot for its searchable history. No event is shown as a verified unlock merely because a hail or NPC reply occurred. Recent message capture begins when the plugin is loaded; up to 100 events per bot are retained, including the latest event of each type.
+
+Each client listens for its own character-flag, keyring-addition and task/quest messages, plus hails and targeted NPC dialogue. Settings allow literal custom phrases for server-specific messages. Ordinary loot/combat/player chat is excluded. Flag/key notices can be printed to the current MQ window. Box Net (Actors or EQBC) shares events and requests missed history after reconnects; disabled/offline clients cannot observe messages they missed. Bots with no captured messages still appear in the roster. Histories use `Config/triune_flag_tracker_<server>_<character>.tsv` per observing character, with a previous `.bak` snapshot.
+
+**Flag Matrix** compares all known bots by progression step: DONE, MISSING or ? (not checked). Select a bot in Recent Messages and enter its public `https://nms.bestemu.com/character/ID/progression` link or website character ID, then Check Website. Each bot validates its own page name and reports bounded snapshots over Box Net. This ID is the website character ID, not the in-game spawn ID. Website lookups are asynchronous; no login, shell process, browser session or private database is used. The sample PEQ comparison page is a layout reference only and is never queried by the plugin.
+
+Configured live-NMS pages refresh at most every ten minutes automatically, with a delayed refresh after observed progression messages; minimum automatic spacing is one minute. Refresh Configured Bots requests a new check on configured peers. Snapshots show their fetch time and preserve the site's **shared account-wide** label; website data can lag a live flag message. Failed lookups retain the prior snapshot and report an error. The matrix uses horizontal scrolling and pages of twelve bots for larger rosters. It does not automatically complete dialogues, hail, move, or issue quest commands.
+
+### Zenith Main HUD (standalone ImGui)
+
+Run `/lua run zenith_hud` to display the ImGui conversion of the supplied MQ2HUD.ini **[Main]** section. `/zenithhud` hides/shows it; `/zenithhud quit` stops it. It runs independently of Triune, MQ2HUD and the Zenith macro, so it can remain open with any combat setup. It includes XP/AA XP, macro/idle, zone counts/GM indicators, target/con/HP/ID, target-of-target, Tash/Slow/Cripple/Root/Snare, LOS/XY/XYZ/heading/melee reach and locations, seven named NPCs, and gem ranges 1–9. The repeated block-character background rows become the ImGui window background; no other INI sections are imported.
+
+The HUD has Lock, Named NPCs and Spell Ranges controls; those choices are saved in `Config/Zenith_ImGuiHUD.ini`, and ImGui retains the window position. It polls read-only values outside the draw callback twice per second. Macro variables `idle` and `CombatTargetID` appear only if a running macro exposes them; another Lua script's private variables cannot be read automatically. Missing values show N/A. The original raw XP `/330` fields are retained as raw values, without treating them as a new progression formula. No local Zenith script is overwritten or required.

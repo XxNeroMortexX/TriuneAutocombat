@@ -10850,7 +10850,7 @@ do
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
-    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager', 'nms_looter_handoff' }
+    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'flag_tracker', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager', 'nms_looter_handoff' }
     local disabledByDefault = { nms_looter_handoff = true }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
@@ -11512,22 +11512,22 @@ do
         assert_eq(pm.getWindow('floating_damage'), nil, 'Suite 89: floating_damage (overlay) declares no window')
         assert_eq(pm.getWindow('auto_accept') and pm.getWindow('auto_accept').flag, 'show_auto_accept', 'Suite 89: auto_accept declares its popout window')
         W.all = pm.windowPlugins(false)
-        assert_eq(#W.all, 23, 'Suite 89: twenty-one shipped plugins own a window, plus the unit frames Target popout and the NMS Loot compact window')
+        assert_eq(#W.all, 24, 'Suite 89: twenty-two shipped plugins own a window, plus the unit frames Target popout and the NMS Loot compact window')
         assert_eq(W.all[1].id, 'spellbook', 'Suite 89: header order starts with the Spellbook (as before)')
         assert_eq(W.all[2].id, 'map', 'Suite 89: Map follows Spellbook in header order')
         assert_eq(W.all[#W.all].id, 'buffbot', 'Suite 89: Buffbot sorts last')
         W.hdr = pm.windowPlugins(true)
-        assert_eq(#W.hdr, 19, 'Suite 89: header buttons default to the old header set + Auto AA + Auto-Accept + Box Net + Buttons + Chat + Database + NMS Loot (buffbot off)')
+        assert_eq(#W.hdr, 20, 'Suite 89: header buttons default to the old header set + Auto AA + Auto-Accept + Box Net + Buttons + Chat + Database + NMS Loot + Flag Tracker (buffbot off)')
         assert_eq(pm.headerButtonEnabled('buffbot'), false, 'Suite 89: buffbot header button off by default')
         assert_eq(pm.headerButtonEnabled('hud_group'), true, 'Suite 89: hud_group header button on by default')
         assert_eq(pm.headerButtonEnabled('floating_damage'), false, 'Suite 89: no header button for plugins without a window')
         pm.setHeaderButton('buffbot', true)
         assert_eq(W.ctrl.plugins.buffbot.headerButton, true, 'Suite 89: header button preference persisted to ctrl.plugins')
-        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: enabling the preference adds the button')
+        assert_eq(#pm.windowPlugins(true), 21, 'Suite 89: enabling the preference adds the button')
         assert_true(W.saves >= 1, 'Suite 89: header button preference triggers a loadout save')
         pm.setHeaderButton('hud_group', false)
         assert_eq(pm.headerButtonEnabled('hud_group'), false, 'Suite 89: saved preference overrides the plugin default')
-        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: disabling the preference removes the button')
+        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: disabling the preference removes the button')
 
         -- extra windows (plugin.windows) are addressed as '<plugin>:<key>'
         local tw = pm.getWindow('hud_unitframes:target_window')
@@ -11542,9 +11542,9 @@ do
         assert_eq(W.ctrl.plugins.hud_unitframes.windowHeader.target_window, true, 'Suite 89: extra window header choice is kept under ctrl.plugins[plugin].windowHeader[key]')
         assert_eq(W.ctrl.plugins['hud_unitframes:target_window'], nil, 'Suite 89: no composite ctrl.plugins entry is created for an extra window')
         assert_eq(pm.headerButtonEnabled('hud_unitframes:target_window'), true, 'Suite 89: the saved choice turns the extra window header button on')
-        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: the extra window header button counts like any other')
+        assert_eq(#pm.windowPlugins(true), 21, 'Suite 89: the extra window header button counts like any other')
         pm.setHeaderButton('hud_unitframes:target_window', false)
-        assert_eq(#pm.windowPlugins(true), 19, 'Suite 89: and can be turned off again')
+        assert_eq(#pm.windowPlugins(true), 20, 'Suite 89: and can be turned off again')
         assert_eq(pm.isWindowOpen('hud_unitframes:target_window'), false, 'Suite 89: Target popout closed initially')
         pm.toggleWindow('hud_unitframes:target_window')
         assert_eq(W.ctrl.show_target_window, true, 'Suite 89: toggleWindow opens an extra window via its ctrl flag')
@@ -11570,7 +11570,7 @@ do
 
         -- header renderer: one button per enabled header plugin, clicks toggle
         mockImGui.Button = function(label) return W.clickLabel ~= nil and label:find(W.clickLabel, 1, true) ~= nil end
-        assert_eq(pm.drawHeaderButtons(), 19, 'Suite 89: drawHeaderButtons draws one button per header plugin')
+        assert_eq(pm.drawHeaderButtons(), 20, 'Suite 89: drawHeaderButtons draws one button per header plugin')
         W.clickLabel = 'Map##hdrPlg_map'
         pm.drawHeaderButtons()
         assert_eq(W.ctrl.show_map, true, 'Suite 89: clicking the header button opens the plugin window')
@@ -11604,10 +11604,10 @@ do
         pm.HEADER_BUTTONS_PER_ROW = 8
         mockImGui.SameLine = nil
         pm.disablePlugin('map')
-        assert_eq(pm.drawHeaderButtons(), 18, 'Suite 89: disabled plugins get no header button')
+        assert_eq(pm.drawHeaderButtons(), 19, 'Suite 89: disabled plugins get no header button')
         pm.enablePlugin('map')
         pm.plugins.map.status = 'Error'
-        assert_eq(pm.drawHeaderButtons(), 18, 'Suite 89: errored plugins get no header button')
+        assert_eq(pm.drawHeaderButtons(), 19, 'Suite 89: errored plugins get no header button')
         pm.plugins.map.status = 'Active'
 
         -- collectSettings persists the effective header preference for window plugins
@@ -12366,7 +12366,8 @@ do
     initPM()
     local pm = rt.pluginManager
     S.shipped = #pm.pluginOrder
-    assert_eq(S.shipped, 24, 'Suite 92: all shipped plugins still load under the load-time guards')
+    -- Edited By: NeroMorte - Flag Tracker adds one independently loadable plugin.
+    assert_eq(S.shipped, 25, 'Suite 92: all shipped plugins still load under the load-time guards')
 
     -- Soft plugin dependencies (`uses`): normalised at registration, reverse-listed, state-tracked
     assert_eq(#pm.normalizeUses(nil), 0, 'Suite 92: no uses -> empty list')
@@ -12381,7 +12382,7 @@ do
     assert_eq(S.ids(pm.plugins.hud_spellgems.uses), 'gamedb,spellbook', 'Suite 92: hud_spellgems declares it uses gamedb and spellbook')
     assert_eq(#pm.plugins.boxnet.uses, 0, 'Suite 92: boxnet uses nothing')
     assert_eq(S.ids(pm.plugins.inventory.uses), 'boxnet,gamedb', 'Suite 92: inventory declares it uses boxnet and gamedb')
-    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,hud_group,inventory,nms_looter_handoff,nmsloot', 'Suite 92: usedBy(boxnet) lists the six consumers in load order')
+    assert_eq(S.ids(pm.usedBy('boxnet')), 'buttons,dps,flag_tracker,hud_group,inventory,nms_looter_handoff,nmsloot', 'Suite 92: usedBy(boxnet) includes Flag Tracker in load order')
     assert_eq(S.ids(pm.usedBy('spellbook')), 'hud_spellgems', 'Suite 92: usedBy(spellbook) lists the gem bar')
     assert_eq(#pm.usedBy('cursor'), 0, 'Suite 92: cursor is used by nobody')
     assert_eq(pm.useState('boxnet'), 'active', 'Suite 92: an enabled plugin is an active dependency')

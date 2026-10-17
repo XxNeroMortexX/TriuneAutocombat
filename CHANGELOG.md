@@ -1,5 +1,13 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-17
+
+- **Created By: NeroMorte — Add standalone `zenith_hud.lua`**, an ImGui conversion of James's MQ2HUD `[Main]` section: macro/idle, XP/AA XP, GM and zone counts, con-colored target and target-of-target, debuffs, ranges/locations, seven named NPCs and nine spell-gem ranges. Runs without Triune/MQ2HUD; optional macro-only values display N/A. Window controls and shutdown never destroy ImGui inside a draw callback.
+
+- **Created By: NeroMorte — Add Flag Tracker**, a plugin with an all-bot latest Flag/Key/Quest roster, searchable message history and side-by-side website progression matrix. Each client observes only its own messages, persists bounded data-only history, and shares/replays it over Box Net. Optional public live-NMS lookups use nonblocking WinHTTP, validate the character name, retain account-wide labels and show completed/missing/unknown states. The separate PEQ page is a visual reference only; hails/dialogue remain observations rather than proof of flags.
+
+---
+
 ## 2026-10-14
 
 - **Edited By: NeroMorte — Preserve Manual player targets after failed movement.** Eight-second stalls, the approach watchdog, repeated cannot-hit errors and final unstuck failure stop movement without clearing the selected live mob. Re-selecting it during cooldown no longer causes repeated target clears; player repositioning into valid style reach and LOS releases the cooldown immediately. Chat-driven recovery and the attack watchdog respect that cooldown.
