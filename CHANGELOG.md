@@ -2,6 +2,8 @@
 
 ## 2026-10-17
 
+- **Created By: NeroMorte — Add the Gennro 3.2 test installer.** Verify all changed runtime Lua links, preserve `ingame.cfg` and untracked files, back up character loadouts and print the exact previous-commit rollback. Allow switching from the separate Flag Tracker/HUD test without requiring it to be an ancestor.
+
 - **Edited By: NeroMorte — Integrate Gennro 3.2 through `a630d0e` on a test branch.** Bring in engine, plugin, UI, persistence and tooling fixes while preserving the fork's updater, EQBC connections, Manual/MA ownership, Trash Mode and Camp movement rules. Keep the existing per-character Global/zone lists, saved-zone browser, JSON sharing and clear/delete controls; route the upstream XTarget zone-ignore shortcut through that API.
 - **Edited By: NeroMorte — Reconcile overlapping combat and AA changes.** Retain verified-purchase activation, repeatable limits, quiet AA messages and unique remaining pet/class inference. Combine upstream Hunt approach limits and cure/heal classification with the existing fixed Camp circle, XYZ movement and true Self-spell targeting. Identify the candidate as `Morte.11-test`, based on Gennro 3.2, without changing MQ2WebUpdate binaries.
 
