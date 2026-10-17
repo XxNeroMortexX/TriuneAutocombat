@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/nmsloot.lua — Triune NMS Loot Plugin (personal loot console)
@@ -629,6 +630,9 @@ local function removeOffer(name, handle)
         if match then
             table.remove(state.offers, i)
             removed = true
+            -- Without a handle the name is ambiguous (two "Rusty Dagger"
+            -- offers): one event handles one offer, so stop at the first.
+            if not handle then break end
         end
     end
     if removed then
@@ -868,6 +872,10 @@ local function onRun(data, sender)
     local spec = { sub = data.sub, action = data.action, item = data.item, on = data.on, handle = data.handle, player = data.player }
     local line = logic.nmsLine(spec)
     if not line then return refuse('bad request') end
+    -- Destroy is irreversible: it must be armed on THIS box, not just the sender's.
+    if lower(spec.sub) == 'loot' and lower(spec.action) == 'destroy' and not cfg.armDestroy then
+        return refuse('Destroy is not armed on ' .. myName())
+    end
     -- One reply window at a time: close the current one with what it has.
     finishPending(true)
     local ok, why = sendNms(spec, from)
@@ -1162,9 +1170,9 @@ local function drawOffers(colors)
     ImGui.SameLine()
     ImGui.SetNextItemWidth(core.px(140))
     if ImGui.BeginCombo('##nmsView', target or (myName() ~= '' and myName() or 'this box')) then
-        if ImGui.Selectable(myName() ~= '' and myName() or 'this box', target == nil) then state.view = nil end
+        if select(2, ImGui.Selectable(myName() ~= '' and myName() or 'this box', target == nil)) then state.view = nil end
         for _, row in ipairs(peerRows()) do
-            if ImGui.Selectable(row.name, target ~= nil and lower(row.name) == lower(target)) then state.view = row.name end
+            if select(2, ImGui.Selectable(row.name, target ~= nil and lower(row.name) == lower(target))) then state.view = row.name end
         end
         ImGui.EndCombo()
     end
@@ -1191,7 +1199,7 @@ local function drawOffers(colors)
     ImGui.SetNextItemWidth(core.px(20))
     if ImGui.BeginCombo('##nmsPassPick', '', ImGuiComboFlags and ImGuiComboFlags.NoPreview or 0) then
         for _, row in ipairs(peerRows()) do
-            if ImGui.Selectable(row.name, lower(row.name) == lower(state.passTo)) then state.passTo = row.name end
+            if select(2, ImGui.Selectable(row.name, lower(row.name) == lower(state.passTo))) then state.passTo = row.name end
         end
         ImGui.EndCombo()
     end
@@ -1541,7 +1549,7 @@ local function drawWindow()
     ImGui.Dummy(0, core.px(4))
     drawLog(colors)
 
-    if core.preEndWindow then core.preEndWindow('nmsloot', false) end
+    if core.preEndWindow then core.preEndWindow('nmsloot', true) end
     ImGui.End()
     core.popTheme()
 end

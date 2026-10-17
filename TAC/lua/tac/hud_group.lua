@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/hud_group.lua — Triune Popout Group Window Plugin
@@ -78,6 +79,7 @@ end
 -- below, navigating to that player with MQ2Nav.
 local function myCleanName()
     local mq = core and core.mq
+    if not mq then return nil end
     local ok, n = pcall(function() return mq.TLO.Me.CleanName() end)
     if ok and n and tostring(n) ~= '' then return tostring(n) end
     return nil
@@ -104,7 +106,8 @@ end
 
 -- /ac cometo <Name>  -> navigate to that player (MQ2Nav); /ac cometo stop halts.
 local function comeTo(name)
-    local mq = core.mq
+    local mq = core and core.mq
+    if not mq then return false end
     name = tostring(name or ''):gsub('^%s+', ''):gsub('%s+$', '')
     if name == '' then
         print('\ay[Triune]\ax usage: /ac cometo <PlayerName> | stop')
@@ -597,52 +600,43 @@ function plugin.onDrawUI()
             end
         end
 
-        ImGui.SameLine()
-
-        -- 2. Disband Button: removes selected/targeted group member, or self
-        local disPushed = 0
-        if Col then
-            if pcall(ImGui.PushStyleColor, Col.Button, 0.42, 0.16, 0.16, 0.85) then disPushed = disPushed + 1 end
-            if pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.58, 0.22, 0.22, 0.95) then disPushed = disPushed + 1 end
-            if pcall(ImGui.PushStyleColor, Col.Text, 1.0, 0.75, 0.75, 1.0) then disPushed = disPushed + 1 end
-        end
-        local disLabel = selectedMember and (selectedMember.isSelf and 'Disband (Self)' or string.format('Disband: %s', selectedMember.name)) or 'Disband'
-        if ImGui.Button(disLabel .. '##gwDisband', halfW, 20) then
-            if selectedMember then
-                if selectedMember.isSelf then
-                    mq.cmd('/disband')
-                else
-                    -- /disband with a member targeted only removes them when WE
-                    -- are the leader; as a non-leader it makes us leave, so
-                    -- non-leaders only send /kickgroup.
-                    if snap.amLeader then
-                        if selectedMember.id and selectedMember.id > 0 then
-                            mq.cmdf('/target id %d', selectedMember.id)
-                        elseif selectedMember.name then
-                            mq.cmdf('/target %s', selectedMember.name)
-                        end
-                        mq.cmd('/disband')
-                    end
+        -- 2. Disband Button: removes the selected group member, or self.
+        -- Hidden for Box Network rows that are not group members (nothing to kick).
+        if not (selectedMember and selectedMember.isBox) then
+            ImGui.SameLine()
+            local disPushed = 0
+            if Col then
+                if pcall(ImGui.PushStyleColor, Col.Button, 0.42, 0.16, 0.16, 0.85) then disPushed = disPushed + 1 end
+                if pcall(ImGui.PushStyleColor, Col.ButtonHovered, 0.58, 0.22, 0.22, 0.95) then disPushed = disPushed + 1 end
+                if pcall(ImGui.PushStyleColor, Col.Text, 1.0, 0.75, 0.75, 1.0) then disPushed = disPushed + 1 end
+            end
+            local disLabel = selectedMember and (selectedMember.isSelf and 'Disband (Self)' or string.format('Disband: %s', selectedMember.name)) or 'Disband'
+            if ImGui.Button(disLabel .. '##gwDisband', halfW, 20) then
+                if selectedMember and not selectedMember.isSelf then
+                    -- Other members are only ever removed by name. /target + /disband in
+                    -- the same frame races the target change, and /disband with any
+                    -- other target (or as a non-leader) makes US leave the group.
                     if selectedMember.name and selectedMember.name ~= '' then
                         mq.cmdf('/kickgroup %s', selectedMember.name)
                     end
+                elseif not selectedMember or curTargId == 0 or curTargId == (selectedMember.id or -1) then
+                    -- Self (or nothing selected): /disband leaves the group. When a
+                    -- target is set it must be confirmed to be this row (ourselves),
+                    -- never a stale selection with another member targeted.
+                    mq.cmd('/disband')
                 end
-            else
-                mq.cmd('/disband')
             end
-        end
-        if disPushed > 0 then pcall(ImGui.PopStyleColor, disPushed) end
-        if ImGui.IsItemHovered() then
-            if selectedMember then
-                if selectedMember.isSelf then
-                    core.setTooltip('Leave group (/disband)')
-                elseif snap.amLeader then
-                    core.setTooltip('%s', string.format('Disband / remove %s from group (/disband, /kickgroup)', selectedMember.name))
+            if disPushed > 0 then pcall(ImGui.PopStyleColor, disPushed) end
+            if ImGui.IsItemHovered() then
+                if selectedMember then
+                    if selectedMember.isSelf then
+                        core.setTooltip('Leave group (/disband)')
+                    else
+                        core.setTooltip('%s', string.format('Remove %s from group (/kickgroup %s)', selectedMember.name, selectedMember.name))
+                    end
                 else
-                    core.setTooltip('%s', string.format('Remove %s from group (/kickgroup; only the leader can /disband a member)', selectedMember.name))
+                    core.setTooltip('Leave group (/disband)')
                 end
-            else
-                core.setTooltip('Disband selected / targeted group member (/disband)')
             end
         end
 

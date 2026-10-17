@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/parcels.lua — Triune Parcel Helper Plugin
@@ -317,9 +318,10 @@ local function pollMerchant(force)
 
     -- NMS parcel merchants carry the surname "Parcel"/"Parcels"; a populated
     -- parcel list is proof either way (the server only sends the list when the
-    -- NPC is flagged as a parcel merchant).
+    -- NPC is flagged as a parcel merchant). The Parcels tab itself is part of
+    -- every merchant window, so its presence proves nothing.
     local surname = merchantSurname():lower()
-    state.isParcelMerchant = (surname:find('parcel', 1, true) ~= nil) or state.listCount > 0 or state.parcelTabIdx ~= nil
+    state.isParcelMerchant = (surname:find('parcel', 1, true) ~= nil) or state.listCount > 0
 
     if not wasOpen and settings.autoOpenAtMerchant and ctrl and not ctrl.show_parcels and state.isParcelMerchant then
         ctrl.show_parcels = true
@@ -456,6 +458,7 @@ local function runCollect()
     state.stopRequested = false
     local skippedKeys = {}
     local timeouts = 0
+    local selectFails = 0
 
     if not windowOpen(MERCHANT_WND) then
         return finishRun('merchant window is not open', 'warn')
@@ -486,41 +489,56 @@ local function runCollect()
             pick.from ~= '' and (' from ' .. pick.from) or '', count)
 
         pcall(function() mq.TLO.Window(PARCEL_LIST).Select(pick.row) end)
-        core.delay(300, function() return windowInt(PARCEL_LIST, 'GetCurSel') == pick.row end)
+        local selected = core.delay(300, function() return windowInt(PARCEL_LIST, 'GetCurSel') == pick.row end)
 
-        state.lastResult = nil
-        pcall(function() mq.TLO.Window(RETRIEVE_BTN).LeftMouseUp() end)
-
-        local before = count
-        local done = core.delay(RETRIEVE_TIMEOUT_MS, function()
-            if state.lastResult ~= nil then return true end
-            return windowInt(PARCEL_LIST, 'Items') < before
-        end)
-
-        local result = state.lastResult
-        if result == 'delivered' then
-            core.delay(1000, function() return windowInt(PARCEL_LIST, 'Items') < before end)
-        end
-        if result == 'invfull' then
-            addLog(string.format('Inventory full - could not retrieve %s', pick.name), 'warn')
-            return finishRun('inventory full, free some slots and run again', 'warn')
-        elseif result == 'duplore' then
-            state.skipped = state.skipped + 1
-            skippedKeys[pick.key] = true
-            addLog(string.format('Skipped %s (duplicate lore item)', pick.name), 'warn')
-        elseif result == 'delivered' or (done and windowInt(PARCEL_LIST, 'Items') < before) then
-            state.retrieved = state.retrieved + 1
-            timeouts = 0
-            local d = state.lastDelivered
-            addLog(string.format('Retrieved %s%s', (d and d.item) or pick.name, (d and d.from) and (' from ' .. d.from) or ''), 'good')
+        if not selected then
+            -- Never click Retrieve on an unconfirmed row (it would take whatever
+            -- row is highlighted); re-read the list and select again next pass.
+            selectFails = selectFails + 1
+            if selectFails >= 5 then
+                selectFails = 0
+                state.skipped = state.skipped + 1
+                skippedKeys[pick.key] = true
+                addLog(string.format('Could not select %s - skipped', pick.name), 'warn')
+            end
+            core.delay(100)
         else
-            timeouts = timeouts + 1
-            state.skipped = state.skipped + 1
-            skippedKeys[pick.key] = true
-            addLog(string.format('No response retrieving %s - skipped', pick.name), 'warn')
-            if timeouts >= 3 then return finishRun('the merchant stopped responding', 'warn') end
+            selectFails = 0
+
+            state.lastResult = nil
+            pcall(function() mq.TLO.Window(RETRIEVE_BTN).LeftMouseUp() end)
+
+            local before = count
+            local done = core.delay(RETRIEVE_TIMEOUT_MS, function()
+                if state.lastResult ~= nil then return true end
+                return windowInt(PARCEL_LIST, 'Items') < before
+            end)
+
+            local result = state.lastResult
+            if result == 'delivered' then
+                core.delay(1000, function() return windowInt(PARCEL_LIST, 'Items') < before end)
+            end
+            if result == 'invfull' then
+                addLog(string.format('Inventory full - could not retrieve %s', pick.name), 'warn')
+                return finishRun('inventory full, free some slots and run again', 'warn')
+            elseif result == 'duplore' then
+                state.skipped = state.skipped + 1
+                skippedKeys[pick.key] = true
+                addLog(string.format('Skipped %s (duplicate lore item)', pick.name), 'warn')
+            elseif result == 'delivered' or (done and windowInt(PARCEL_LIST, 'Items') < before) then
+                state.retrieved = state.retrieved + 1
+                timeouts = 0
+                local d = state.lastDelivered
+                addLog(string.format('Retrieved %s%s', (d and d.item) or pick.name, (d and d.from) and (' from ' .. d.from) or ''), 'good')
+            else
+                timeouts = timeouts + 1
+                state.skipped = state.skipped + 1
+                skippedKeys[pick.key] = true
+                addLog(string.format('No response retrieving %s - skipped', pick.name), 'warn')
+                if timeouts >= 3 then return finishRun('the merchant stopped responding', 'warn') end
+            end
+            core.delay(BETWEEN_RETRIEVES_MS)
         end
-        core.delay(BETWEEN_RETRIEVES_MS)
     end
     return finishRun('hit the per-run retrieve cap')
 end
@@ -874,7 +892,7 @@ local function drawWindow()
     ImGui.Dummy(0, core.px(4))
     drawLog(colors)
 
-    if core.preEndWindow then core.preEndWindow('parcels', false) end
+    if core.preEndWindow then core.preEndWindow('parcels', true) end
     ImGui.End()
     core.popTheme()
 end

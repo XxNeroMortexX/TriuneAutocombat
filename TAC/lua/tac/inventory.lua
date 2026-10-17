@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/inventory.lua — Triune Inventory & Bank Manager Plugin
@@ -661,7 +662,7 @@ function invLogic.findNextCombineMove(item, allowBank)
     if allowBank == nil then allowBank = true end
     local stacks = {}
     for _, s in ipairs(item.stacks) do
-        if allowBank or s.location ~= 'BANK' then
+        if allowBank or (s.location ~= 'BANK' and s.location ~= 'SHAREDBANK') then
             table.insert(stacks, s)
         end
     end
@@ -1020,7 +1021,8 @@ local function getBankCachePath()
 end
 
 local inMemoryBankCache = nil
-local lastSavedBankCount = -1
+-- contentSignature of the last bank cache written (nil = never / force next).
+local lastSavedBankSig = nil
 
 function scanner.saveBankCache(bankItems, bankContainers, force, sharedContainers)
     inMemoryBankCache = {
@@ -1029,13 +1031,16 @@ function scanner.saveBankCache(bankItems, bankContainers, force, sharedContainer
         containers = bankContainers,
         sharedContainers = sharedContainers or {},
     }
-    if not force and lastSavedBankCount == #bankItems then
+    -- Rewrite whenever anything moved or restacked, not just when the item
+    -- count changed (a swap or a split keeps the count).
+    local sig = invLogic.contentSignature(bankItems) .. '|' .. #(bankContainers or {}) .. '|' .. #(sharedContainers or {})
+    if not force and lastSavedBankSig == sig then
         return true
     end
-    lastSavedBankCount = #bankItems
     local path = getBankCachePath()
     local f = io.open(path, 'w')
     if not f then return false end
+    lastSavedBankSig = sig
 
     f:write('-- Triune Inventory Bank Cache\n')
     f:write(string.format('return {\n  syncTime = %q,\n  items = {\n', os.date('%Y-%m-%d %H:%M:%S')))
@@ -1092,7 +1097,7 @@ function scanner.loadBankCache()
     local ok, data = pcall(fn)
     if ok and type(data) == 'table' then
         inMemoryBankCache = data
-        lastSavedBankCount = #(data.items or {})
+        lastSavedBankSig = invLogic.contentSignature(data.items or {}) .. '|' .. #(data.containers or {}) .. '|' .. #(data.sharedContainers or {})
         if data.items then
             for _, it in ipairs(data.items) do
                 it.augs = invLogic.parseAugs(it.augs)
@@ -1796,7 +1801,7 @@ function UI.drawHeader()
     if ImGui.BeginCombo("##CatCombo", state.catFilter) then
         for _, c in ipairs(cats) do
             local isSel = state.catFilter == c
-            if ImGui.Selectable(c, isSel) then
+            if select(2, ImGui.Selectable(c, isSel)) then
                 state.catFilter = c
             end
             if isSel then ImGui.SetItemDefaultFocus() end
@@ -2420,9 +2425,10 @@ function UI.drawBagGrid(bag, ctx)
                     local fromCmd = readDragPayload(payload)
                     local toCmd = it and it.notifyCmd or ctx.emptyCmd(bag, s)
                     if fromCmd ~= '' and toCmd ~= '' and fromCmd ~= toCmd then
+                        local destId = it and it.id or nil
                         optimisticSwapToSlot(bag, s, it, toCmd, ctx.location)
                         state.pendingAction = { type = 'move', fromCmd = fromCmd, toCmd = toCmd,
-                            fromId = state.dragSource and state.dragSource.id or nil }
+                            fromId = state.dragSource and state.dragSource.id or nil, destId = destId }
                     end
                     state.dragSource = nil
                 end
@@ -2795,7 +2801,7 @@ function UI.drawNetSettings()
     check('Share my inventory with my other boxes##invNetShare', 'share',
         'Answer snapshot requests from the other boxes on this MacroQuest launcher. Off: they see "sharing is off".')
     check('Accept give requests from my other boxes##invNetGives', 'acceptGives',
-        'Let another box ask this character to hand an item to someone (through the trade window).\nAlso gated by Box Network -> Accept remote commands / allowlist.')
+        'Let another box ask this character to hand an item to someone (through the trade window),\nand auto-accept the trade window when another box gives this character an item.\nAlso gated by Box Network -> Accept remote commands / allowlist.')
     check('Print transfers to chat##invNetAnnounce', 'announce', nil)
     ImGui.SetNextItemWidth(core.px(160))
     local range, rangeChanged = ImGui.SliderInt('Trade range##invNetRange', tonumber(cfg.tradeRange) or 15, 5, 50)
@@ -2923,6 +2929,16 @@ function probe.cursorId()
     return id
 end
 
+-- How many of item `id` this character holds (bags + worn), nil when the
+-- client cannot say (FindItemCount unavailable).
+function probe.itemCount(id)
+    local n = nil
+    pcall(function()
+        if mq.TLO.FindItemCount then n = tonumber(mq.TLO.FindItemCount(id)()) end
+    end)
+    return n
+end
+
 function probe.targetId()
     local id = 0
     pcall(function() id = tonumber(mq.TLO.Target.ID()) or 0 end)
@@ -2974,7 +2990,9 @@ end
 
 -- Where item `id` is right now: prefers the slot the snapshot named when it
 -- still holds that id, else FindItem. Returns { cmd, name, count, stackable,
--- nodrop } or nil when the item is not in the bags / worn slots.
+-- nodrop } or nil when the item is not in the bags / worn slots. A worn slot
+-- is only accepted when the job named a worn slot (a numeric cmd): giving
+-- "Peridot" must never strip an equipped copy while the bags hold one.
 function probe.locate(id, preferredCmd)
     id = tonumber(id) or 0
     if id <= 0 then return nil end
@@ -3005,7 +3023,8 @@ function probe.locate(id, preferredCmd)
         end
         if found then return found end
     end
-    local found = nil
+    local wornOk = cmd:match('^%d+$') ~= nil
+    local found, wornHit = nil, false
     pcall(function()
         local fi = mq.TLO.FindItem(id)
         if not (fi and fi() and (tonumber(fi.ID()) or 0) == id) then return end
@@ -3015,13 +3034,27 @@ function probe.locate(id, preferredCmd)
         if slot >= 23 and slot <= 32 then
             c = (sub >= 0) and string.format('in pack%d %d', slot - 22, sub + 1) or string.format('pack%d', slot - 22)
         elseif slot >= 0 and slot <= 22 then
+            if not wornOk then wornHit = true; return end
             c = tostring(slot)
         else
             return -- bank / elsewhere
         end
         found = describe(fi, c)
     end)
-    return found
+    if found or not wornHit then return found end
+    -- FindItem answered with an equipped copy; look for one in the bags.
+    for p = 1, 10 do
+        local pack = mq.TLO.Me.Inventory('pack' .. p)
+        found = describe(pack, 'pack' .. p)
+        if found then return found end
+        local cap = 0
+        pcall(function() cap = tonumber(pack.Container()) or 0 end)
+        for sub = 1, cap do
+            found = describe(pack.Item(sub), string.format('in pack%d %d', p, sub))
+            if found then return found end
+        end
+    end
+    return nil
 end
 
 -- Peer snapshot record for a box (created on demand).
@@ -3175,6 +3208,7 @@ local function runGive(job)
     if not loc then return false, (job.name or 'item') .. ' is not in the bags any more' end
     if loc.nodrop then return false, loc.name .. ' is NO TRADE' end
     local name = loc.name ~= '' and loc.name or (job.name or 'item')
+    local countBefore = probe.itemCount(job.itemId)
 
     -- Pick it up: whole stack (shift), one (ctrl) or a quantity via the dialog.
     local want = tonumber(job.count)
@@ -3222,6 +3256,15 @@ local function runGive(job)
     if probe.cursorId() == job.itemId then
         tradeCleanup()
         return false, 'the trade was cancelled (' .. to .. ' may be full)'
+    end
+    -- A cancelled trade closes the window too and drops the item back into
+    -- the bags: only report success once it actually left this character.
+    if countBefore and not delay(1500, function()
+        local n = probe.itemCount(job.itemId)
+        return n ~= nil and n < countBefore
+    end) then
+        tradeCleanup()
+        return false, 'the trade was cancelled (' .. name .. ' is still here)'
     end
     return true, name
 end
@@ -3329,6 +3372,25 @@ end
 local function onRequest(data, sender)
     local from = senderName(sender, data)
     if from == '' then return end
+    local bn = boxnet()
+    if bn and bn.trusted and not bn.trusted(sender, data) then
+        netLog(string.format('Refused snapshot request from %s: not trusted', from), 'warn')
+        bn.send(from, 'inv:page', { refused = true, reason = 'not trusted by ' .. myName() })
+        return
+    end
+    -- Per-sender rate limit: every request costs a (possibly rescanned)
+    -- snapshot streamed in pages; one already queued covers repeats.
+    local key = lower(from)
+    for _, n in ipairs(state.net.pendingRequests) do
+        if lower(n) == key then return end
+    end
+    state.net.requestAt = state.net.requestAt or {}
+    local t = nowSec()
+    if (t - (state.net.requestAt[key] or -1e9)) < NET_REQUEST_MIN_SEC / 2 then
+        if bn then bn.send(from, 'inv:page', { refused = true, reason = 'asked too often - try again in a moment' }) end
+        return
+    end
+    state.net.requestAt[key] = t
     table.insert(state.net.pendingRequests, from)
 end
 
@@ -3367,6 +3429,16 @@ end
 local function onTradeAccept(data, sender)
     local from = senderName(sender, data)
     if from == '' then return end
+    -- Auto-clicking Trade is the receiving half of a give: same gates as onGive.
+    if not cfg.acceptGives then
+        netLog(string.format('Ignored trade from %s: gives are off on this box', from), 'warn')
+        return
+    end
+    local bn = boxnet()
+    if bn and bn.trusted and not bn.trusted(sender, data) then
+        netLog(string.format('Ignored trade from %s: not trusted', from), 'warn')
+        return
+    end
     state.net.acceptTrades[lower(from)] = { from = from, item = data and data.name or nil, expires = nowSec() + TRADE_ACCEPT_SEC }
 end
 
@@ -3571,7 +3643,7 @@ local function drawBoxList()
     local n = state.net
     local function row(key, label, sub, tooltip)
         local sel = n.selected == key
-        if ImGui.Selectable(label .. '##box' .. key, sel) then
+        if select(2, ImGui.Selectable(label .. '##box' .. key, sel)) then
             n.selected = key
             n.tableCache.key = ''
             -- Selecting a box fetches what we do not have yet.
@@ -3951,7 +4023,7 @@ local function tick()
             local p = getBankCachePath()
             pcall(os.remove, p)
             inMemoryBankCache = nil
-            lastSavedBankCount = -1
+            lastSavedBankSig = nil
             state.statusMsg = "Bank cache removed."
         elseif actType == 'inspect' and act.item then
             local it = act.item
@@ -3983,6 +4055,20 @@ local function tick()
             delay(40)
             if cursorMatches(act.fromId) then
                 notifyLeft(act.toCmd)
+                if act.destId then
+                    -- Dropped onto an occupied slot: the displaced item is now on
+                    -- the cursor; put it where the dragged item came from
+                    -- (cursorMatches autoinventories anything unexpected).
+                    delay(80)
+                    if cursorMatches(act.destId) then notifyLeft(act.fromCmd) end
+                end
+            end
+            delay(40)
+            local hasCursor = false
+            pcall(function() hasCursor = mq.TLO.Cursor() and (mq.TLO.Cursor.ID() or 0) > 0 end)
+            if hasCursor then
+                pcall(function() mq.cmd('/autoinventory') end)
+                delay(100)
             end
         elseif actType == 'autoinv' then
             pcall(function()
@@ -4212,18 +4298,25 @@ local function findMyItem(text)
     text = tostring(text or ''):gsub('^%s+', ''):gsub('%s+$', '')
     if text == '' then return nil, 'no item named' end
     local id = tonumber(text)
-    local exact, partial = nil, {}
+    -- Bag copies win over equipped ones at every match level (id, exact
+    -- name, partial name): worn items only when the bags have no such match.
+    local byId, exact, partial = {}, {}, { INVENTORY = {}, WORN = {} }
     for _, it in ipairs(state.items) do
-        if it.location == 'INVENTORY' or it.location == 'WORN' then
-            if id and it.id == id then return it end
+        local where = it.location
+        if where == 'INVENTORY' or where == 'WORN' then
             local n = lower(it.name)
-            if n == lower(text) then exact = exact or it
-            elseif n:find(lower(text), 1, true) then partial[#partial + 1] = it end
+            if id and it.id == id then byId[where] = byId[where] or it end
+            if n == lower(text) then exact[where] = exact[where] or it
+            elseif n:find(lower(text), 1, true) then table.insert(partial[where], it) end
         end
     end
-    if exact then return exact end
-    if #partial == 1 then return partial[1] end
-    if #partial > 1 then return nil, #partial .. ' items match "' .. text .. '" - be more specific' end
+    if byId.INVENTORY or byId.WORN then return byId.INVENTORY or byId.WORN end
+    if exact.INVENTORY or exact.WORN then return exact.INVENTORY or exact.WORN end
+    for _, where in ipairs({ 'INVENTORY', 'WORN' }) do
+        local list = partial[where]
+        if #list == 1 then return list[1] end
+        if #list > 1 then return nil, #list .. ' items match "' .. text .. '" - be more specific' end
+    end
     return nil, 'no item matching "' .. text .. '" in the bags'
 end
 

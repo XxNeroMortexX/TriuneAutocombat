@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, deprecated, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/buttons.lua — Triune Hot Buttons Plugin (Button Master-style)
@@ -421,6 +422,13 @@ local function alphaGroupFor(label)
     return 'Other'
 end
 
+-- Lua reserved words: identifier-shaped keys that must still be written as
+-- ["key"] or the serialized file fails to load.
+local LUA_KEYWORDS = {}
+for w in ('and break do else elseif end false for function goto if in local nil not or repeat return then true until while'):gmatch('%a+') do
+    LUA_KEYWORDS[w] = true
+end
+
 -- Deterministic, readable Lua serializer for the config file and share strings.
 local function serialize(val, indent)
     indent = indent or ''
@@ -451,7 +459,7 @@ local function serialize(val, indent)
             local ks
             if type(k) == 'number' then
                 ks = string.format('[%d]', k)
-            elseif k:match('^[%a_][%w_]*$') then
+            elseif k:match('^[%a_][%w_]*$') and not LUA_KEYWORDS[k] then
                 ks = k
             else
                 ks = string.format('[%q]', k)
@@ -808,10 +816,30 @@ end
 local function loadDb()
     local path = plugin.configPath()
     local loaded = nil
-    local fn = loadfile(path)
+    local fn, lerr = loadfile(path)
     if fn then
         local ok, t = pcall(fn)
-        if ok and type(t) == 'table' then loaded = t end
+        if ok and type(t) == 'table' then
+            loaded = t
+        else
+            lerr = ok and 'did not return a table' or tostring(t)
+        end
+    end
+    -- The file exists but is unreadable: keep a copy, warn, and block saving so
+    -- the defaults never overwrite the user's library. /ac btn reload retries
+    -- (after a hand fix); /ac btn reset (or the settings button) starts fresh.
+    local existing = (loaded == nil) and readFile(path) or nil
+    if existing and existing:find('%S') then
+        local cf = io.open(path .. '.corrupt', 'w')
+        if cf then
+            cf:write(existing)
+            cf:close()
+        end
+        state.saveBlocked = tostring(lerr or 'unknown error')
+        log('\arCould not load %s: %s', path, state.saveBlocked)
+        log('\arA copy was kept as %s.corrupt. Saving is disabled until you fix the file and /ac btn reload, or /ac btn reset to start over.', path)
+    else
+        state.saveBlocked = nil
     end
     local fresh = (loaded == nil)
     db = normalizeDb(loaded or defaultDb())
@@ -824,6 +852,10 @@ end
 local function saveDb(opts)
     opts = opts or {}
     if not db then return false end
+    if state.saveBlocked then
+        if not opts.silent then setStatus('Not saved: the library file failed to load (/ac btn reset or fix it and /ac btn reload).') end
+        return false
+    end
     local path = plugin.configPath()
     local old = readFile(path)
     if old and #old > 0 then
@@ -833,14 +865,33 @@ local function saveDb(opts)
             bak:close()
         end
     end
-    local f, err = io.open(path, 'w')
+    -- Write a temp file and rename it into place so a crash mid-write never
+    -- leaves a truncated library behind.
+    local tmp = path .. '.tmp'
+    local f, err = io.open(tmp, 'w')
     if not f then
-        log('\arCould not write %s: %s', path, tostring(err))
+        log('\arCould not write %s: %s', tmp, tostring(err))
         return false
     end
-    f:write('-- Triune Hot Buttons library (buttons plugin). Shared by every character.\n')
-    f:write('return ' .. serialize(db) .. '\n')
+    local okW, werr = f:write('-- Triune Hot Buttons library (buttons plugin). Shared by every character.\n'
+        .. 'return ' .. serialize(db) .. '\n')
     f:close()
+    if not okW then
+        os.remove(tmp)
+        log('\arCould not write %s: %s', tmp, tostring(werr))
+        return false
+    end
+    local okR, rerr = os.rename(tmp, path)
+    if not okR then
+        -- Windows rename does not replace an existing file; the .bak above
+        -- still holds the previous contents.
+        os.remove(path)
+        okR, rerr = os.rename(tmp, path)
+    end
+    if not okR then
+        log('\arCould not replace %s: %s', path, tostring(rerr))
+        return false
+    end
     if not opts.silent then setStatus('Saved.') end
     -- Tell the other boxes on this computer to reload the shared file.
     if prefs.syncBoxes and not opts.noBroadcast and core and core.boxnet and core.boxnet.broadcast then
@@ -947,9 +998,29 @@ local function decodeShare(str)
     if str == '' then return nil, 'empty' end
     local src = b64dec(str)
     if not src or src == '' then return nil, 'not base64' end
+    -- Precompiled bytecode can crash the VM; share strings are always source.
+    if src:sub(1, 1) == '\27' then return nil, 'binary chunks are not accepted' end
     local fn, err = compile(src, 'share', {})
     if not fn then return nil, err end
+    -- A share string is plain data; cap the instructions it may run so a
+    -- hostile `while true do end` cannot hang the game. MQ2Lua's own turbo
+    -- yield hook is a C hook (not restorable from Lua); it is re-installed
+    -- before every resume, so clearing it here only lasts until next frame.
+    local dbg = type(debug) == 'table' and debug or nil
+    local hooked, prevFn, prevMask, prevCount = false, nil, nil, nil
+    if dbg and dbg.sethook then
+        if dbg.gethook then
+            local okG, f, m, c = pcall(dbg.gethook)
+            if okG and type(f) == 'function' then prevFn, prevMask, prevCount = f, m, c end
+        end
+        -- LuaJIT never calls hooks from compiled traces: keep this chunk interpreted.
+        if jit and jit.off then pcall(jit.off, fn, true) end
+        hooked = pcall(dbg.sethook, function() error('share string ran too long', 2) end, '', 1000000)
+    end
     local ok, t = pcall(fn)
+    if hooked then
+        if prevFn then pcall(dbg.sethook, prevFn, prevMask or '', prevCount or 0) else pcall(dbg.sethook) end
+    end
     if not ok or type(t) ~= 'table' then return nil, 'not a share table' end
     if t.Type ~= 'Button' and t.Type ~= 'Set' then return nil, 'not a Button or Set share' end
     return t
@@ -3533,7 +3604,7 @@ local function drawBrowser()
                             if ImGui.BeginCombo('##boxPeers', #peers > 0 and 'Connected boxes...' or 'No boxes connected') then
                                 for _, p in ipairs(peers) do
                                     local pn = p and p.name
-                                    if pn and ImGui.Selectable(tostring(pn) .. '##peer', pn == browser.boxName) then
+                                    if pn and select(2, ImGui.Selectable(tostring(pn) .. '##peer', pn == browser.boxName)) then
                                         browser.boxName = tostring(pn)
                                         browser.lists.Box = nil
                                     end
@@ -3571,7 +3642,7 @@ local function drawBrowser()
                                 for i, e in ipairs(cmdList) do
                                     local line = tostring(e.button and e.button.cmd or '')
                                     if line ~= '' and line:match('^/ac%s+(%S+)') ~= 'net' then
-                                        if ImGui.Selectable(e.name .. '   ' .. line .. '##pick' .. i) then
+                                        if select(2, ImGui.Selectable(e.name .. '   ' .. line .. '##pick' .. i)) then
                                             browser.boxCmd = line
                                             browser.boxLabel = e.name
                                         end
@@ -3632,8 +3703,8 @@ local function drawBrowser()
                                 if e.empty then
                                     ImGui.TextDisabled(label)
                                 else
-                                    local okSel, sel = pcall(ImGui.Selectable, label .. '##row', false, 0, 0, rowH - 2)
-                                    if not okSel then sel = ImGui.Selectable(label .. '##row', false) end
+                                    local okSel, _, sel = pcall(ImGui.Selectable, label .. '##row', false, 0, 0, rowH - 2)
+                                    if not okSel then _, sel = ImGui.Selectable(label .. '##row', false) end
                                     if sel then pickBrowserEntry(e) end
                                     if ImGui.IsItemHovered() then core.setTooltip(e.button.cmd) end
                                 end
@@ -3780,6 +3851,17 @@ local function handleCommand(args)
     elseif sub == 'reload' then
         loadDb()
         log('Reloaded %s.', plugin.configPath())
+    elseif sub == 'reset' then
+        if not state.saveBlocked and (args[2] or ''):lower() ~= 'confirm' then
+            log('This replaces the whole Hot Buttons library with the defaults. Type /ac btn reset confirm to proceed.')
+        else
+            state.saveBlocked = nil
+            db = normalizeDb(defaultDb())
+            cache = {}
+            myChar()
+            saveDb()
+            log('Hot Buttons library reset to defaults (%s).', plugin.configPath())
+        end
     elseif sub == 'import' then
         local what = (args[2] or ''):lower()
         if what == 'bm' or what == 'buttonmaster' then
@@ -3958,6 +4040,13 @@ function plugin.onDrawSettings()
         loadDb()
         setStatus('Reloaded.')
     end
+    if state.saveBlocked then
+        ImGui.TextColored(ERR[1], ERR[2], ERR[3], ERR[4], 'Library file failed to load - saving is disabled: ' .. state.saveBlocked)
+        ImGui.TextDisabled('A copy was kept as ' .. plugin.configPath() .. '.corrupt. Fix the file and Reload, or reset.')
+        if ImGui.Button('Reset Library To Defaults##btnResetDb', core.px(220), core.px(24)) then
+            handleCommand({ 'reset' })
+        end
+    end
     if state.bmImportResult then
         ImGui.TextColored(WARN[1], WARN[2], WARN[3], WARN[4], state.bmImportResult)
     end
@@ -3983,6 +4072,7 @@ plugin.help = {
     '  \ag/ac btn add [aa|gem|ability|disc|item|box|cmd]\ax - Browse your AAs / gems / abilities / discs / clickies and add one as a button',
     '  \ag/ac btn exec <set> <index>\ax - Fire a button   \ag/ac btn import bm\ax - Import ButtonMaster.lua',
     '  \ag/ac btn scope [group|zone|all|next] [hotbar]\ax - Where a hotbar\'s Box Control buttons send (its Group / Zone / All switch)',
+    '  \ag/ac btn reload\ax - Re-read the library file   \ag/ac btn reset confirm\ax - Replace the library with the defaults',
     '  \ag/btn [n]\ax, \ag/btnexec "<set>" <index>\ax, \ag/btncopy <server> <char>\ax - Button Master-compatible binds',
 }
 

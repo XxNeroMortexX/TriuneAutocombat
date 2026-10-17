@@ -5,40 +5,109 @@
 **TriuneAutocombat** is a MacroQuest ImGui Lua autocombat engine for EverQuest
 progression servers. It automates targeting, spell casting, pet management, and
 navigation for a "trio" of three EverQuest classes played on one character. It is
-written entirely in Lua 5.1 / LuaJIT and runs inside MacroQuest2 via
+written entirely in Lua 5.1 / LuaJIT and runs inside MacroQuest via
 `/lua run triune`.
 
-## Standalone File Rule
+The code is one **core** script, `TAC/lua/triune.lua` (UI, loadout, combat loop,
+persistence, and the plugin manager), plus **in-process plugins** in
+`TAC/lua/tac/*.lua`. The companion tools that used to be standalone scripts
+(map, DPS, inventory, cursor, buffbot, spellbook, ...) are all plugins now: they
+run inside the core's Lua state, on its main coroutine, and draw inside its
+ImGui callback.
 
-**Every Lua script in `lua/` MUST remain fully standalone**: no file may
-`require()` another Triune script or depend on any shared module to work.
-Users may copy a single `.lua` file into their setup and it must run. This is
-intentional duplication: the ImGui theme helpers (`pushCol`/`pushVar`/
-`pushTheme`/`popTheme`) and color constants are copied into every module ON
-PURPOSE. When you change the theme, you MUST apply the identical change to
-every module that contains a copy. Do NOT "fix" this duplication by
-extracting a shared module.
+## Plugin Architecture (replaces the old Standalone File Rule)
+
+- **Discovery and loading.** The plugin manager (`initPluginManager` /
+  `runtime.pluginManager` in `triune.lua`) lists `lua/tac/` (lfs, else a
+  directory listing, else a probe of the known shipped plugin names), runs each
+  file's chunk and registers the returned table. A file that returns nothing,
+  a non-table, or a table without an `id` / any hook is listed as a stray
+  script instead of a plugin. Library modules that live in the folder but are
+  `require()`d by the core (`PLUGIN_DIR_LIBRARIES`, currently
+  `tac/triune_log.lua`) are skipped by the scanner.
+- **A plugin file returns one table**: `id`, `name`, `version`, `author`,
+  `description`, `defaultEnabled`, `tickInterval` (seconds, default 0.1),
+  `runOutOfCombatOnly`, `hasThread` (run `onTick` in its own fiber), optional
+  `uses` (other plugin ids it depends on), optional `window = { label, tooltip,
+  flag, desc, headerButton, order }` (its window's `ctrl` visibility flag and
+  main-window header button), and `help` lines, plus any of these hooks:
+
+  | Hook | When |
+  |---|---|
+  | `onInit(core)` | Plugin enabled / (re)loaded. Receives the core API; register events, binds and state here. |
+  | `onDestroy()` | Plugin disabled / reloaded / restarted. Release every event and bind made in `onInit`. |
+  | `onTick()` | Every `tickInterval` on the main coroutine (or in its fiber with `hasThread`). Must never block. |
+  | `onDrawUI()` | Every frame, from the core's ImGui callback. Draw the plugin's windows here. |
+  | `onDrawSettings()` | The plugin's panel on the Plugins page. |
+  | `onCombatTick(targetId)` | After each core combat-loop pass (current target id, 0 when none). |
+  | `onZoned(zoneShort)` | After a zone change. |
+  | `onLoadoutSaved()` | After the core saved the loadout. |
+  | `onSaveSettings()` / `onLoadSettings(t)` | Plugin settings, persisted in `ctrl.plugins[id].settings`. |
+  | `wantsCombatHold()` | Return true to hold the combat loop (e.g. an AA purchase with the AA window open). |
+  | `onBetweenPulls()` | Return true when the plugin did work between pulls (the puller waits). |
+  | `onCommand(cmd, args)` | `/ac <cmd> ...`; return true when handled. |
+
+- **The core API** (`pm.getCoreApi()`) is the only contract with the core:
+  `core.mq`, `core.ImGui`, `core.runtime`, live `core.ctrl` / `core.loadout` /
+  `core.petState` / ..., `core.log`, `core.DATA`, theme and window helpers
+  (`core.pushTheme`, `core.popTheme`, `core.preBeginWindow`, `core.px`, ...),
+  `core.delay(ms, cond)` and `core.defer(label, fn)`. Plugins must not
+  `require()` the core or each other; cross-plugin calls go through the core
+  API or the Box Network message API.
+- **Plugins never block or own MQ entry points.** No `mq.delay` (use
+  `core.delay` inside a fiber, or split the work across ticks), no
+  `mq.imgui.init` (draw from `onDrawUI`), no `mq.doevents` loop, no
+  `mq.exit`. While a plugin chunk loads, `mq.delay` / `mq.bind` / `mq.event` /
+  `mq.imgui.init` raise, so a file that uses them at load time is rejected as
+  a standalone script. Anything a button triggers that may wait (casting,
+  targeting, abilities) goes through `core.defer` so it runs on the main
+  coroutine, not inside the render callback.
+- **Buffbot stays standalone in scope**: never fold other features into the
+  `buffbot` plugin; it is a dedicated buff station.
+
+## Theme Rule
+
+There is exactly **one** theme: `UI.pushTheme()` / `UI.popTheme()` in
+`triune.lua`, handed to plugins as `core.pushTheme()` / `core.popTheme()`. Every
+plugin window wraps its `ImGui.Begin` ... `ImGui.End` in
+`core.pushTheme()` / `core.popTheme()` and uses the colours from `core.colors`.
+Plugins must **not** define their own `pushTheme` / `popTheme` or push the theme
+colour tuples themselves. `tests/check_theme_consistency.sh` (run by CI)
+enforces this. To change the look, edit `UI.pushTheme` only.
 
 ## File Map
 
 | File | Role |
 |---|---|
-| `TAC/lua/triune.lua` | Main engine: UI with theme, loadout, combat loop, persistence. Entry point. |
-| `TAC/lua/triune_buttons.lua` | Standalone quick-action hot-button toolbar window with theme. |
-| `TAC/lua/triune_buffbot.lua` | Standalone tell-driven automated buffing station with theme. |
-| `TAC/lua/triune_cursor.lua` | Standalone cursor item manager window with theme. |
-| `TAC/lua/triune_dps.lua` | Standalone live DPS parser with its own independent version number. |
-| `TAC/lua/triune_inv.lua` | Standalone inventory & bank manager window with theme. |
-| `TAC/lua/triune_map.lua` | Standalone 2D in-game map, Norrath Zone Atlas & live NPC radar/tracker with theme. |
-| `TAC/lua/triune_quest.lua` | Standalone interactive quest guide + radar + dialogue & turn-in helper with theme. |
-| `TAC/lua/triune_spellbook.lua` | Standalone spellbook browser + memorization queue window with theme. |
-| `TAC/lua/triune_test.lua` | Standalone in-game LLM test harness & QA agent window with theme. |
+| `TAC/lua/triune.lua` | Core: main window UI and theme, loadout, combat loop, persistence, plugin manager. Entry point (`/lua run triune`). |
+| `TAC/lua/tac/triune_log.lua` | Library module (`require('tac.triune_log')`), not a plugin: leveled logger, print() tee, diagnostic dump. |
+| `TAC/lua/tac/auto_aa.lua` | Auto AA: priority purchasing through the AA window, Fireworks cap spender, Auto AA window. |
+| `TAC/lua/tac/auto_accept.lua` | Auto-accept group / trade / expedition invites from whitelisted, group or guild players. |
+| `TAC/lua/tac/boxnet.lua` | Box Network (MQ Actors): peer roster, remote `/ac` commands, message API for other plugins. |
+| `TAC/lua/tac/buffbot.lua` | Tell-driven buffbot station. |
+| `TAC/lua/tac/buttons.lua` | Button Master-style hot button bars. |
+| `TAC/lua/tac/chat.lua` | Chat window replacement (filtered tabs, multiple windows). |
+| `TAC/lua/tac/cursor.lua` | Cursor item manager. |
+| `TAC/lua/tac/dps.lua` | Combat-log DPS parser with its own version number. |
+| `TAC/lua/tac/floating_damage.lua` | Floating crit damage numbers (overlay, no window). |
+| `TAC/lua/tac/gamedb.lua` | Offline item / NPC / spell database browser (data in `TAC/resources/gamedb/`). |
+| `TAC/lua/tac/gm_commands.lua` | EQEmu GM (#) command reference and runner (off by default). |
+| `TAC/lua/tac/hud_*.lua` | Popout HUD windows: cooldowns, effects, group, spell gems, unit frames, XTarget. |
+| `TAC/lua/tac/inventory.lua` | Inventory / bank manager with offline bank cache and box inventories. |
+| `TAC/lua/tac/map.lua` | 2D map, Norrath zone atlas, NPC tracker, camp / waypoint overlays. |
+| `TAC/lua/tac/nmsloot.lua` | Personal loot (#nms) console over the Box Network. |
+| `TAC/lua/tac/parcels.lua` | Parcel notifier and Collect All. |
+| `TAC/lua/tac/spellbook.lua` | Per-class spell browser and mem-to-gem queue. |
+| `TAC/lua/tac/update_check.lua` | GitHub release check (non-blocking, no external process). |
 | `TAC/config/triune_data.lua` | Era-correct spell/disc/AA database (generated, not hand-edited). |
+| `TAC/resources/gamedb/` | Game database files, built by `tools/build_gamedb.py` from the server SQL dump. |
+| `tests/test_pure_logic.lua` | Unit tests (`luajit tests/test_pure_logic.lua`); test the real functions via `loadFunc` / plugin loading, not local copies. |
+| `tests/check_theme_consistency.sh`, `tests/ci_local.sh` | Theme check; local run of every CI check. |
 | `CHANGELOG.md` | Full history of changes, newest date first. |
+| `RELEASES.md` | Short per-release summary (`## <version>`), used for the GitHub release body. |
 | `README.md` | User-facing documentation including commands, features, file structure. |
 
-> **Note:** `triune_loadout.lua` is written to the MQ config directory at runtime — it is NOT in this repo.
-
+> **Note:** `triune_loadout_<server>_<char>.lua` and the plugins' settings are written to the MQ config directory at runtime — they are NOT in this repo.
 
 
 ---
@@ -88,21 +157,23 @@ Rules:
 
 The canonical version is defined in `TAC/lua/triune.lua`:
 ```lua
-local VERSION           = '2.01'
+local VERSION           = '3.2'
 ```
 
 The README must always reflect this value:
 ```markdown
-Current version: **2.01**
+Current version: **3.2**
 ```
 
 When you bump the version, update `TAC/lua/triune.lua` and the `README.md`.
-CI (`.github/workflows/ci.yml`) fails if these drift apart.
+CI (`.github/workflows/ci.yml`) fails if these drift apart, and the release
+workflow refuses a tag that does not match `VERSION` or has no `## <version>`
+entry in `RELEASES.md`.
 
 ### Binary Files Policy (Do NOT use Git LFS)
 
-The committed binaries (MacroQuest DLLs/EXEs, navmeshes, ItemDB, etc.) must stay
-as regular git objects. Do NOT migrate them to Git LFS: GitHub source archives
+The committed binary / large data files (MQ2Nav navmeshes, `ItemDB.txt`, the
+`gamedb` data files, etc.) must stay as regular git objects. Do NOT migrate them to Git LFS: GitHub source archives
 and `git archive` emit LFS *pointer files* instead of real content, which would
 corrupt every distribution path (release zips, repo ZIP downloads, and
 release asset downloads).
@@ -116,7 +187,8 @@ This project runs on **Lua 5.1 / LuaJIT** inside MacroQuest. Do NOT use:
 - `//` (integer division — not valid in Lua 5.1; use `math.floor(a/b)`)
 - `|`, `&`, `~` bitwise operators — use the `bit` library: `bit.bor()`, `bit.band()`, etc.
 - `<< >>` shift operators — use `bit.lshift()`, `bit.rshift()`
-- `goto` (not in LuaJIT by default)
+- `goto` — LuaJIT accepts it, but Lua 5.1 does not, and CI compiles every file
+  with `luac5.1` as well as LuaJIT, so `goto` (and `::labels::`) fail the build
 - String methods not in 5.1 (`string.pack`, `utf8`, etc.)
 
 Prefer:
@@ -141,9 +213,9 @@ local val = mq.TLO.Me.Gem(slot).Name()
 ### ImGui Thread Safety & Window Rules
 - **Never call `mq.delay()` from an ImGui render callback** — it is a non-yieldable thread and will crash with "Cannot delay from non-yieldable thread".
 - Queue actions via a `pending*` flag (e.g., `reDetectRequested`, `pendingAction`) and execute them in the main coroutine loop.
-- Pattern used in `triune_cursor.lua` (pendingAction) and `triune.lua` (reDetectRequested).
+- Pattern used in `tac/cursor.lua` (pendingAction) and `triune.lua` (reDetectRequested). Plugins can also hand the work to `core.defer(label, fn)`.
 - **Unique Element & Table IDs across Windows**: Every ImGui table, child window, tab bar, or button rendered in the same frame MUST have unique string IDs (e.g. `InspectTable` vs `MainTable`). Duplicate IDs across separate windows cause ImGui ID collisions, freezing inputs and routing clicks to the wrong window.
-- **No Nested `ImGui.Begin()` Window Callbacks**: Never call `ImGui.Begin()` for a secondary window inside the render callback of a primary window (between its `ImGui.Begin()` and `ImGui.End()`). Nested `ImGui.Begin()` calls corrupt ImGui's focus stack, causing buttons, tab bars, and titlebar `X` close buttons on the secondary window to freeze. Always register secondary top-level windows as independent callbacks via `mq.imgui.init('SecondaryWin', drawSecondaryFunc)`.
+- **No Nested `ImGui.Begin()` Window Callbacks**: Never call `ImGui.Begin()` for a secondary window inside the render callback of a primary window (between its `ImGui.Begin()` and `ImGui.End()`). Nested `ImGui.Begin()` calls corrupt ImGui's focus stack, causing buttons, tab bars, and titlebar `X` close buttons on the secondary window to freeze. Draw each top-level window as its own `Begin` ... `End` pair, one after the other (in the core: its own `mq.imgui.init` callback; in a plugin: sequentially inside `onDrawUI` — plugins may not call `mq.imgui.init`).
 - **Secondary Window Focus & Inspectors**: Secondary top-level windows in MQ Lua do not automatically steal mouse focus from the main window, causing clicks on secondary window controls to freeze or fall through. To present detailed inspection UI, use **In-Tab Detail Views** (with a `< Back to List` button) or **ImGui Modal Popups** (`ImGui.BeginPopupModal` / `ImGui.OpenPopup`), which force 100% input focus and guarantee responsive clicks.
 - **Window Close Tuple Handling & Safe Exit**: `ImGui.Begin(title, openFlag)` returns `open, draw`. When `open` returns false (titlebar `X` button clicked), update the open flag state, call `ImGui.End()`, and return cleanly. `ImGui.End()` MUST be called once for every `ImGui.Begin()` call. **NEVER call `mq.exit()` or `mq.imgui.destroy()` inside an ImGui draw callback or event handler** — destroying the Lua context mid-render triggers a Fatal C++ Access Violation Crash in MacroQuest/EverQuest. Set `isRunning = false`, return cleanly, and let the main script coroutine loop exit naturally outside the callback.
 - **Window Corner Rounding & `ImGuiWindowFlags.NoCollapse`**: Do NOT pass `ImGuiWindowFlags.NoCollapse` to `ImGui.Begin()`. In MacroQuest ImGui, passing `NoCollapse` overrides the theme's `WindowRounding` style token and forces ImGui to render a square window frame with sharp 90-degree titlebar corners. Omit `NoCollapse` (or use `ImGuiWindowFlags.AlwaysUseWindowPadding`) so `ImGuiStyleVar.WindowRounding` (e.g. 6.0) applies rounded corners to top-level windows.
@@ -159,13 +231,13 @@ mq.cmdf('/command %s', arg)  -- formatted string version
 
 ### Event Handling
 - Register chat events with `mq.event('name', 'pattern', handler)`
-- Must call `mq.doevents()` in the main loop to process queued events
+- `mq.doevents()` is called by the core's main loop; plugins register events in `onInit`, unregister them (`mq.unevent`) in `onDestroy`, and never run their own `doevents` loop
 
 ---
 
 ## State Table Conventions
 
-All runtime state is stored in **four structured tables** (not bare locals):
+All runtime state of the core is stored in **five structured tables** (not bare locals), alongside `loadout` (the saved spell/AA/disc lists) and `UI` (draw helpers):
 
 | Table | Purpose |
 |---|---|
@@ -193,8 +265,8 @@ When adding new state, always add it to the appropriate table — never add a ba
 
 - Section headers use `-- ====` / `-- ----` banner comments as present throughout the files.
 - Color constants use descriptive names: `GOOD`, `WARN`, `ERR`, `ARC`, `GOLD`, `MUTED`.
-- The unified dark theme helpers (`pushTheme` / `popTheme`) exist as a duplicated copy
-  inside every module by design (see Standalone File Rule). Keep every copy identical.
+- The unified dark theme lives only in `UI.pushTheme` / `UI.popTheme` in `triune.lua`;
+  plugins call `core.pushTheme()` / `core.popTheme()` and never carry a copy (see Theme Rule).
 - Class abbreviations always use the mixed-case data-file format: `War`, `Clr`, `Pal`, `Rng`, `SK`, `Dru`, `Mnk`, `Brd`, `Rog`, `Shm`, `Nec`, `Wiz`, `Mag`, `Enc`, `Bst`, `Ber`.
 
 

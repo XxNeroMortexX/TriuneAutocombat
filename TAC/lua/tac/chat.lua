@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/chat.lua — Triune Chat Windows plugin
@@ -221,8 +222,30 @@ local RECENT_TELLS = 5
 -- Tell / notification history helpers (filled in with the logging below;
 -- one table so the main chunk stays under Lua's 200-local limit).
 local H = { MIN = 100, MAX = 5000 }
+-- Crash-safe rewrite: write path..'.tmp', close it, then swap it in. A crash
+-- mid-write leaves the old file (or the finished .tmp, which H.openRead and
+-- loadConfig fall back to) instead of a truncated one.
+function H.atomicWrite(path, write)
+    local tmp = path .. '.tmp'
+    local f = io.open(tmp, 'w')
+    if not f then return false end
+    local ok = pcall(write, f)
+    f:close()
+    if not ok then os.remove(tmp); return false end
+    os.remove(path)
+    return os.rename(tmp, path) and true or false
+end
+-- Opens path for reading, or its .tmp when the main file is missing (a swap
+-- interrupted between remove and rename). Returns f or nil, err.
+function H.openRead(path)
+    local f, err = io.open(path, 'r')
+    if f then return f end
+    local t = io.open(path .. '.tmp', 'r')
+    if t then return t end
+    return nil, err
+end
 -- Tab buffer helpers (cap, clear, drop, log close), one table for the same reason.
-local TB = {}
+local TB = { srcGen = 0, srcCache = setmetatable({}, { __mode = 'k' }) }
 -- @Name completion in the input line (functions filled in with the input
 -- section below; declared here because ingest and the history restore feed it).
 local AC = { MAX_NAMES = 400, KEEP = 300, SHOW = 8 }
@@ -1104,11 +1127,8 @@ local function sanitizeConfig(c)
 end
 
 function saveConfig()
-    local path = configPath()
-    local f = io.open(path, 'w')
-    if not f then return false end
-    f:write('-- Triune Chat Windows config (per character)\nreturn ' .. serialize(cfg) .. '\n')
-    f:close()
+    local body = '-- Triune Chat Windows config (per character)\nreturn ' .. serialize(cfg) .. '\n'
+    if not H.atomicWrite(configPath(), function(f) f:write(body) end) then return false end
     rt.dirty = false
     rt.lastSave = os.time()
     return true
@@ -1116,7 +1136,13 @@ end
 
 local function loadConfig()
     local data
-    local chunk = loadfile(configPath())
+    local path = configPath()
+    local chunk = loadfile(path)
+    if not chunk then
+        -- Main file missing (a save interrupted mid-swap): use its .tmp.
+        local f = io.open(path, 'r')
+        if f then f:close() else chunk = loadfile(path .. '.tmp') end
+    end
     if chunk then
         local ok, res = pcall(chunk)
         if ok and type(res) == 'table' then data = res end
@@ -1130,6 +1156,8 @@ end
 
 local function markDirty()
     rt.dirty = true
+    -- Any config change may touch a tab's filters: drop the cached sources.
+    TB.srcGen = TB.srcGen + 1
 end
 
 -- ----------------------------------------------------------------------------
@@ -1183,7 +1211,10 @@ local function executeLink(link)
     -- of the link's name is what the click does. Silent saylinks (heard by
     -- the NPC only) end up said aloud this way - a cosmetic difference.
     if plugin.isSaylink(link) then
-        local text = trim(link.name)
+        -- The text goes straight into /say: no control bytes, no leading
+        -- slash (a second command) and no $ (MQ variable parsing).
+        local text = trim((tostring(link.name or ''):gsub('[%c\127]', ''):gsub('%$', '')))
+        text = trim((text:gsub('^/+', '')))
         if text == '' then echo('This dialogue link has no text to say.'); return false end
         local ok, err = pcall(mq.cmdf, '/say %s', text)
         if ok then
@@ -1251,7 +1282,13 @@ end
 -- links are tokenized once and cached, so this reads the payload each time
 -- rather than caching a flag that /tacchat saylink <id> would invalidate.
 -- On the plugin table (the main chunk is at Lua's 200-local limit).
-function plugin.isSaylink(link)
+-- Only lines an NPC said or the server sent carry real dialogue links: a
+-- player can paste the proxy id into chat, so a link from any other channel
+-- is never said. With no channel known (link.channel or the argument) the
+-- id alone decides.
+function plugin.isSaylink(link, channel)
+    channel = channel or (type(link) == 'table' and link.channel) or nil
+    if channel and channel ~= 'npc_say' and channel ~= 'system' then return false end
     local payload = type(link) == 'table' and link.payload or link
     local id = linkItemId(payload)
     return id ~= nil and id == cfg.saylinkId
@@ -1280,7 +1317,9 @@ local function openTextLink(link)
 end
 
 -- Called from the UI: defers the actual execution to the next tick.
-local function openItemLink(link)
+local function openItemLink(link, channel)
+    -- Carry the source line's channel so the tick-side isSaylink check sees it.
+    if channel and type(link) == 'table' then link = setmetatable({ channel = channel }, { __index = link }) end
     rt.pendingLink = link
     echo((plugin.isSaylink(link) and 'Saying ' or 'Opening ') .. link.name .. '...')
     return true
@@ -1325,8 +1364,15 @@ end
 -- ----------------------------------------------------------------------------
 -- Tabs: filter matching and runtime state
 -- ----------------------------------------------------------------------------
+-- Muting is checked live against cfg.muted (not a flag frozen at ingest), so
+-- mute / unmute apply to lines already in the ring when the tabs rebuild.
+function TB.mutedNow(entry)
+    local s = entry.sender
+    return s ~= nil and not entry.outgoing and cfg.muted[s:lower()] == true
+end
+
 local function tabAccepts(tab, entry)
-    if entry.muted then return false end
+    if TB.mutedNow(entry) then return false end
     if tab.channels and not tab.channels[entry.channel] then return false end
     -- A tell conversation tab only shows lines to or from that one person.
     if tab.tellWith then
@@ -1356,19 +1402,32 @@ end
 -- tells-only tab reads from that, so a fresh one (a tell opening its own
 -- tab) comes up with the conversation even when the main ring has long
 -- evicted it. Everything else reads from the main ring.
-local function tabSource(tab)
-    if tab.tellWith or tab.notifyOnly then return rt.keep end
+-- Whether a tab reads from the kept ring (uncached; see tabSource).
+function TB.readsKeep(tab)
+    if tab.tellWith or tab.notifyOnly then return true end
     if tab.channels then
         local any = false
         for id, on in pairs(tab.channels) do
             if on then
                 any = true
-                if id ~= 'tell_in' and id ~= 'tell_out' then return rt.ring end
+                if id ~= 'tell_in' and id ~= 'tell_out' then return false end
             end
         end
-        if any then return rt.keep end
+        if any then return true end
     end
-    return rt.ring
+    return false
+end
+
+-- Cached per tab (distribute asks for every tab on every line); the cache
+-- is dropped whenever a filter can change (markDirty / invalidateTabs).
+-- The answer is cached, not the ring, so a replaced rt.keep is still seen.
+local function tabSource(tab)
+    local c = TB.srcCache[tab]
+    if not c or c.gen ~= TB.srcGen then
+        c = { gen = TB.srcGen, keep = TB.readsKeep(tab) }
+        TB.srcCache[tab] = c
+    end
+    return c.keep and rt.keep or rt.ring
 end
 
 -- How many lines a tab's own buffer holds: Buffer lines, or the tell /
@@ -1609,6 +1668,8 @@ local function tabLogWrite(win, tab, st, entry)
         st.logFile = nil
     end
     if not st.logFile then
+        -- A failed open is retried after a pause, not on every line.
+        if st.logRetryAt and os.time() < st.logRetryAt then return end
         if not logsDirCached then
             local dir
             pcall(function()
@@ -1622,7 +1683,12 @@ local function tabLogWrite(win, tab, st, entry)
         local path = string.format('%s/tac_chat_%s_%s_%s.txt', logsDirCached, safeFileName(name), safeFileName(tab.name), day)
         st.logFile = io.open(path, 'a')
         st.logDay = day
-        if not st.logFile then return end
+        if not st.logFile then
+            st.logFails = (st.logFails or 0) + 1
+            st.logRetryAt = os.time() + math.min(60, 5 * st.logFails)
+            return
+        end
+        st.logFails, st.logRetryAt = nil, nil
     end
     st.logFile:write(string.format('[%s] %s\n', entry.hms, entry.text))
     rt.logDirty = true
@@ -1976,7 +2042,7 @@ function H.decode(line)
 end
 
 function H.keeps(entry)
-    if entry.muted then return false end
+    if TB.mutedNow(entry) then return false end
     return entry.channel == 'tell_in' or entry.channel == 'tell_out' or entry.notify == true
 end
 
@@ -2040,15 +2106,18 @@ function H.close()
 end
 
 -- Rewrites the file with just the kept lines. Runs from the tick (or a
--- command), never per line: the file only ever grows in H.write.
-function H.compact()
+-- command), never per line: the file only ever grows in H.write. Only once
+-- the file's lines are in memory (h.loaded), so a session that never read
+-- it cannot overwrite it; `force` (an explicit clear) skips that check.
+function H.compact(force)
     local h = rt.hist
     if not h then return false end
+    if not (h.loaded or force) then return false end
     H.close()
-    local f = io.open(H.path(), 'w')
-    if not f then return false end
-    for i = h.first, h.last do f:write(h.lines[i], '\n') end
-    f:close()
+    local ok = H.atomicWrite(H.path(), function(f)
+        for i = h.first, h.last do f:write(h.lines[i], '\n') end
+    end)
+    if not ok then return false end
     h.fileLines = h.last - h.first + 1
     return true
 end
@@ -2073,24 +2142,38 @@ function H.clear()
     local h = rt.hist
     if not h then return false end
     h.lines, h.first, h.last = {}, 1, 0
-    return H.compact()
+    return H.compact(true)
 end
 
 -- Reads the file, keeps the last cfg.history.lines, pushes them into the
 -- ring oldest first and trims the file when it held more. Returns the number
--- of lines restored.
-function H.load()
-    rt.hist = { lines = {}, first = 1, last = 0, fileLines = 0, file = nil }
+-- of lines restored. memOnly (history switched on mid-session) only reads
+-- the file into memory so later compaction keeps it; the session's tabs
+-- already hold this session's lines.
+function H.load(memOnly)
+    H.close()
+    rt.hist = { lines = {}, first = 1, last = 0, fileLines = 0, file = nil, loaded = false }
     if not cfg.history.on then return 0 end
-    local f = io.open(H.path(), 'r')
-    if not f then return 0 end
     local h = rt.hist
+    local f, err = H.openRead(H.path())
+    if not f then
+        -- No file yet: nothing on disk to lose. Any other open error leaves
+        -- loaded false so compaction never rewrites a file it could not read.
+        if tostring(err or ''):lower():find('no such file', 1, true) then h.loaded = true end
+        return 0
+    end
     local total = 0
     for line in f:lines() do
         total = total + 1
         if line ~= '' then H.remember(h, line) end
     end
     f:close()
+    h.loaded = true
+    if memOnly then
+        h.fileLines = total
+        if total > cfg.history.lines then H.compact() end
+        return 0
+    end
     local n = 0
     for i = h.first, h.last do
         local e = H.decode(h.lines[i])
@@ -2370,6 +2453,10 @@ end
 -- Once per frame from onDrawUI.
 function GL.poll()
     if GL.disabled or not mq then return end
+    -- Hidden chat: leave the game line (and native item-link clicks) alone.
+    -- Forget the last text so showing the chat again does not treat what the
+    -- line gained meanwhile as fresh item links.
+    if not ctrl.show_chat then GL.last = nil; return end
     if not (cfg.gameLinks or cfg.gameLineClose) then return end
     local ok, err = pcall(function()
         GL.harvest()
@@ -2559,7 +2646,7 @@ local function ingest(raw)
     ringPush(rt.ring, entry)
     if H.keeps(entry) then keepPush(entry) end
     for li, link in ipairs(extractItemLinks(raw)) do
-        rt.recentLinks[#rt.recentLinks + 1] = { name = link.name, payload = link.payload, raw = raw, id = entry.id, index = li }
+        rt.recentLinks[#rt.recentLinks + 1] = { name = link.name, payload = link.payload, raw = raw, id = entry.id, index = li, channel = r.channel }
         if #rt.recentLinks > 20 then table.remove(rt.recentLinks, 1) end
     end
     if r.channel == 'unknown' then
@@ -2573,7 +2660,9 @@ local function ingest(raw)
     end
     if r.channel == 'tell_in' and r.sender and not entry.muted then rt.lastTellFrom = r.sender end
     if (r.channel == 'tell_in' or r.channel == 'tell_out') and r.sender and not entry.muted then
-        noteTeller(r.sender)
+        -- A failed tell's name may be a typo: keep it out of the recent
+        -- tell list and completion (the line still reaches its conversation).
+        if not r.tellFail then noteTeller(r.sender) end
         if cfg.tellPopouts then openTellTab(r.sender, false) end
     end
     entry.player = clickablePlayer(r.channel, r.sender, r.outgoing)
@@ -2888,14 +2977,14 @@ local function drawRun(text, link, isTs, entry, r, g, b, isName)
         if ImGui.IsItemHovered and ImGui.IsItemHovered() and core.setTooltip then
             if l.kind then
                 core.setTooltip('Open ' .. l.name .. (l.kind == 'npcs' and ' (NPC card)' or ' (spell card)'))
-            elseif plugin.isSaylink(l) then
+            elseif plugin.isSaylink(l, entry.channel) then
                 core.setTooltip("Say '" .. l.name .. "' to your target (dialogue link)")
             else
                 core.setTooltip(gamedbPlugin and gamedbPlugin() and ('Open ' .. l.name .. ' (Game Database card)') or ('Open ' .. l.name .. ' (items you carry or have banked)'))
             end
         end
         if clicked then
-            if l.kind then openTextLink(l) else openItemLink(l) end
+            if l.kind then openTextLink(l) else openItemLink(l, entry.channel) end
         end
     elseif isTs then
         ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], text)
@@ -3069,8 +3158,8 @@ local function drawLineContextMenuBody(win, tab)
         end
         -- Re-post an item someone linked: the same raw link into my input line.
         for i, l in ipairs(extractItemLinks(e.raw)) do
-            if plugin.isSaylink(l) then
-                if ImGui.MenuItem("Say '" .. l.name .. "' (dialogue link)##saylink" .. i) then openItemLink(l) end
+            if plugin.isSaylink(l, e.channel) then
+                if ImGui.MenuItem("Say '" .. l.name .. "' (dialogue link)##saylink" .. i) then openItemLink(l, e.channel) end
             elseif ImGui.MenuItem('Link ' .. l.name .. ' to chat##relink' .. i) then
                 insertLink(LINK .. l.payload .. LINK, l.name)
             end
@@ -3122,6 +3211,29 @@ local function healQueue(st, where)
     rt.stats.holes = (rt.stats.holes or 0) + 1
     rt.stats.holeInfo = string.format('%s: first %d last %d kept %d', tostring(where), st.first, st.last, n)
     st.entries, st.first, st.last = packed, 1, n
+end
+
+-- One entry's runs (between the caller's PushID / PopID). Returns true when
+-- a run was right-clicked (line context menu opened).
+function TB.drawEntryRuns(win, tab, e, hkey, wrapW, spaceW, tsOn, fontKey, r, g, b)
+    local clicked = false
+    local runs = entryLayout(e, hkey, wrapW, spaceW, tsOn, fontKey).runs
+    local curLine = 1
+    for ri = 1, #runs do
+        local run = runs[ri]
+        local lineIdx = run[1]
+        if ri > 1 and lineIdx == curLine then ImGui.SameLine(0, run[5]) end
+        curLine = lineIdx
+        drawRun(run[2], run[3], run[4], e, r, g, b, run[6])
+
+        if ImGui.IsItemHovered and ImGui.IsItemHovered() and ImGui.IsMouseClicked and ImGui.IsMouseClicked(1) then
+            rt.ctxEntry = e
+            rt.ctxTab = tab
+            clicked = true
+            ImGui.OpenPopup('##tacchatLineCtx_' .. tabKey(win, tab))
+        end
+    end
+    return clicked
 end
 
 local function drawInlineLogBody(win, tab, st, logH)
@@ -3202,24 +3314,13 @@ local function drawInlineLogBody(win, tab, st, logH)
             holes = holes + 1   -- empty slot; healed after the loop
         else
             local r, g, b = rgbOf(e.hl or channelColor(e.channel))
+            -- PopID runs even when the entry fails to draw; the error is
+            -- re-raised afterwards for guarded() to record.
             ImGui.PushID(e.id)
-            local runs = entryLayout(e, hkey, wrapW, spaceW, tsOn, fontKey).runs
-            local curLine = 1
-            for ri = 1, #runs do
-                local run = runs[ri]
-                local lineIdx = run[1]
-                if ri > 1 and lineIdx == curLine then ImGui.SameLine(0, run[5]) end
-                curLine = lineIdx
-                drawRun(run[2], run[3], run[4], e, r, g, b, run[6])
-
-                if ImGui.IsItemHovered and ImGui.IsItemHovered() and ImGui.IsMouseClicked and ImGui.IsMouseClicked(1) then
-                    rt.ctxEntry = e
-                    rt.ctxTab = tab
-                    lineClicked = true
-                    ImGui.OpenPopup('##tacchatLineCtx_' .. tabKey(win, tab))
-                end
-            end
+            local okE, res = pcall(TB.drawEntryRuns, win, tab, e, hkey, wrapW, spaceW, tsOn, fontKey, r, g, b)
             ImGui.PopID()
+            if not okE then error(res, 0) end
+            if res then lineClicked = true end
         end
         i = i + 1
     end
@@ -3277,6 +3378,7 @@ end
 
 local function invalidateTabs()
     for _, st in pairs(rt.tabs) do st.rebuild = true end
+    TB.srcGen = TB.srcGen + 1
 end
 
 local function newWindow(title)
@@ -3576,7 +3678,8 @@ local function drawTabPage(win, tab)
     local send = SEND_BY_ID[tab.send] or SEND_BY_ID.say
     if ImGui.BeginCombo('##tabSend', send.label) then
         for _, sc in ipairs(SEND_CHANNELS) do
-            if ImGui.Selectable(sc.label, sc.id == tab.send) then tab.send = sc.id; markDirty() end
+            local _, pressed = ImGui.Selectable(sc.label, sc.id == tab.send)
+            if pressed then tab.send = sc.id; markDirty() end
         end
         ImGui.EndCombo()
     end
@@ -3841,7 +3944,8 @@ function drawEditorBody(ed)
         if ImGui.BeginCombo('##edTarget', cur) then
             for _, w in ipairs(cfg.windows) do
                 for _, t in ipairs(w.tabs) do
-                    if ImGui.Selectable(w.title .. ' / ' .. t.name .. '##ed_' .. tabKey(w, t), w == win and t == tab) then
+                    local _, pressed = ImGui.Selectable(w.title .. ' / ' .. t.name .. '##ed_' .. tabKey(w, t), w == win and t == tab)
+                    if pressed then
                         ed.winId, ed.tabId = w.id, t.id
                     end
                 end
@@ -3864,23 +3968,29 @@ function drawEditorBody(ed)
             local TIF = ImGuiTabItemFlags or _G.ImGuiTabItemFlags
             local want = ed.page or 'Tab filters'
             local clicked = nil
-            for _, page in ipairs(pages) do
-                local label = page[1]
-                local flags = (label == want and TIF and TIF.SetSelected) or 0
-                local shown
-                if flags ~= 0 then
-                    local ok, a, b = pcall(ImGui.BeginTabItem, label, nil, flags)
-                    if ok then shown = (b == nil) and (a == true) or (b == true) else shown = ImGui.BeginTabItem(label) == true end
-                else
-                    shown = ImGui.BeginTabItem(label) == true
+            -- EndTabBar runs even when a header fails; re-raised below.
+            local okBar, errBar = pcall(function()
+                for _, page in ipairs(pages) do
+                    local label = page[1]
+                    local flags = (label == want and TIF and TIF.SetSelected) or 0
+                    local shown
+                    if flags ~= 0 then
+                        local ok, a, b = pcall(ImGui.BeginTabItem, label, nil, flags)
+                        if ok then shown = (b == nil) and (a == true) or (b == true) else shown = ImGui.BeginTabItem(label) == true end
+                    else
+                        shown = ImGui.BeginTabItem(label) == true
+                    end
+                    if shown then
+                        if ImGui.IsItemClicked and ImGui.IsItemClicked(0) then clicked = label end
+                        guarded('settings ' .. label, page[2])
+                        ImGui.EndTabItem()
+                    elseif ImGui.IsItemClicked and ImGui.IsItemClicked(0) then
+                        clicked = label
+                    end
                 end
-                if ImGui.IsItemClicked and ImGui.IsItemClicked(0) then clicked = label end
-                if shown then
-                    guarded('settings ' .. label, page[2])
-                    ImGui.EndTabItem()
-                end
-            end
+            end)
             ImGui.EndTabBar()
+            if not okBar then error(errBar, 0) end
             if clicked then
                 ed.page = clicked
                 rt.stats.edClicks = (rt.stats.edClicks or 0) + 1
@@ -4470,7 +4580,8 @@ local function drawSendControls(win, tab)
     ImGui.SetNextItemWidth(core.px(88))
     if ImGui.BeginCombo('##tacchatSend_' .. tabKey(win, tab), send.label) then
         for _, s in ipairs(SEND_CHANNELS) do
-            if ImGui.Selectable(s.label, s.id == tab.send) then
+            local _, pressed = ImGui.Selectable(s.label, s.id == tab.send)
+            if pressed then
                 tab.send = s.id
                 markDirty()
             end
@@ -4494,7 +4605,8 @@ local function drawSendControls(win, tab)
         if ImGui.BeginCombo('##tacchatRecent_' .. tabKey(win, tab), '', flags) then
             if #cfg.recentTells == 0 then ImGui.TextDisabled('No tells yet') end
             for i, name in ipairs(cfg.recentTells) do
-                if ImGui.Selectable(name .. '##tacchatRecent_' .. i, name == tab.tellTarget) then
+                local _, pressed = ImGui.Selectable(name .. '##tacchatRecent_' .. i, name == tab.tellTarget)
+                if pressed then
                     tab.tellTarget = name
                     rt.focusRequested = true
                     rt.focusKey = tabKey(win, tab)
@@ -4600,41 +4712,50 @@ local function drawTabContents(win, tab, ti)
     frameRow = (okF and tonumber(frameRow)) or core.px(26)
     local logH = math.max(core.px(40), (tonumber(availH) or 300) - textRow - frameRow - core.px(2))
     local ghostText = G.pushText()   -- a ghost window: the text (console renderer, links) stays while the chrome fades
-    if cfg.renderer ~= 'console' then
-        st.pending = {}
-        st.pendingFirst = 1
-        st.pendingLast = 0
-        drawInlineLog(win, tab, st, logH)
-    elseif w then
-        local n = 0
-        while st.pendingFirst <= st.pendingLast and n < MAX_APPENDS_PER_FRAME do
-            consoleAppend(w, renderLine(st.pending[st.pendingFirst], cfg.timestamps))
-            st.pending[st.pendingFirst] = nil
-            st.pendingFirst = st.pendingFirst + 1
-            n = n + 1
-        end
-        if st.pendingFirst > st.pendingLast then st.pending = {}; st.pendingFirst = 1; st.pendingLast = 0 end
-        if st.forceBottom then
-            pcall(function() w:ScrollToBottom() end)
-            st.forceBottom = false
-        end
-        local okR = pcall(function() w:Render(ImVec2(0, logH)) end)
-        if not okR then pcall(function() w:Render() end) end
-    else
-        if ImGui.BeginChild('##tacchatFallback_' .. tabKey(win, tab), 0, logH, true) then
-            local ring = rt.ring
-            for i = math.max(ring.first, ring.last - 300), ring.last do
-                local e = ring.items[i]
-                if e and tabAccepts(tab, e) then
-                    local r, g, b = rgbOf(channelColor(e.channel))
-                    ImGui.TextColored(r, g, b, 1, (cfg.timestamps and ('[' .. e.hms .. '] ') or '') .. e.text)
-                end
+    -- The pop below runs even when the log fails to draw; the error is
+    -- re-raised afterwards for guarded() to record.
+    local okLog, errLog = pcall(function()
+        if cfg.renderer ~= 'console' then
+            st.pending = {}
+            st.pendingFirst = 1
+            st.pendingLast = 0
+            drawInlineLog(win, tab, st, logH)
+        elseif w then
+            local n = 0
+            while st.pendingFirst <= st.pendingLast and n < MAX_APPENDS_PER_FRAME do
+                consoleAppend(w, renderLine(st.pending[st.pendingFirst], cfg.timestamps))
+                st.pending[st.pendingFirst] = nil
+                st.pendingFirst = st.pendingFirst + 1
+                n = n + 1
             end
-            pcall(ImGui.SetScrollHereY, 1.0)
+            if st.pendingFirst > st.pendingLast then st.pending = {}; st.pendingFirst = 1; st.pendingLast = 0 end
+            if st.forceBottom then
+                pcall(function() w:ScrollToBottom() end)
+                st.forceBottom = false
+            end
+            local okR = pcall(function() w:Render(ImVec2(0, logH)) end)
+            if not okR then pcall(function() w:Render() end) end
+        else
+            local okFb, errFb = true, nil
+            if ImGui.BeginChild('##tacchatFallback_' .. tabKey(win, tab), 0, logH, true) then
+                okFb, errFb = pcall(function()
+                    local ring = rt.ring
+                    for i = math.max(ring.first, ring.last - 300), ring.last do
+                        local e = ring.items[i]
+                        if e and tabAccepts(tab, e) then
+                            local r, g, b = rgbOf(channelColor(e.channel))
+                            ImGui.TextColored(r, g, b, 1, (cfg.timestamps and ('[' .. e.hms .. '] ') or '') .. e.text)
+                        end
+                    end
+                    pcall(ImGui.SetScrollHereY, 1.0)
+                end)
+            end
+            ImGui.EndChild()
+            if not okFb then error(errFb, 0) end
         end
-        ImGui.EndChild()
-    end
+    end)
     G.popFull(ghostText)
+    if not okLog then error(errLog, 0) end
 
     if showNew then
         if ImGui.SmallButton(string.format('v %d new##tacchatNew_%s', st.newBelow, tabKey(win, tab))) then
@@ -4691,30 +4812,41 @@ local function drawPaneTabs(win, pane)
     end
     local want = rt.selectReq and rt.selectReq[win.id]
     local closeTi = nil
-    for ti, tab in ipairs(win.tabs) do
-        if (tab.pane or 1) == pane then
-            local selected = beginTabItem(tabLabel(win, tab, ti), want == tab.id)
-            trace('BeginTabItem %s -> %s', tab.name, tostring(selected))
-            if ImGui.IsItemHovered and ImGui.IsItemHovered() and ImGui.IsMouseClicked then
-                -- Right-click on the tab (selected or not) opens its menu;
-                -- middle-click closes it (a window keeps its last tab; the
-                -- Tells window closes with its last conversation).
-                if ImGui.IsMouseClicked(1) then rt.tabMenuReq = { win = win, ti = ti } end
-                if ImGui.IsMouseClicked(2) then closeTi = ti end
-            end
-            if selected then
-                if not isTabActive(win, ti) then
-                    setActiveTab(win, ti)
-                    markDirty()
+    -- EndTabBar (and each EndTabItem) runs even when something in between
+    -- fails; the error is re-raised afterwards for guarded() to record.
+    local okBar, errBar = pcall(function()
+        for ti, tab in ipairs(win.tabs) do
+            if (tab.pane or 1) == pane then
+                local selected = beginTabItem(tabLabel(win, tab, ti), want == tab.id)
+                trace('BeginTabItem %s -> %s', tab.name, tostring(selected))
+                if selected then
+                    local okItem, errItem = pcall(function()
+                        if ImGui.IsItemHovered and ImGui.IsItemHovered() and ImGui.IsMouseClicked then
+                            if ImGui.IsMouseClicked(1) then rt.tabMenuReq = { win = win, ti = ti } end
+                            if ImGui.IsMouseClicked(2) then closeTi = ti end
+                        end
+                        if not isTabActive(win, ti) then
+                            setActiveTab(win, ti)
+                            markDirty()
+                        end
+                    end)
+                    guarded('tab ' .. tab.name, drawTabContents, win, tab, ti)
+                    ImGui.EndTabItem()
+                    trace('EndTabItem %s', tab.name)
+                    if not okItem then error(errItem, 0) end
+                elseif ImGui.IsItemHovered and ImGui.IsItemHovered() and ImGui.IsMouseClicked then
+                    -- Right-click on the tab (selected or not) opens its menu;
+                    -- middle-click closes it (a window keeps its last tab; the
+                    -- Tells window closes with its last conversation).
+                    if ImGui.IsMouseClicked(1) then rt.tabMenuReq = { win = win, ti = ti } end
+                    if ImGui.IsMouseClicked(2) then closeTi = ti end
                 end
-                guarded('tab ' .. tab.name, drawTabContents, win, tab, ti)
-                ImGui.EndTabItem()
-                trace('EndTabItem %s', tab.name)
             end
         end
-    end
+    end)
     ImGui.EndTabBar()
     trace('EndTabBar pane %d', pane)
+    if not okBar then error(errBar, 0) end
     if closeTi then closeTab(win, closeTi) end
 end
 
@@ -5109,7 +5241,13 @@ function chatCommand(sub, arg1, arg2)
         if what == 'on' then on = true elseif what == 'off' then on = false else on = not cfg.history.on end
         if on ~= cfg.history.on then
             cfg.history.on = on
-            if not on then H.close() end
+            if not on then
+                H.close()
+            elseif not (rt.hist and rt.hist.loaded) then
+                -- Turned on mid-session: read the file first so compaction
+                -- keeps what is already on disk.
+                H.load(true)
+            end
             markDirty()
         end
         print(string.format('\ag[Triune Chat]\ax tells and notifications %s across restarts (%d lines kept in %s).',

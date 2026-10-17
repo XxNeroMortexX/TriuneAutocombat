@@ -5,9 +5,9 @@
   },
   "workspace": {
     "library": [
-      "/home/gennro/Documents/github/mq-definitions",
-      "/home/gennro/.config/Code/User/globalStorage/zenithcodeforge.mq-defs/file-downloader-downloads/macroquest/mq-definitions-master",
-      "/home/gennro/Documents/TriuneAutocombat/.luarc.types"
+      // MQ type definitions (https://github.com/macroquest/mq-definitions)
+      // cloned next to this repo; the mq-defs VS Code extension adds its own copy.
+      "../mq-definitions"
     ]
   },
   "diagnostics": {

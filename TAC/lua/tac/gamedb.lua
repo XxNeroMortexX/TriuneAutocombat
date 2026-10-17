@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/gamedb.lua — Triune Game Database Plugin (items / NPCs / spells)
@@ -712,6 +713,11 @@ function DB.setDir(dir)
     for _, f in pairs(DB.handles) do pcall(function() f:close() end) end
     DB.handles = {}
     DB.loadQueue = {}
+    if DB.loading and DB.loading.file then
+        local lf = DB.loading.file
+        pcall(function() lf:close() end)
+        DB.loading.file = nil
+    end
     DB.loading = nil
     DB.error = nil
     DB.manifest = nil
@@ -908,6 +914,9 @@ local function finishLoad(ix)
     ix.pieces = nil
     ix.loaded = true
     ix.count = ix.n
+    -- cards decoded before this index was in hold placeholder names
+    DB.cards = {}
+    DB.cardsN = 0
 end
 
 -- One slice of index loading; returns true while there is more to do.
@@ -1066,7 +1075,8 @@ function DB.search(kind, query, filter, limit)
         local n = entryAt(ix, s)
         local lineEnd = (starts[n + 1] or (#lower + 2)) - 2
         if accept(n, starts[n], lineEnd, s) then collected = collected + 1 end
-        init = lineEnd + 2
+        -- lineEnd + 1 is the '\n' that the needle for the next name starts with
+        init = lineEnd + 1
         if init > #lower then break end
     end
     -- Pass 2: substring matches anywhere, bounded so a one-letter query
@@ -1614,9 +1624,47 @@ local function resultLabel(kind, ix, n)
     return label
 end
 
+-- Builds the row labels once a search has its final results.
+local function setResultLabels(kind, st)
+    local ix = DB.kinds[kind]
+    local labels = {}
+    if ix and ix.loaded then
+        for i, n in ipairs(st.results) do labels[i] = resultLabel(kind, ix, n) end
+    end
+    st.labels = labels
+end
+
+-- One slice of a sorted, filter-only item listing (see runSearch). The
+-- filter has to see every entry (~150k), so the walk is spread over ticks /
+-- frames instead of stalling one; results land when it is complete.
+local function stepScanJob(kind, budget)
+    local st = S[kind]
+    local job = st.scanJob
+    if not job then return end
+    local ix = DB.kinds[kind]
+    if ix ~= job.ix or not ix.loaded then
+        st.scanJob = nil
+        return
+    end
+    local deadline = os.clock() + (budget or DB.BUDGET_OPEN)
+    local filter, all, last = job.filter, job.all, ix.n
+    local n = job.n
+    while n <= last do
+        if filter(ix, n) then all[#all + 1] = n end
+        n = n + 1
+        if n % 2048 == 0 and os.clock() >= deadline then break end
+    end
+    job.n = n
+    if n <= last then return end
+    st.scanJob = nil
+    st.results, st.total = DB.sortItems(all, job.key, job.top, DB.MAX_RESULTS)
+    setResultLabels(kind, st)
+end
+
 local function runSearch(kind)
     local st = S[kind]
     st.dirty = false
+    st.scanJob = nil
     local filter = nil
     local sortKey = nil
     if kind == 'items' then
@@ -1663,8 +1711,14 @@ local function runSearch(kind)
             end
         end
     end
-    if sortKey then
-        -- sorted: collect every match (a word query is still bounded by
+    if sortKey and filter and (tostring(st.query or ''):gsub('[_%s]', '')) == '' and DB.isLoaded(kind) then
+        -- sorted with no words: every entry goes through the filter, sliced
+        -- (the first slice runs now, so a small index finishes at once)
+        st.scanJob = { ix = DB.kinds[kind], filter = filter, key = sortKey, top = st.topTier, n = 1, all = {} }
+        stepScanJob(kind)
+        return
+    elseif sortKey then
+        -- sorted: collect every match (a word query is bounded by
         -- DB.MAX_SCAN), order by the key and keep the top of the list
         local all = DB.search(kind, st.query, filter, math.huge)
         st.results, st.total = DB.sortItems(all, sortKey, st.topTier, DB.MAX_RESULTS)
@@ -1672,12 +1726,7 @@ local function runSearch(kind)
         st.results = DB.search(kind, st.query, filter, DB.MAX_RESULTS)
         st.total = #st.results
     end
-    local ix = DB.kinds[kind]
-    local labels = {}
-    if ix and ix.loaded then
-        for i, n in ipairs(st.results) do labels[i] = resultLabel(kind, ix, n) end
-    end
-    st.labels = labels
+    setResultLabels(kind, st)
 end
 
 -- Tick side of markDirty: one search per kind once its index is in and
@@ -1688,6 +1737,8 @@ local function runPendingSearches()
         local st = S[kind]
         if st.dirty and DB.isLoaded(kind) and (now - (st.dirtyAt or 0)) >= SEARCH_DEBOUNCE then
             runSearch(kind)
+        elseif st.scanJob then
+            stepScanJob(kind)
         end
     end
 end
@@ -1740,41 +1791,51 @@ end
 
 -- Live spawn -> database NPC id (nil when the NPC index is not loaded or the
 -- spawn is unknown). Hits are cached per spawn id until the zone changes
--- (spawn ids are per zone instance); misses only for a few seconds, and a
--- spawn that could not be read at all (out of range) is not cached.
+-- (spawn ids are per zone instance) together with the spawn's name, which is
+-- re-checked on every lookup so a reused spawn id never inherits the old
+-- NPC; misses only for a few seconds, and a spawn that could not be read at
+-- all (out of range) is not cached.
 local spawnNpcCache = { hits = {}, misses = {}, n = 0 }
 local SPAWN_MISS_TTL = 10.0
 function plugin.npcIdForSpawn(spawnId)
     spawnId = tonumber(spawnId)
     if not spawnId or spawnId <= 0 or not mq then return nil end
-    local hit = spawnNpcCache.hits[spawnId]
-    if hit then return hit end
-    local now = os.clock()
-    local missAt = spawnNpcCache.misses[spawnId]
-    if missAt and (now - missAt) < SPAWN_MISS_TTL then return nil end
-    if not DB.isLoaded('npcs') then
-        -- first lookup starts the (sliced) load
-        DB.ensure('zones')
-        DB.ensure('npcs')
-        return nil
-    end
-    local name, level, zone = nil, 0, ''
+    local name, level = nil, 0
     pcall(function()
         local sp = mq.TLO.Spawn(spawnId)
         if sp and sp() then
             name = sp.CleanName() or sp.Name()
             level = sp.Level() or 0
         end
-        zone = mq.TLO.Zone.ShortName() or ''
     end)
     if not name or name == '' then return nil end
+    local hit = spawnNpcCache.hits[spawnId]
+    if hit then
+        if hit.name == name then return hit.id end
+        spawnNpcCache.hits[spawnId] = nil
+        spawnNpcCache.misses[spawnId] = nil
+    end
+    local now = os.clock()
+    local miss = spawnNpcCache.misses[spawnId]
+    if miss then
+        if miss.name == name and (now - miss.at) < SPAWN_MISS_TTL then return nil end
+        spawnNpcCache.misses[spawnId] = nil
+    end
+    if not DB.isLoaded('npcs') then
+        -- first lookup starts the (sliced) load
+        DB.ensure('zones')
+        DB.ensure('npcs')
+        return nil
+    end
+    local zone = ''
+    pcall(function() zone = mq.TLO.Zone.ShortName() or '' end)
     local id = DB.npcIdFor(name, zone, level)
     if spawnNpcCache.n > 500 then spawnNpcCache = { hits = {}, misses = {}, n = 0 } end
     spawnNpcCache.n = spawnNpcCache.n + 1
     if id then
-        spawnNpcCache.hits[spawnId] = id
+        spawnNpcCache.hits[spawnId] = { id = id, name = name }
     else
-        spawnNpcCache.misses[spawnId] = now
+        spawnNpcCache.misses[spawnId] = { at = now, name = name }
     end
     return id
 end
@@ -2507,12 +2568,26 @@ local function buildItemStats(rec)
     return st
 end
 
+-- Card tables open through these so a draw error inside one (caught by the
+-- popout's pcall) can close what it left open: an unbalanced BeginTable
+-- breaks every window drawn after it.
+local cardTables = 0
+local function beginCardTable(...)
+    if not ImGui.BeginTable(...) then return false end
+    cardTables = cardTables + 1
+    return true
+end
+local function endCardTable()
+    cardTables = cardTables - 1
+    ImGui.EndTable()
+end
+
 local function drawItemStats(st)
     if st.flags then warn(st.flags) end
     for _, l in ipairs(st.lines) do
         if l[1] then labelled(l[1], l[2]) else txt(l[2]) end
     end
-    if ImGui.BeginTable('##itemstats', 6, ImGuiTableFlags.SizingFixedFit) then
+    if beginCardTable('##itemstats', 6, ImGuiTableFlags.SizingFixedFit) then
         local cols = st.cols
         for i = 1, st.maxRows do
             ImGui.TableNextRow()
@@ -2524,7 +2599,7 @@ local function drawItemStats(st)
                 if r then txt(r[2]) end
             end
         end
-        ImGui.EndTable()
+        endCardTable()
     end
     for _, e in ipairs(st.effects) do
         muted(e[1] .. ':')
@@ -2635,7 +2710,7 @@ local function drawItemSources(src)
 
     if #src.drops > 0 then
         header(src.dropsHeader)
-        if ImGui.BeginTable('##drops', 4, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+        if beginCardTable('##drops', 4, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
             ImGui.TableSetupColumn('NPC', ImGuiTableColumnFlags.WidthStretch, 3)
             ImGui.TableSetupColumn('Lvl', ImGuiTableColumnFlags.WidthFixed, core.px(36))
             ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 3)
@@ -2649,13 +2724,13 @@ local function drawItemSources(src)
                 ImGui.TableSetColumnIndex(2); txt(d.zone)
                 ImGui.TableSetColumnIndex(3); txt(d.chance)
             end
-            ImGui.EndTable()
+            endCardTable()
         end
     end
 
     if #src.quests > 0 then
         header('Quests')
-        if ImGui.BeginTable('##quests', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+        if beginCardTable('##quests', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
             ImGui.TableSetupColumn('NPC', ImGuiTableColumnFlags.WidthStretch, 3)
             ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 3)
             ImGui.TableSetupColumn('Role', ImGuiTableColumnFlags.WidthFixed, core.px(70))
@@ -2672,7 +2747,7 @@ local function drawItemSources(src)
                 ImGui.TableSetColumnIndex(2)
                 if q.reward then good('Reward') else warn('Turn-in') end
             end
-            ImGui.EndTable()
+            endCardTable()
         end
     end
 
@@ -2699,7 +2774,7 @@ local function drawItemSources(src)
 
     if #src.usedin > 0 then
         header(src.usedinHeader)
-        if ImGui.BeginTable('##usedin', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+        if beginCardTable('##usedin', 3, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
             ImGui.TableSetupColumn('Result', ImGuiTableColumnFlags.WidthStretch, 4)
             ImGui.TableSetupColumn('Tradeskill', ImGuiTableColumnFlags.WidthStretch, 2)
             ImGui.TableSetupColumn('Trivial', ImGuiTableColumnFlags.WidthFixed, core.px(50))
@@ -2715,7 +2790,7 @@ local function drawItemSources(src)
                 ImGui.TableSetColumnIndex(1); txt(u.skill)
                 ImGui.TableSetColumnIndex(2); txt(u.trivial)
             end
-            ImGui.EndTable()
+            endCardTable()
         end
     end
 
@@ -2971,8 +3046,13 @@ local function cardFor(kind, id, tier)
         card.rec = DB.spellRecord(id)
         if card.rec then card.spell = buildSpellCard(id, card.rec) end
     end
-    DB.cards[key] = card
-    DB.cardsN = DB.cardsN + 1
+    -- Only keep a complete card: a missing record (index not in yet) or one
+    -- built while other indexes load (cross-referenced names would stay
+    -- "Item 123" placeholders) is rebuilt next frame; finishLoad drops the rest.
+    if card.rec and not DB.loading and #DB.loadQueue == 0 then
+        DB.cards[key] = card
+        DB.cardsN = DB.cardsN + 1
+    end
     return card
 end
 
@@ -3063,7 +3143,7 @@ local function drawNpcCardFor(st)
     drawLinkButton('npcs', id, st.key or 'main')
     ImGui.Separator()
 
-    if ImGui.BeginTable('##npcstats', 6, ImGuiTableFlags.SizingFixedFit) then
+    if beginCardTable('##npcstats', 6, ImGuiTableFlags.SizingFixedFit) then
         local cols = c.cols
         for i = 1, c.maxRows do
             ImGui.TableNextRow()
@@ -3075,7 +3155,7 @@ local function drawNpcCardFor(st)
                 if r then txt(r[2]) end
             end
         end
-        ImGui.EndTable()
+        endCardTable()
     end
 
     if c.abilities then
@@ -3093,7 +3173,7 @@ local function drawNpcCardFor(st)
     header(c.spawnsHeader)
     if #c.spawns == 0 then
         muted('No spawn point (summoned, pet, or scripted).')
-    elseif ImGui.BeginTable('##spawns', 5, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+    elseif beginCardTable('##spawns', 5, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
         local map = mapPlugin()
         ImGui.TableSetupColumn('Zone', ImGuiTableColumnFlags.WidthStretch, 4)
         ImGui.TableSetupColumn('Points', ImGuiTableColumnFlags.WidthFixed, core.px(50))
@@ -3115,12 +3195,12 @@ local function drawNpcCardFor(st)
                 ImGui.PopID()
             end
         end
-        ImGui.EndTable()
+        endCardTable()
     end
 
     if #c.drops > 0 then
         header(c.dropsHeader)
-        if ImGui.BeginTable('##npcdrops', 2, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
+        if beginCardTable('##npcdrops', 2, ImGuiTableFlags.RowBg + ImGuiTableFlags.SizingStretchProp) then
             ImGui.TableSetupColumn('Item', ImGuiTableColumnFlags.WidthStretch, 5)
             ImGui.TableSetupColumn('Chance', ImGuiTableColumnFlags.WidthFixed, core.px(60))
             ImGui.TableHeadersRow()
@@ -3130,7 +3210,7 @@ local function drawNpcCardFor(st)
                 if link(d.name, 'nd' .. i) then showEntry('items', d.id) end
                 ImGui.TableSetColumnIndex(1); txt(d.chance)
             end
-            ImGui.EndTable()
+            endCardTable()
         end
     end
 
@@ -3218,7 +3298,7 @@ local function drawSpellCardFor(st)
     drawLinkButton('spells', id, st.key or 'main')
     ImGui.Separator()
 
-    if ImGui.BeginTable('##spellstats', 4, ImGuiTableFlags.SizingFixedFit) then
+    if beginCardTable('##spellstats', 4, ImGuiTableFlags.SizingFixedFit) then
         local rows = c.rows
         for i = 1, c.maxRows do
             ImGui.TableNextRow()
@@ -3230,7 +3310,7 @@ local function drawSpellCardFor(st)
                 if r then txt(r[2]) end
             end
         end
-        ImGui.EndTable()
+        endCardTable()
     end
     if c.teleport then labelled('Teleports to', c.teleport) end
     if c.flags then muted(c.flags) end
@@ -3320,16 +3400,31 @@ local function drawPopouts()
     end
     core.pushTheme()
     S.linkOpensWindow = true
-    local i = 1
-    while i <= #S.popouts do
-        local pop = S.popouts[i]
-        local remove = false
+    -- Cards opened before their index was in resolve first: openPopout may
+    -- evict the oldest card or append one, so it never runs inside the draw
+    -- loop below, and the placeholder is dropped by identity, not position.
+    local pendings = nil
+    for _, pop in ipairs(S.popouts) do
         if pop.pending and DB.isLoaded(pop.kind) then
-            local resolved = openPopout(pop.kind, pop.pending)
-            pop.pending = nil
-            if resolved ~= pop then remove = true end
+            pendings = pendings or {}
+            pendings[#pendings + 1] = pop
         end
-        if not remove then
+    end
+    for _, pop in ipairs(pendings or {}) do
+        local resolved = openPopout(pop.kind, pop.pending)
+        pop.pending = nil
+        if resolved ~= pop then
+            for j = #S.popouts, 1, -1 do
+                if S.popouts[j] == pop then table.remove(S.popouts, j) end
+            end
+        end
+    end
+    -- draw from a snapshot; closed cards are removed after the loop
+    local list, closed = {}, nil
+    for k = 1, #S.popouts do list[k] = S.popouts[k] end
+    for _, pop in ipairs(list) do
+        local remove = false
+        do
             local title = popoutTitle(pop)
             ImGui.SetNextWindowSize(core.px(430), core.px(480), ImGuiCond.FirstUseEver)
             if pop.focus then
@@ -3347,15 +3442,28 @@ local function drawPopouts()
                 if pop.pending then
                     muted('Loading the ' .. pop.kind .. ' index...')
                 else
+                    cardTables = 0
                     local ok, err = pcall(drawPopoutBody, pop)
-                    if not ok then warn('Card error: ' .. tostring(err)) end
+                    if not ok then
+                        while cardTables > 0 do endCardTable() end
+                        warn('Card error: ' .. tostring(err))
+                    end
+                    cardTables = 0
                 end
             end
             if core.preEndWindow then core.preEndWindow('gamedb_pop', false, { name = 'Database cards', close = false }) end
             ImGui.End()
             if core.postEndWindow then core.postEndWindow('gamedb_pop') end
         end
-        if remove then table.remove(S.popouts, i) else i = i + 1 end
+        if remove then
+            closed = closed or {}
+            closed[pop] = true
+        end
+    end
+    if closed then
+        for j = #S.popouts, 1, -1 do
+            if closed[S.popouts[j]] then table.remove(S.popouts, j) end
+        end
     end
     S.linkOpensWindow = false
     core.popTheme()
@@ -3381,7 +3489,7 @@ local function drawResults(kind, height)
     end
     local results = st.results
     local labels = st.labels or {}
-    if st.dirty then
+    if st.dirty or st.scanJob then
         muted('Searching...')
     else
         local total = st.total or #results
@@ -3421,7 +3529,7 @@ local function drawResults(kind, height)
         else
             for i, n in ipairs(results) do drawRow(i, n) end
         end
-        if #results == 0 and st.query ~= '' and not st.dirty then muted('No matches.') end
+        if #results == 0 and st.query ~= '' and not st.dirty and not st.scanJob then muted('No matches.') end
     end
     ImGui.EndChild()
 end
@@ -3959,6 +4067,10 @@ function plugin.onDrawUI()
     if not core then return end
     refresh()
     stepLoading()
+    -- sorted filter-only listings advance per frame too (see stepScanJob)
+    for _, kind in ipairs(KINDS) do
+        if S[kind].scanJob then stepScanJob(kind) end
+    end
     watchSpellWindow()
     drawWindow()
     drawPopouts()
@@ -4005,7 +4117,7 @@ function plugin.onDrawSettings()
         S.spellWindow = sw
         core.saveLoadout(true)
     end
-    core.setTooltip('Right-clicking a spell gem, a buff or a spellbook page normally opens EverQuest\'s Spell Display window.\nWith this on, that window is closed as it opens and a Triune spell card (effects, costs, scroll sources, who casts it) takes its place.\nSpells the database does not know keep the game window. Also /ac spellwindow.')
+    if ImGui.IsItemHovered() then core.setTooltip('Right-clicking a spell gem, a buff or a spellbook page normally opens EverQuest\'s Spell Display window.\nWith this on, that window is closed as it opens and a Triune spell card (effects, costs, scroll sources, who casts it) takes its place.\nSpells the database does not know keep the game window. Also /ac spellwindow.') end
     local m = DB.readManifest()
     if m.present then
         ImGui.TextDisabled(string.format('Data built %s: %s items, %s NPCs, %s spells (%s)', m.built or '?', m.item_index or '?', m.npcs or '?', m.spells or '?', m.source or ''))

@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/auto_aa.lua — Triune Auto AA Plugin
@@ -77,6 +78,7 @@ local function resetState()
     AA.lastCharLevel = nil
     AA.specialTabAAs = nil
     AA.specialTabReadDone = false
+    AA.specialTabReadAt = nil       -- os.clock() when the deferred Special-tab read is due
     AA.pendingReadSpecialTab = false
     AA.pendingAATrain = nil
     AA.scanRequestAt = nil          -- os.clock() when the next deferred scan is due (nil = none)
@@ -84,6 +86,7 @@ local function resetState()
     AA.scanCtx = nil                -- per-scan TLO lookup caches (see scanPlayerAAs)
     AA.trainBackoff = {}            -- AA name -> os.clock() until which it is not retried
     AA.trainFailLogged = {}         -- AA name -> true once the failure was reported
+    AA.skipInfo = {}                -- AA name -> { why, rowCost } while a window-row skip holds it back
     AA.rowCost = {}                 -- AA name -> { rank, cost } last read off its AA-window row
     AA.prioStatus = {}              -- AA name -> latest priority verdict (/ac aastatus)
     AA.capHoldLogged = nil
@@ -100,6 +103,7 @@ AA.DEFAULT_THRESHOLD = 25
 AA.MIN_THRESHOLD = 1
 AA.TRAIN_FAIL_BACKOFF = 300.0     -- seconds before an AA whose purchase did not land is retried
 AA.SCAN_MIN_INTERVAL = 10.0       -- unforced scans are skipped inside this window
+AA.WINDOW_FAIL_BACKOFF = 120.0    -- seconds before an AA whose window could not be opened is retried
 
 function AA.threshold()
     return math.max(AA.MIN_THRESHOLD, tonumber(ctrl.auto_spend_aa_threshold) or AA.DEFAULT_THRESHOLD)
@@ -1412,16 +1416,27 @@ function AA.readSpecialTabOnce(force)
                 if sub and sub.SetCurrentTab then sub.SetCurrentTab(4) end
             end
         end)
-        mq.delay(50)
-        names = AA.readSpecialTabNamesFromUI()
-        if names and #names > 0 then
-            AA.specialTabAAs = names
-            AA.specialTabReadDone = true
-            print(string.format('\ag[Triune]\ax Read %d abilities from AA Special tab.', #names))
-        end
+        -- No mq.delay on the tick: the tab switch lands on a later pulse, so
+        -- AA.tick reads the tab through AA.finishSpecialTabRead.
+        AA.specialTabReadAt = os.clock() + 0.05
     end
 
     return AA.specialTabAAs or {}
+end
+
+-- Second half of AA.readSpecialTabOnce: read the Special tab once the
+-- tabselect it issued has been processed (a later tick).
+function AA.finishSpecialTabRead()
+    if not AA.specialTabReadAt or os.clock() < AA.specialTabReadAt then return end
+    AA.specialTabReadAt = nil
+    if not AA.isAAWindowOpen() then return end
+    local names = AA.readSpecialTabNamesFromUI()
+    if names and #names > 0 then
+        AA.specialTabAAs = names
+        AA.specialTabReadDone = true
+        print(string.format('\ag[Triune]\ax Read %d abilities from AA Special tab.', #names))
+        AA.requestScan(0)
+    end
 end
 
 -- Full rescan: ~1,640 AltAbility ids by index plus name lookups for every
@@ -1646,8 +1661,11 @@ end
 -- Edited By: NeroMorte - Display the configured purchase sequence.
 function AA.getFilteredSortedAAs()
     if not AA.scannedAAs or #AA.scannedAAs == 0 then
-        -- Runs from the window (draw thread): only ask for a scan.
-        AA.requestScan(0)
+        -- Runs from the window (draw thread): only ask for a scan, and at most
+        -- once per SCAN_MIN_INTERVAL (an empty scan must not rescan every frame).
+        if AA.scanRequestAt == nil and (not AA.lastAAScanAt or (os.clock() - AA.lastAAScanAt) >= AA.SCAN_MIN_INTERVAL) then
+            AA.requestScan(0)
+        end
         return AA.filteredSortedAAs or {}
     end
 
@@ -2211,6 +2229,7 @@ function AA.processAATrainWorkflow()
             end
             AA.trainBackoff[task.name] = nil
             AA.trainFailLogged[task.name] = nil
+            AA.skipInfo[task.name] = nil
             -- One deferred scan once the client has the new rank (the
             -- purchase event and the AAPointsSpent change fold into it).
             AA.requestScan(1.2)
@@ -2218,8 +2237,13 @@ function AA.processAATrainWorkflow()
             core.saveLoadout(true)
         elseif task.skipped then
             -- The window showed the line maxed or priced above the pool:
-            -- nothing was clicked, so no backoff - the spender re-evaluates
-            -- with the refreshed cost. Logged once per price.
+            -- nothing was clicked. Hold the AA back so a stale client value
+            -- cannot re-open the window every pass: a 'points' skip is
+            -- released as soon as the pool reaches the row's price (see
+            -- checkAutoSpendAA), a 'trained' skip waits TRAIN_FAIL_BACKOFF.
+            -- Logged once per price.
+            AA.skipInfo[task.name] = { why = task.skipped, rowCost = task.rowCost }
+            AA.trainBackoff[task.name] = now + AA.TRAIN_FAIL_BACKOFF
             local key = task.name .. ':' .. task.skipped .. ':' .. tostring(task.rowCost or 0)
             if AA.skipLogged ~= key then
                 AA.skipLogged = key
@@ -2232,7 +2256,9 @@ function AA.processAATrainWorkflow()
             end
             AA.requestScan(1.0)
         elseif task.failed == 'window' then
-            -- could not even open the window: the 30 s per-AA spacing applies
+            -- could not even open the window: back off (shorter than a
+            -- failed Train) instead of retrying every 30 s
+            AA.trainBackoff[task.name] = now + AA.WINDOW_FAIL_BACKOFF
             AA.aaFilterDirty = true
         else
             -- Clicked (or could not find) the row and no points were spent:
@@ -2287,6 +2313,7 @@ function AA.checkAutoSpendAA(allowStop)
         AA.lastAATrainAttempt = {}
         AA.trainBackoff = {}
         AA.trainFailLogged = {}
+        AA.skipInfo = {}
     end
     if myLevel > 0 then AA.lastCharLevel = myLevel end
 
@@ -2298,11 +2325,22 @@ function AA.checkAutoSpendAA(allowStop)
     -- Edited By: NeroMorte - Allow bank 1 through the early gate; candidate cost and configured bank still apply.
     if unspent < 1 then return false end
 
-    -- Clear train attempt cooldowns if unspent points changed (e.g. gained points or purchased)
+    -- Clear train attempt cooldowns if unspent points changed (e.g. gained
+    -- points or purchased), except for AAs held back by a window-row skip.
+    AA.skipInfo = AA.skipInfo or {}
     if AA.lastObservedAutoSpendPts and unspent ~= AA.lastObservedAutoSpendPts then
-        AA.lastAATrainAttempt = {}
+        local keep = {}
+        for nm in pairs(AA.skipInfo) do keep[nm] = AA.lastAATrainAttempt and AA.lastAATrainAttempt[nm] end
+        AA.lastAATrainAttempt = keep
     end
     AA.lastObservedAutoSpendPts = unspent
+    -- A 'points' skip lifts once the pool covers the price the row showed.
+    for nm, sk in pairs(AA.skipInfo) do
+        if sk.why == 'points' and unspent >= (tonumber(sk.rowCost) or 0) then
+            AA.skipInfo[nm] = nil
+            AA.trainBackoff[nm] = nil
+        end
+    end
 
     -- 1. Prioritized AAs. Every enabled priority is classified each pass:
     -- purchasable now (a candidate), or not yet (waiting or blocked). While
@@ -2368,11 +2406,15 @@ function AA.checkAutoSpendAA(allowStop)
 
     -- 2. Fallback: Cap threshold spender (Fireworks or the configured ability)
     local threshold = AA.threshold()
-    local cost = tonumber(ctrl.auto_spend_aa_cost) or 25
     local effectiveName = ctrl.auto_spend_aa_name or 'Alternately Advanced Fireworks'
     -- Edited By: NeroMorte - Apply ignore and repeatable purchase limits to the cap spender.
     if AA.isIgnored(effectiveName) then return false end
     if AA.repeatableLimitReached(effectiveName) then return false end
+    -- Live-first price of the cap spender's next rank (Special-tab abilities
+    -- report the configured per-rank cost); a maxed line is never clicked.
+    local capInfo = AA.purchaseInfo(effectiveName)
+    local cost = tonumber(capInfo.cost) or 0
+    if cost <= 0 then cost = tonumber(ctrl.auto_spend_aa_cost) or 25 end
     local isSpecialCap = (AA.isSpecialTabAA and AA.isSpecialTabAA(effectiveName)) or effectiveName:lower():find('firework')
 
     local lastCapAttempt = (AA.lastAATrainAttempt and AA.lastAATrainAttempt[effectiveName]) or -AA.PRIORITY_SPACING
@@ -2398,6 +2440,7 @@ function AA.checkAutoSpendAA(allowStop)
         return false
     end
     AA.capHoldLogged = nil
+    if capInfo.fullyTrained or (not capInfo.isSpecial and capInfo.invalid) or cost > unspent then return false end
 
     if unspent >= effectiveThreshold and (now - lastCapAttempt) >= 30.0 and now >= capBackoff then
         -- Movement check: if moving and allowStop is true, cleanly stop movement before purchasing
@@ -2439,6 +2482,7 @@ function AA.manualSpendAA(targetName)
         if AA.lastAATrainAttempt then AA.lastAATrainAttempt[targetName] = nil end
         AA.trainBackoff[targetName] = nil
         AA.trainFailLogged[targetName] = nil
+        if AA.skipInfo then AA.skipInfo[targetName] = nil end
         return AA.startAATrainWorkflow(targetName)
     end
 
@@ -2446,6 +2490,7 @@ function AA.manualSpendAA(targetName)
     AA.lastAATrainAttempt = {}
     AA.trainBackoff = {}
     AA.trainFailLogged = {}
+    AA.skipInfo = {}
     local unspent = 0
     pcall(function()
         local raw = mq.TLO.Me.AAPoints()
@@ -3338,6 +3383,7 @@ function AA.tick()
     if AA.pendingAATrain and AA.processAATrainWorkflow then
         AA.processAATrainWorkflow()
     end
+    if AA.specialTabReadAt then AA.finishSpecialTabRead() end
     if AA.pendingPostTrainScanAt and os.clock() >= AA.pendingPostTrainScanAt then
         AA.pendingPostTrainScanAt = nil
         AA.requestScan(0)
@@ -3452,9 +3498,15 @@ function AA.onCommand(cmd, args)
         AA.specialTabReadDone = false
         AA.pendingReadSpecialTab = true
         if AA.scanPlayerAAs then
-            AA.scanPlayerAAs(true)
-            local count = AA.scannedAAs and #AA.scannedAAs or 0
-            print(string.format('\ag[Triune]\ax Scanned character Alternate Advancements: %d abilities found.', count))
+            local ok, err = pcall(AA.scanPlayerAAs, true)
+            AA.scanning = false
+            AA.scanCtx = nil
+            if ok then
+                local count = AA.scannedAAs and #AA.scannedAAs or 0
+                print(string.format('\ag[Triune]\ax Scanned character Alternate Advancements: %d abilities found.', count))
+            else
+                print(string.format('\ar[Triune]\ax AA scan failed: %s', tostring(err)))
+            end
         end
     elseif cmd == 'aastatus' or cmd == 'aawhy' then
         AA.printPriorityStatus()

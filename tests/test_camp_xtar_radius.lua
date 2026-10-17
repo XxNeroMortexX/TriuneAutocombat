@@ -48,7 +48,7 @@ local env = setmetatable({ runtime = runtime, ctrl = ctrl, mq = mq, pursuit = {}
     navLoaded = function() return false end, stopMoving = function() stopped = stopped + 1 end,
     distToId = function(id) return spawn(id).Distance3D() end,
 }, { __index = _G })
-compile(helper('campXtargetInRadius') .. '\n' .. helper('ownsPullXtarget'), env)
+compile(helper('huntXtarMaxDist') .. '\n' .. helper('campXtargetInRadius') .. '\n' .. helper('ownsPullXtarget'), env)
 env.xtSlotCounts = compile(assert(source:match('(local function xtSlotCounts.-\nend)')) .. '\nreturn xtSlotCounts', env)
 compile(helper('findFirstNPCXtarget') .. '\n' .. helper('xtSnapshot') .. '\n' .. helper('findRoamTarget'), env)
 assert(runtime.campXtargetInRadius(1) == true and runtime.campXtargetInRadius(3) == false)

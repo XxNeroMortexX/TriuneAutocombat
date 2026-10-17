@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/hud_cooldowns.lua — Triune Cooldown & Ability Monitor Plugin
@@ -48,6 +49,12 @@ local M = { cooldownSearch = '' }
 local REFRESH_INTERVAL = 0.25
 local lastRefreshAt = 0
 local cache = { items = {}, gen = 0 }
+-- Clicky state per item name: { at, ready, readyAt }. FindItem / ItemReady walk
+-- the inventory, so they are re-read every CLICKY_TTL seconds (longer for
+-- items that are not on the character) instead of every refresh; the
+-- countdown in between runs off readyAt.
+local CLICKY_TTL, CLICKY_MISSING_TTL = 1.0, 3.0
+local clickyCache = {}
 -- Filtered + sorted view of cache.items; rebuilt only when the underlying
 -- list (gen), the filter settings, the sort mode, or the search text change.
 local view = { items = {}, gen = -1, cat = nil, status = nil, sort = nil, search = nil }
@@ -113,6 +120,7 @@ function plugin.onInit(coreApi)
 end
 
 function plugin.onDestroy()
+    clickyCache = {}
 end
 
 function M.getTrackedCooldownItems()
@@ -242,7 +250,8 @@ function M.getTrackedCooldownItems()
                     priority = entry.priority or 50,
                     burn_only = entry.burn_only or false,
                     conditionText = condText,
-                    use = function() rt.fireSkill(nm, entry) end,
+                    skillEntry = entry,
+                    useKind = 'skill',
                 })
             end
         end
@@ -409,11 +418,12 @@ function M.getTrackedCooldownItems()
                     reason = reason,
                     priority = 45,
                     burn_only = entry.burn_only or false,
+                    boss_only = entry.boss_only or false,
                     autoskill = false,
                     min_xtar = minXt,
                     entry = entry,
                     conditionText = condText,
-                    use = function() rt.fireAA(nm, entry, currentTargetOrSelf()) end,
+                    useKind = 'aa',
                 })
             end
         end
@@ -578,7 +588,7 @@ function M.getTrackedCooldownItems()
                     min_xtar = minXt,
                     entry = entry,
                     conditionText = condText,
-                    use = function() rt.fireDisc(nm, entry, currentTargetOrSelf()) end,
+                    useKind = 'disc',
                 })
             end
         end
@@ -620,11 +630,13 @@ function M.getTrackedCooldownItems()
                     reason = '',
                     priority = i * 10,
                     burn_only = g.burn_only or false,
+                    boss_only = g.boss_only or false,
                     autoskill = false,
                     min_xtar = 1,
                     entry = g,
                     conditionText = condText,
-                    use = function() rt.castGem(slot, g) end,
+                    gemSlot = slot,
+                    useKind = 'gem',
                 })
             end
         end
@@ -634,22 +646,28 @@ function M.getTrackedCooldownItems()
     if core.loadout and core.loadout.clickies and (ctrl.cooldown_category == 'Items' or ctrl.cooldown_category == 'All') then
         for _, c in ipairs(core.loadout.clickies) do
             if c and c.enabled and c.name and c.name ~= '' then
-                local isReady = false
-                local timerSec = 0
-                pcall(function()
-                    isReady = mq.TLO.Me.ItemReady(c.name)() or false
-                    local itm = mq.TLO.FindItem(c.name)
-                    if itm and itm() then
+                local cc = clickyCache[c.name]
+                if not cc or (now - cc.at) >= (cc.found and CLICKY_TTL or CLICKY_MISSING_TTL) then
+                    local rdy, tSec, found = false, 0, false
+                    pcall(function()
+                        local itm = mq.TLO.FindItem(c.name)
+                        if not (itm and itm()) then return end
+                        found = true
+                        rdy = mq.TLO.Me.ItemReady(c.name)() or false
                         if itm.TimerReady then
                             local tr = itm.TimerReady()
                             if type(tr) == 'number' and tr > 0 then
-                                timerSec = tr > 1800 and (tr / 1000.0) or tr
+                                tSec = tr > 1800 and (tr / 1000.0) or tr
                             end
                         elseif itm.Timer and itm.Timer() then
-                            timerSec = core.parseDurationSec(itm.Timer)
+                            tSec = core.parseDurationSec(itm.Timer)
                         end
-                    end
-                end)
+                    end)
+                    cc = { at = now, found = found, ready = rdy, readyAt = (tSec > 0) and (now + tSec) or nil }
+                    clickyCache[c.name] = cc
+                end
+                local timerSec = cc.readyAt and math.max(0, cc.readyAt - now) or 0
+                local isReady = cc.ready or (cc.found and cc.readyAt ~= nil and timerSec <= 0)
                 local condText = string.format('%s (%s %d%%)', c.target or 'Myself', c.when or 'in combat', tonumber(c.pct) or 100)
                 table.insert(items, {
                     kind = 'Item',
@@ -672,7 +690,7 @@ function M.getTrackedCooldownItems()
                     min_xtar = 1,
                     entry = c,
                     conditionText = condText,
-                    use = function() rt.useClickie(c) end,
+                    useKind = 'item',
                 })
             end
         end
@@ -704,7 +722,12 @@ local function invalidateItems()
     lastRefreshAt = 0
 end
 
--- Sort comparator for the filtered view (no allocations per compare).
+-- Remaining time quantized to 0.1 s: an exact key (unlike an epsilon
+-- compare, which is not transitive and can upset table.sort).
+local function tenths(t) return math.floor((t or 0) * 10) end
+
+-- Sort comparator for the filtered view (no allocations per compare). Every
+-- branch ends in a name tie-break so the order is strict and stable.
 local function makeSorter(sortKey)
     return function(a, b)
         if sortKey == 'time' then
@@ -713,7 +736,9 @@ local function makeSorter(sortKey)
                 return a.active
             end
             if a.active and b.active then
-                return (a.activeSec or 0) < (b.activeSec or 0)
+                local ta, tb = tenths(a.activeSec), tenths(b.activeSec)
+                if ta ~= tb then return ta < tb end
+                return (a.name or '') < (b.name or '')
             end
 
             -- 2. Items on Cooldown NEXT at the top of the list
@@ -725,10 +750,12 @@ local function makeSorter(sortKey)
 
             -- Both are on cooldown: sort by time remaining ascending (soonest to become ready first)
             if aInCd and bInCd then
-                if math.abs((a.timeLeft or 0) - (b.timeLeft or 0)) > 0.05 then
-                    return (a.timeLeft or 0) < (b.timeLeft or 0)
+                local ta, tb = tenths(a.timeLeft), tenths(b.timeLeft)
+                if ta ~= tb then return ta < tb end
+                if (a.priority or 50) ~= (b.priority or 50) then
+                    return (a.priority or 50) < (b.priority or 50)
                 end
-                return (a.priority or 50) < (b.priority or 50)
+                return (a.name or '') < (b.name or '')
             end
 
             -- 3. Both are Ready: sort by priority ascending (pri 1 before pri 50)
@@ -740,9 +767,14 @@ local function makeSorter(sortKey)
             local rA = STATUS_RANK[a.status] or 11
             local rB = STATUS_RANK[b.status] or 11
             if rA ~= rB then return rA < rB end
-            return (a.timeLeft or 0) < (b.timeLeft or 0)
+            local ta, tb = tenths(a.timeLeft), tenths(b.timeLeft)
+            if ta ~= tb then return ta < tb end
+            return (a.name or '') < (b.name or '')
         elseif sortKey == 'priority' then
-            return (a.priority or 50) < (b.priority or 50)
+            if (a.priority or 50) ~= (b.priority or 50) then
+                return (a.priority or 50) < (b.priority or 50)
+            end
+            return (a.name or '') < (b.name or '')
         elseif sortKey == 'class' then
             if (a.cls or '') ~= (b.cls or '') then return (a.cls or '') < (b.cls or '') end
             return (a.name or '') < (b.name or '')
@@ -844,10 +876,22 @@ end
 -- Queue an item's fire closure onto the main loop. Every use closure ends in
 -- runtime.fire* / castGem / useClickie, which mq.delay -- never run those from
 -- the render thread.
+-- Items carry a useKind (no closure per item per refresh); the closure is
+-- only built when a row is actually clicked.
+local function runUse(itm)
+    local k = itm.useKind
+    if k == 'skill' then rt.fireSkill(itm.name, itm.skillEntry)
+    elseif k == 'aa' then rt.fireAA(itm.name, itm.entry, currentTargetOrSelf())
+    elseif k == 'disc' then rt.fireDisc(itm.name, itm.entry, currentTargetOrSelf())
+    elseif k == 'gem' then rt.castGem(itm.gemSlot, itm.entry)
+    elseif k == 'item' then rt.useClickie(itm.entry)
+    end
+end
+
 local function deferUse(itm)
-    if not itm or not itm.use then return end
+    if not itm or not itm.useKind then return end
     if core.defer then
-        core.defer('cooldown use ' .. tostring(itm.name), itm.use)
+        core.defer('cooldown use ' .. tostring(itm.name), function() runUse(itm) end)
     else
         print(string.format('\ar[Triune]\ax Cooldown Monitor: core.defer unavailable; cannot fire %s from the HUD.', tostring(itm.name)))
     end

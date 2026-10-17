@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/buffbot.lua — Triune Buffbot Plugin
@@ -129,8 +130,28 @@ local function logMsg(msg, isWarn, isErr)
     if #rt.log > 100 then table.remove(rt.log) end
 end
 
+local TELL_QUEUE_PER_TARGET = 6     -- queued tells kept per recipient
+local TELL_QUEUE_MAX        = 50    -- queued tells kept overall
+
 local function queueTell(target, msg)
     if not target or target == '' or not msg or msg == '' then return end
+    -- Bounded queue: a spammer (or many) must not build an endless backlog.
+    -- Over the per-target cap the oldest tell for that target is dropped;
+    -- over the global cap the oldest tell overall is dropped.
+    local key = target:lower()
+    local count, oldestIdx = 0, nil
+    for i, t in ipairs(rt.outgoingTells) do
+        if t.target:lower() == key then
+            count = count + 1
+            oldestIdx = oldestIdx or i
+        end
+    end
+    if count >= TELL_QUEUE_PER_TARGET and oldestIdx then
+        table.remove(rt.outgoingTells, oldestIdx)
+    end
+    while #rt.outgoingTells >= TELL_QUEUE_MAX do
+        table.remove(rt.outgoingTells, 1)
+    end
     table.insert(rt.outgoingTells, { target = target, msg = msg })
 end
 
@@ -481,20 +502,31 @@ local function isSameGuild(spawn)
     return myGuild:lower() == theirGuild:lower()
 end
 
+-- PC spawn by exact name: 'pc =Name' first; the 'pc Name' fallback is a
+-- substring search, so it only counts on an exact CleanName match ("Bob"
+-- must never resolve to "Bobbette"). nil when not found.
+local function findPcSpawnExact(name)
+    if not name or name == '' then return nil end
+    local sp = nil
+    pcall(function() sp = mq.TLO.Spawn(string.format('pc =%s', name)) end)
+    local valid = false
+    pcall(function() valid = (sp and sp() and (sp.ID() or 0) > 0) and true or false end)
+    if valid then return sp end
+    local fb = nil
+    pcall(function() fb = mq.TLO.Spawn(string.format('pc %s', name)) end)
+    local fbName = nil
+    pcall(function() fbName = fb and fb() and fb.CleanName() or nil end)
+    if type(fbName) == 'string' and fbName:lower() == tostring(name):lower() then
+        return fb
+    end
+    return nil
+end
+
 local function isPlayerSameGuild(nameOrSpawn)
     if not nameOrSpawn then return false end
     if type(nameOrSpawn) == 'string' then
-        local sp = nil
-        pcall(function() sp = mq.TLO.Spawn(string.format('pc =%s', nameOrSpawn)) end)
-        local valid = false
-        pcall(function()
-            if sp and sp() and (sp.ID() or 0) > 0 then
-                valid = true
-            end
-        end)
-        if not valid then
-            pcall(function() sp = mq.TLO.Spawn(string.format('pc %s', nameOrSpawn)) end)
-        end
+        local sp = findPcSpawnExact(nameOrSpawn)
+        if not sp then return false end
         return isSameGuild(sp)
     else
         return isSameGuild(nameOrSpawn)
@@ -777,7 +809,11 @@ end
 -- ============================================================================
 -- Interactive Tell Event Handler
 -- ============================================================================
-local lastTellBySender = {} -- cleanSender -> { msg = str, time = ms }
+local lastTellBySender = {} -- cleanSender -> { msg = str, time = ms (mq.gettime), wall = os.time() }
+local banNoticeAt = {}      -- lower(sender) -> os.time() of the last ban notice
+local thanksReplyAt = {}    -- lower(sender) -> os.time() of the last "You're welcome!"
+local BAN_NOTICE_SEC = 600  -- one ban notice per sender per 10 minutes
+local THANKS_REPLY_SEC = 300 -- one thank-you reply per sender per 5 minutes
 
 local function isThankYou(msg)
     if not msg or msg == '' then return false end
@@ -875,12 +911,13 @@ local function onTellReceived(line, sender, msg)
 
     -- Check if sender is in player ignore list
     if isPlayerIgnored(cleanSender) then
+        -- One ban notice per sender per BAN_NOTICE_SEC; the rest are silent.
         local now = os.time()
-        local cd = rt.cooldowns[cleanSender:lower()]
-        if cd and (now - cd) < cfg.cooldownSec then
+        local last = banNoticeAt[cleanSender:lower()]
+        if last and (now - last) < BAN_NOTICE_SEC then
             return
         end
-        rt.cooldowns[cleanSender:lower()] = now
+        banNoticeAt[cleanSender:lower()] = now
 
         local banMsg = (cfg.banMsg and cfg.banMsg ~= '') and cfg.banMsg or "You are banned from getting buffs."
         queueTell(cleanSender, banMsg)
@@ -902,18 +939,12 @@ local function onTellReceived(line, sender, msg)
     if prev and (nowMs - prev.time) < 1000 and prev.msg == cleanMsg then
         return -- Skip duplicate event trigger on same message
     end
-    lastTellBySender[cleanSender:lower()] = { msg = cleanMsg, time = nowMs }
+    -- time (mq.gettime ms) drives the dedupe; wall (os.time s) the pruning
+    lastTellBySender[cleanSender:lower()] = { msg = cleanMsg, time = nowMs, wall = os.time() }
 
     -- Log detection to UI and MQ console
     logMsg(string.format("Incoming tell from %s: '%s'", cleanSender, cleanMsg))
     print(string.format('\ay[Triune Buffbot]\ax Incoming tell from \aw%s\ax: \ag"%s"\ax', cleanSender, cleanMsg))
-
-    -- Check for Thank You / Gratitude
-    if isThankYou(cleanMsg) then
-        logMsg(string.format("Received thank-you tell from '%s'. Replying with 'You're welcome!'.", cleanSender))
-        queueTell(cleanSender, "You're welcome!")
-        return
-    end
 
     -- Check 1-second rapid request delay (silent ignore to prevent tell spam)
     local now = os.time()
@@ -924,22 +955,22 @@ local function onTellReceived(line, sender, msg)
     end
     rt.cooldowns[cleanSender:lower()] = now
 
-    -- Query requester spawn
-    local spawn = nil
-    pcall(function() spawn = mq.TLO.Spawn(string.format('pc =%s', cleanSender)) end)
-    if not spawn or not spawn() or (spawn.ID() or 0) <= 0 then
-        -- Fallback is a substring search; only accept an exact CleanName match
-        -- so "Bob" can never resolve to "Bobbette".
-        local fb = nil
-        pcall(function() fb = mq.TLO.Spawn(string.format('pc %s', cleanSender)) end)
-        local fbName = nil
-        pcall(function() fbName = fb and fb() and fb.CleanName() or nil end)
-        if type(fbName) == 'string' and fbName:lower() == cleanSender:lower() then
-            spawn = fb
-        else
-            spawn = nil
+    -- Check for Thank You / Gratitude (after the cooldown; one reply per
+    -- sender per THANKS_REPLY_SEC so "ty" spam cannot drive our tells)
+    if isThankYou(cleanMsg) then
+        local lastThanks = thanksReplyAt[cleanSender:lower()]
+        if lastThanks and (now - lastThanks) < THANKS_REPLY_SEC then
+            logMsg(string.format("Received thank-you tell from '%s' (already replied recently).", cleanSender))
+            return
         end
+        thanksReplyAt[cleanSender:lower()] = now
+        logMsg(string.format("Received thank-you tell from '%s'. Replying with 'You're welcome!'.", cleanSender))
+        queueTell(cleanSender, "You're welcome!")
+        return
     end
+
+    -- Query requester spawn (exact name; see findPcSpawnExact)
+    local spawn = findPcSpawnExact(cleanSender)
 
     local myLocStr = "0, 0, 0"
     pcall(function()
@@ -1284,12 +1315,8 @@ local function onHailReceived(line, sender, targetName)
 
     -- Silently ignore hails from non-guild players if guild-only is enabled
     if cfg.guildMode == 'Guild Only' then
-        local hSpawn = nil
-        pcall(function() hSpawn = mq.TLO.Spawn(string.format('pc =%s', cleanSender)) end)
-        if not hSpawn or not hSpawn() or (hSpawn.ID() or 0) <= 0 then
-            pcall(function() hSpawn = mq.TLO.Spawn(string.format('pc %s', cleanSender)) end)
-        end
-        if not isSameGuild(hSpawn) then
+        local hSpawn = findPcSpawnExact(cleanSender)
+        if not hSpawn or not isSameGuild(hSpawn) then
             return
         end
     end
@@ -1855,6 +1882,7 @@ local function setEnabled(on)
         rt.state = 'STOPPED'
         rt.activeQueue = {}
         rt.pendingOffers = {}
+        rt.outgoingTells = {}
         rt.currentJob = nil
         rt.currentRequester = nil
         rt.preemptRequested = false
@@ -2290,7 +2318,13 @@ local function tick()
                 if (now - timestamp) > 3600 then rt.cooldowns[sender] = nil end
             end
             for sender, entry in pairs(lastTellBySender) do
-                if (now - math.floor(entry.time / 1000)) > 3600 then lastTellBySender[sender] = nil end
+                if (now - (entry.wall or 0)) > 3600 then lastTellBySender[sender] = nil end
+            end
+            for sender, t in pairs(banNoticeAt) do
+                if (now - t) > BAN_NOTICE_SEC then banNoticeAt[sender] = nil end
+            end
+            for sender, t in pairs(thanksReplyAt) do
+                if (now - t) > THANKS_REPLY_SEC then thanksReplyAt[sender] = nil end
             end
             for sender, hailTime in pairs(lastHailTimes) do
                 if (now - hailTime) > 3600 then lastHailTimes[sender] = nil end

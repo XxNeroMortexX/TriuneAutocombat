@@ -17,6 +17,7 @@ local function check(targetType, beneficial, recipient, original, heal, moving, 
         lastCast = {},
         petCampActionAllowed = function() return true end, -- Original behavior with mode disabled.
         isHealAction = function() return heal end,
+        isRedirectableHeal = function() return heal end, -- Actual redirect classification is covered by the cure suite.
         isDetrimentalAction = function() return not beneficial end,
         isTargetInRange = function() return true end,
         setTarget = function(id) targets[#targets+1] = id; return true end,

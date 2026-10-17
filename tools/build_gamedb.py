@@ -16,7 +16,12 @@ Outputs (all plain text, no runtime dependencies in Lua)
   <kind>.<n>.dat    one line per record ("key=value|key=value|..."), chunked
                     so no single file passes GitHub's size limits; the index
                     carries "chunk:offset" so a lookup is one seek + one read
-  manifest.txt      build date and record counts
+  manifest.txt      build date and record counts (--built / SOURCE_DATE_EPOCH
+                    pin or drop the date so rebuilds are byte-identical)
+
+The required tables and key columns are checked before anything is written;
+the database is built in a temporary folder next to --out and swapped in
+only once it is complete, so a failed build leaves the old one in place.
 
 Encoding: every text value has these characters escaped before it is written,
 so the Lua side can split on the raw separators and unescape only the leaves:
@@ -30,7 +35,9 @@ keeps the columns it needs, so the 500 MB dump never sits in memory.
 import argparse
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from collections import defaultdict
 
@@ -39,6 +46,8 @@ from collections import defaultdict
 # ---------------------------------------------------------------------------
 VALUE_RE = re.compile(r"'((?:[^'\\]|\\.)*)'|(NULL)|(-?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)")
 UNESC_RE = re.compile(r"\\(.)")
+# A quoted SQL string (skipped whole) or a row parenthesis.
+ROW_TOKEN_RE = re.compile(r"'(?:[^'\\]|\\.)*'|[()]")
 UNESC_MAP = {'n': '\n', 'r': '\r', 't': '\t', '0': '\0', 'Z': '\x1a'}
 
 
@@ -46,21 +55,38 @@ def _unescape_sql(s):
     return UNESC_RE.sub(lambda m: UNESC_MAP.get(m.group(1), m.group(1)), s)
 
 
-def read_table_columns(path, table):
-    """Column names of `table` from its CREATE TABLE block."""
-    cols = []
-    marker = 'CREATE TABLE `%s` (' % table
+def read_tables_columns(path, tables):
+    """{table: [column names]} from the CREATE TABLE blocks of `tables`, in
+    one pass over the dump. Tables without a CREATE TABLE block are absent
+    from the result."""
+    want = set(tables)
+    out = {}
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
-            if line.startswith(marker):
-                for line in f:
-                    s = line.strip()
-                    if s.startswith('`'):
-                        cols.append(s[1:s.index('`', 1)])
-                    elif s.startswith(')'):
-                        return cols
+            if not line.startswith('CREATE TABLE `'):
+                continue
+            t = line[14:line.index('`', 14)]
+            if t not in want or t in out:
+                continue
+            cols = []
+            for line in f:
+                s = line.strip()
+                if s.startswith('`'):
+                    cols.append(s[1:s.index('`', 1)])
+                elif s.startswith(')'):
+                    break
+            out[t] = cols
+            if len(out) == len(want):
                 break
-    raise SystemExit('table %s not found in %s' % (table, path))
+    return out
+
+
+def read_table_columns(path, table):
+    """Column names of `table` from its CREATE TABLE block."""
+    cols = read_tables_columns(path, [table]).get(table)
+    if cols is None:
+        raise SystemExit('table %s not found in %s' % (table, path))
+    return cols
 
 
 class TableReader:
@@ -74,6 +100,14 @@ class TableReader:
     def __init__(self, path):
         self.path = path
         self._cols = {}
+
+    def prefetch(self, tables):
+        """Reads the column lists of several tables in one pass; returns the
+        tables that have no CREATE TABLE block in the dump."""
+        need = [t for t in tables if t not in self._cols]
+        if need:
+            self._cols.update(read_tables_columns(self.path, need))
+        return [t for t in tables if t not in self._cols]
 
     def columns(self, table):
         if table not in self._cols:
@@ -104,8 +138,11 @@ class TableReader:
                         rest = line[line.index('VALUES') + 6:].lstrip()
                         if rest.startswith('('):
                             # single-line statement: rows follow on this line
-                            for vals in self._split_rows(rest, ncols):
-                                handlers[cur](vals)
+                            for vals in self._split_rows(rest):
+                                if len(vals) == ncols:
+                                    handlers[cur](vals)
+                                else:
+                                    bad[cur] += 1
                             cur = None
         for t, n in bad.items():
             print('  ! %d rows of %s skipped (column count mismatch)' % (n, t))
@@ -123,10 +160,25 @@ class TableReader:
         return out
 
     @classmethod
-    def _split_rows(cls, text, ncols):
-        vals = cls._parse_row(text)
-        for i in range(0, len(vals) - len(vals) % ncols, ncols):
-            yield vals[i:i + ncols]
+    def _split_rows(cls, text):
+        """Parsed value lists of the `(...),(...),...` rows of one extended
+        INSERT line. Rows are split on their own parentheses (quoted strings
+        are skipped whole, so '(' / ')' / ',' inside values do not count), so
+        a malformed row is one row with the wrong column count instead of
+        shifting every row after it."""
+        depth, start = 0, None
+        for m in ROW_TOKEN_RE.finditer(text):
+            tok = m.group(0)
+            if tok == '(':
+                if depth == 0:
+                    start = m.start()
+                depth += 1
+            elif tok == ')':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        yield cls._parse_row(text[start:m.end()])
+                        start = None
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +416,7 @@ def scan_quests(root):
         zdir = os.path.join(root, zone)
         if not os.path.isdir(zdir):
             continue
-        for fname in os.listdir(zdir):
+        for fname in sorted(os.listdir(zdir)):
             if not (fname.endswith('.pl') or fname.endswith('.lua')):
                 continue
             stem = fname[:fname.rindex('.')]
@@ -468,6 +520,86 @@ def reindex_items(out_dir):
     print('done: items.idx v2, %d lines in %.0fs' % (len(lines), time.time() - t0))
 
 
+# Tables the build reads, with the key columns it cannot do without. Every
+# other column is optional: a dump that lacks one gets the field skipped (or
+# defaulted), with a note. Checked before anything is written.
+REQUIRED_COLUMNS = {
+    'items': ['id', 'name'],
+    'npc_types': ['id', 'name'],
+    'zone': ['zoneidnumber', 'short_name'],
+    'lootdrop_entries': ['lootdrop_id', 'item_id'],
+    'loottable_entries': ['loottable_id', 'lootdrop_id'],
+    'merchantlist': ['merchantid', 'item'],
+    'tradeskill_recipe': ['id'],
+    'tradeskill_recipe_entries': ['recipe_id', 'item_id'],
+    'spawnentry': ['spawngroupID', 'npcID'],
+    'spawn2': ['spawngroupID', 'zone'],
+    'npc_spells': ['id'],
+    'npc_spells_entries': ['npc_spells_id', 'spellid'],
+    'npc_faction': ['id'],
+    'npc_faction_entries': ['npc_faction_id', 'faction_id'],
+    'faction_list': ['id', 'name'],
+    'forage': ['zoneid', 'Itemid'],
+    'fishing': ['zoneid', 'Itemid'],
+    'ground_spawns': ['zoneid', 'item'],
+    'spells_new': ['id', 'name'],
+}
+
+
+def validate_dump(rd):
+    """Exits with the list of missing tables / key columns, if any."""
+    problems = ['table %s is missing' % t for t in rd.prefetch(list(REQUIRED_COLUMNS))]
+    for table, need in REQUIRED_COLUMNS.items():
+        try:
+            have = set(c.lower() for c in rd.columns(table))
+        except SystemExit:
+            continue
+        missing = [c for c in need if c.lower() not in have]
+        if missing:
+            problems.append('table %s lacks required column(s) %s' % (table, ', '.join(missing)))
+    if problems:
+        raise SystemExit('the SQL dump cannot be used (nothing was written):\n  ' + '\n  '.join(problems))
+
+
+def build_date(arg):
+    """The manifest's built= value: --built wins ('' omits the line), then
+    SOURCE_DATE_EPOCH (reproducible builds), then today."""
+    if arg is not None:
+        return arg
+    epoch = os.environ.get('SOURCE_DATE_EPOCH')
+    if epoch:
+        try:
+            return time.strftime('%Y-%m-%d', time.gmtime(int(epoch)))
+        except ValueError:
+            raise SystemExit('SOURCE_DATE_EPOCH must be an integer (got %r)' % epoch)
+    return time.strftime('%Y-%m-%d')
+
+
+def is_generated(fname):
+    return fname.endswith('.dat') or fname.endswith('.idx') or fname == 'manifest.txt'
+
+
+def swap_in(build_dir, out_dir):
+    """Replaces out_dir with build_dir. Files in out_dir that the build does
+    not generate are carried over first; the old folder is renamed aside and
+    removed only after the new one is in place."""
+    if os.path.isdir(out_dir):
+        for fname in sorted(os.listdir(out_dir)):
+            src = os.path.join(out_dir, fname)
+            if not is_generated(fname) and not os.path.exists(os.path.join(build_dir, fname)):
+                if os.path.isdir(src):
+                    shutil.copytree(src, os.path.join(build_dir, fname))
+                else:
+                    shutil.copy2(src, os.path.join(build_dir, fname))
+        old_dir = tempfile.mkdtemp(prefix='.%s.old-' % os.path.basename(out_dir), dir=os.path.dirname(out_dir))
+        os.rmdir(old_dir)
+        os.rename(out_dir, old_dir)
+        os.rename(build_dir, out_dir)
+        shutil.rmtree(old_dir, ignore_errors=True)
+    else:
+        os.rename(build_dir, out_dir)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--sql', default=None, help='mysqldump .sql of the server database')
@@ -476,6 +608,8 @@ def main():
     ap.add_argument('--chunk-mb', type=int, default=40, help='max size of one .dat chunk')
     ap.add_argument('--max-list', type=int, default=60, help='cap for per-record cross-reference lists')
     ap.add_argument('--reindex-items', action='store_true', help='only rewrite items.idx (v2, with the filter field) from the .dat files in --out')
+    ap.add_argument('--built', default=None, metavar='DATE',
+                    help="manifest built= date (default: SOURCE_DATE_EPOCH if set, else today; '' omits it)")
     args = ap.parse_args()
 
     out_dir = os.path.abspath(args.out)
@@ -483,14 +617,32 @@ def main():
         return reindex_items(out_dir)
     if not args.sql:
         ap.error('--sql is required (or use --reindex-items)')
-    os.makedirs(out_dir, exist_ok=True)
-    for old in os.listdir(out_dir):
-        if old.endswith('.dat') or old.endswith('.idx') or old == 'manifest.txt':
-            os.remove(os.path.join(out_dir, old))
+    built = build_date(args.built)
+    rd = TableReader(args.sql)
+    validate_dump(rd)
+    parent = os.path.dirname(out_dir)
+    os.makedirs(parent, exist_ok=True)
+    build_dir = tempfile.mkdtemp(prefix='.%s.build-' % os.path.basename(out_dir), dir=parent)
+    try:
+        build(args, rd, build_dir, built)
+    except BaseException:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise
+    swap_in(build_dir, out_dir)
+    total = sum(os.path.getsize(os.path.join(out_dir, fn)) for fn in sorted(os.listdir(out_dir)) if is_generated(fn))
+    print('done: %s (%.1f MB)' % (out_dir, total / 1048576.0))
+
+
+def build(args, rd, out_dir, built):
+    """Writes the whole database into out_dir (a fresh temporary folder)."""
     cap = args.chunk_mb * 1024 * 1024
     MAXL = args.max_list
     t0 = time.time()
-    rd = TableReader(args.sql)
+
+    def col(v, idx, name, default=None):
+        # value of an optional column; `default` when the dump lacks it
+        i = idx.get(name)
+        return default if i is None else v[i]
 
     def col_index(table, names):
         # column names are matched case-insensitively (items.Name, npc_types.AC)
@@ -547,71 +699,71 @@ def main():
     gsc = col_index('ground_spawns', ['zoneid', 'item'])
 
     def h_items_names(v):
-        item_name[v[ic['id']]] = v[ic['name']] or ''
-        item_icon[v[ic['id']]] = v[ic['icon']] or 0
+        item_name[col(v, ic, 'id')] = col(v, ic, 'name') or ''
+        item_icon[col(v, ic, 'id')] = col(v, ic, 'icon') or 0
 
     def h_npc(v):
-        npc_rows[v[nc['id']]] = {k: v[i] for k, i in nc.items() if k != 'id'}
+        npc_rows[col(v, nc, 'id')] = {k: v[i] for k, i in nc.items() if k != 'id'}
 
     def h_zone(v):
-        short = v[zc['short_name']]
-        if short and (short not in zone_long or (v[zc.get('version', 0)] or 0) == 0):
-            zone_long[short] = v[zc['long_name']] or short
-            zone_id_short[v[zc['zoneidnumber']]] = short
+        short = col(v, zc, 'short_name')
+        if short and (short not in zone_long or (col(v, zc, 'version') or 0) == 0):
+            zone_long[short] = col(v, zc, 'long_name') or short
+            zone_id_short[col(v, zc, 'zoneidnumber')] = short
 
     def h_lde(v):
-        lootdrop_entries[v[lde['lootdrop_id']]].append((v[lde['item_id']], float(v[lde['chance']] or 0), int(v[lde['multiplier']] or 1),
-                                                       int(v[lde['npc_min_level']] or 0), int(v[lde['npc_max_level']] or 0)))
+        lootdrop_entries[col(v, lde, 'lootdrop_id')].append((col(v, lde, 'item_id'), float(col(v, lde, 'chance') or 0), int(col(v, lde, 'multiplier') or 1),
+                                                       int(col(v, lde, 'npc_min_level') or 0), int(col(v, lde, 'npc_max_level') or 0)))
 
     def h_lte(v):
-        loottable_entries[v[lte['loottable_id']]].append((v[lte['lootdrop_id']], int(v[lte['multiplier']] or 1), int(v[lte['droplimit']] or 0),
-                                                         int(v[lte['mindrop']] or 0), float(v[lte['probability']] or 0)))
+        loottable_entries[col(v, lte, 'loottable_id')].append((col(v, lte, 'lootdrop_id'), int(col(v, lte, 'multiplier') or 1), int(col(v, lte, 'droplimit') or 0),
+                                                         int(col(v, lte, 'mindrop') or 0), float(col(v, lte, 'probability') or 0)))
 
     def h_merch(v):
-        merchant_items[v[mc['merchantid']]].append((v[mc['slot']] or 0, v[mc['item']]))
+        merchant_items[col(v, mc, 'merchantid')].append((col(v, mc, 'slot') or 0, col(v, mc, 'item')))
 
     def h_recipe(v):
-        if trc.get('enabled') is not None and not v[trc['enabled']]:
+        if trc.get('enabled') is not None and not col(v, trc, 'enabled'):
             return
-        recipes[v[trc['id']]] = {k: v[i] for k, i in trc.items()}
+        recipes[col(v, trc, 'id')] = {k: v[i] for k, i in trc.items()}
 
     def h_recipe_entry(v):
-        recipe_entries[v[tre['recipe_id']]].append((v[tre['item_id']], int(v[tre['successcount']] or 0), int(v[tre['componentcount']] or 0),
-                                                   int(v[tre['iscontainer']] or 0)))
+        recipe_entries[col(v, tre, 'recipe_id')].append((col(v, tre, 'item_id'), int(col(v, tre, 'successcount') or 0), int(col(v, tre, 'componentcount') or 0),
+                                                   int(col(v, tre, 'iscontainer') or 0)))
 
     def h_spawnentry(v):
-        spawnentry[v[sec['npcID']]].append((v[sec['spawngroupID']], float(v[sec['chance']] or 0)))
+        spawnentry[col(v, sec, 'npcID')].append((col(v, sec, 'spawngroupID'), float(col(v, sec, 'chance') or 0)))
 
     def h_spawn2(v):
-        enabled = v[s2c['enabled']] if 'enabled' in s2c else 1
-        spawn2[v[s2c['spawngroupID']]].append((v[s2c['zone']], int(v[s2c['respawntime']] or 0), int(enabled if enabled is not None else 1)))
+        enabled = col(v, s2c, 'enabled', 1)
+        spawn2[col(v, s2c, 'spawngroupID')].append((col(v, s2c, 'zone'), int(col(v, s2c, 'respawntime') or 0), int(enabled if enabled is not None else 1)))
 
     def h_npc_spells(v):
-        npc_spells_parent[v[nsc['id']]] = v[nsc['parent_list']] or 0
+        npc_spells_parent[col(v, nsc, 'id')] = col(v, nsc, 'parent_list') or 0
 
     def h_npc_spells_entries(v):
-        npc_spell_lists[v[nsec['npc_spells_id']]].append((v[nsec['spellid']], int(v[nsec['type']] or 0), int(v[nsec['minlevel']] or 0), int(v[nsec['maxlevel']] or 0)))
+        npc_spell_lists[col(v, nsec, 'npc_spells_id')].append((col(v, nsec, 'spellid'), int(col(v, nsec, 'type') or 0), int(col(v, nsec, 'minlevel') or 0), int(col(v, nsec, 'maxlevel') or 0)))
 
     def h_npc_faction(v):
-        npc_faction[v[nfc['id']]] = (v[nfc['name']] or '', v[nfc['primaryfaction']] or 0)
+        npc_faction[col(v, nfc, 'id')] = (col(v, nfc, 'name') or '', col(v, nfc, 'primaryfaction') or 0)
 
     def h_npc_faction_entries(v):
-        npc_faction_hits[v[nfec['npc_faction_id']]].append((v[nfec['faction_id']], int(v[nfec['value']] or 0)))
+        npc_faction_hits[col(v, nfec, 'npc_faction_id')].append((col(v, nfec, 'faction_id'), int(col(v, nfec, 'value') or 0)))
 
     def h_faction_list(v):
-        faction_name[v[flc['id']]] = v[flc['name']] or ''
+        faction_name[col(v, flc, 'id')] = col(v, flc, 'name') or ''
 
     def h_forage(v):
-        forage[v[foc['Itemid']]].append((v[foc['zoneid']], float(v[foc['chance']] or 0)))
+        forage[col(v, foc, 'Itemid')].append((col(v, foc, 'zoneid'), float(col(v, foc, 'chance') or 0)))
 
     def h_fishing(v):
-        fishing[v[fic['Itemid']]].append((v[fic['zoneid']], float(v[fic['chance']] or 0)))
+        fishing[col(v, fic, 'Itemid')].append((col(v, fic, 'zoneid'), float(col(v, fic, 'chance') or 0)))
 
     def h_ground(v):
         # one entry per zone: a zone with several ground spawn points of the
         # same item must not list that zone repeatedly
-        zones = ground[v[gsc['item']]]
-        zid = v[gsc['zoneid']]
+        zones = ground[col(v, gsc, 'item')]
+        zid = col(v, gsc, 'zoneid')
         if zid not in zones:
             zones.append(zid)
 
@@ -922,7 +1074,7 @@ def main():
 
     def h_item(v):
         nonlocal n_items
-        item_id = v[icol['id']]
+        item_id = col(v, icol, 'id')
         fields = [('id', item_id)]
         for k in ITEM_COLS:
             i = icol.get(k)
@@ -943,7 +1095,7 @@ def main():
             elif k == 'lore':
                 if isinstance(val, str) and val.startswith('*'):
                     val = val[1:]
-                if val == v[icol['name']] or (item_id >= 1000000 and val == item_name.get(item_id % 1000000)):
+                if val == col(v, icol, 'name') or (item_id >= 1000000 and val == item_name.get(item_id % 1000000)):
                     continue
             elif k == 'name' and item_id >= 1000000 and (item_id % 1000000) in item_name:
                 continue
@@ -1066,7 +1218,7 @@ def main():
     spell_idx_lines = []
 
     def h_spell(v):
-        sid = v[scol['id']]
+        sid = col(v, scol, 'id')
         fields = [('id', sid)]
         for k in SPELL_COLS:
             i = scol.get(k)
@@ -1081,12 +1233,12 @@ def main():
         fields.append(('classes', Raw(','.join(classes))))
         effects = []
         for ei in range(1, 13):
-            eid = v[scol.get('effectid%d' % ei)]
+            eid = col(v, scol, 'effectid%d' % ei)
             if eid is None or eid == 254:
                 continue
-            effects.append('%d~%s~%s~%s~%s' % (ei, fmt_num(eid), fmt_num(v[scol.get('effect_base_value%d' % ei)] or 0),
-                                                fmt_num(v[scol.get('effect_limit_value%d' % ei)] or 0), fmt_num(v[scol.get('max%d' % ei)] or 0))
-                           + '~' + fmt_num(v[scol.get('formula%d' % ei)] or 0))
+            effects.append('%d~%s~%s~%s~%s' % (ei, fmt_num(eid), fmt_num(col(v, scol, 'effect_base_value%d' % ei) or 0),
+                                                fmt_num(col(v, scol, 'effect_limit_value%d' % ei) or 0), fmt_num(col(v, scol, 'max%d' % ei) or 0))
+                           + '~' + fmt_num(col(v, scol, 'formula%d' % ei) or 0))
         fields.append(('effects', Raw(';'.join(effects))))
         its = spell_items.get(sid)
         if its:
@@ -1099,7 +1251,7 @@ def main():
         line = kv(fields)
         spells_w.group_start(len(line) + 2)
         ch, off = spells_w.write(line)
-        spell_idx_lines.append('%d|%d:%d|%s|%s' % (sid, ch, off, ','.join(classes), esc(v[scol['name']] or '')))
+        spell_idx_lines.append('%d|%d:%d|%s|%s' % (sid, ch, off, ','.join(classes), esc(col(v, scol, 'name') or '')))
 
     rd.run({'spells_new': h_spell})
     spells_w.close()
@@ -1114,10 +1266,11 @@ def main():
             f.write('%s|%s\n' % (esc(short), esc(zone_long[short])))
 
     with open(os.path.join(out_dir, 'manifest.txt'), 'w', encoding='utf-8', newline='\n') as f:
-        f.write('built=%s\nsource=%s\nitems=%d\nitem_index=%d\nnpcs=%d\nspells=%d\nformat=2\n' % (
-            time.strftime('%Y-%m-%d'), os.path.basename(args.sql), n_items, len(tiers_of), len(npc_at), len(spell_idx_lines)))
-    total = sum(os.path.getsize(os.path.join(out_dir, fn)) for fn in os.listdir(out_dir))
-    print('done: %s (%.1f MB) in %.0fs' % (out_dir, total / 1048576.0, time.time() - t0))
+        if built:
+            f.write('built=%s\n' % built)
+        f.write('source=%s\nitems=%d\nitem_index=%d\nnpcs=%d\nspells=%d\nformat=2\n' % (
+            os.path.basename(args.sql), n_items, len(tiers_of), len(npc_at), len(spell_idx_lines)))
+    print('  built in %.0fs' % (time.time() - t0))
 
 
 if __name__ == '__main__':

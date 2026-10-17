@@ -125,7 +125,7 @@ S.distance=10;have,engage=manual()
 assert(have and engage and not S.blocked[131] and S.target==131,'player reposition could not retry immediately')
 -- Run the real moveToward stall path: stop chasing, retain Manual selection;
 -- automated Assist still abandons the unreachable mob.
-compile(helper('moveToward'),env)
+compile(helper('huntXtarMaxDist') .. '\n' .. helper('moveToward'),env)
 S.distance=77;S.los=false;S.time=200
 local function stall(mode)
     ctrl.mode=mode;S.target=131;S.blocked={};pursuit.unreachableIds=S.blocked

@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 --[[
 tac/triune_log.lua -- file-backed diagnostic logger for Triune AutoCombat
 
@@ -39,6 +40,7 @@ local st = {
     filePath       = nil,
     fileTag        = nil,    -- identity tag the open file was named for
     pending        = 0,
+    bytes          = 0,      -- size of the open file (for in-session rotation)
     lastFlush      = 0,
     lastOpenFail   = -math.huge,
     lastOpenErr    = nil,
@@ -255,6 +257,7 @@ function M.open()
     end
     f:flush()
     st.pending, st.lastFlush = 0, now
+    st.bytes = f:seek('end') or 0
     return true
 end
 
@@ -264,7 +267,7 @@ function M.close(reason)
         st.file:write(string.format('==== session end %s%s ====\n', dateStamp(), reason and (' (' .. reason .. ')') or ''))
         st.file:close()
     end)
-    st.file, st.filePath, st.fileTag, st.pending = nil, nil, nil, 0
+    st.file, st.filePath, st.fileTag, st.pending, st.bytes = nil, nil, nil, 0, 0
 end
 
 function M.flush()
@@ -308,7 +311,14 @@ local function emit(level, cat, msg)
     if st.file then
         st.file:write(line, '\n')
         st.pending = st.pending + 1
+        st.bytes = st.bytes + #line + 1
         if M.LEVELS[level] >= M.LEVELS.warn then M.flush() end
+        -- Long sessions: rotate mid-session once the file passes the cap
+        -- (open() only checks the size when the file is first opened).
+        if st.bytes >= MAX_FILE_BYTES then
+            M.close('rotating, file reached ' .. math.floor(MAX_FILE_BYTES / 1048576) .. ' MB')
+            M.open()  -- rotateIfLarge() moves the full file to .old first
+        end
     elseif fileEnabled() then
         -- open() replays the ring, which now includes this line.
         M.open()

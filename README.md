@@ -30,7 +30,8 @@ On the first install, load the backend with `/plugin mq2webupdate load`. Open **
 
 1. **Check your classes.** The main window shows the three classes it detected. Click **Re-detect** if they are wrong.
 2. **Set up what to cast.** Go through the tabs: **Spell Gems** (spells), **Abilities** (kick, bash, backstab...), **AAs**, **Disciplines** and **Clickies**. Each entry gets a simple rule for when to fire it, such as *Target HP < 90%*, *My HP < 40%*, *Missing Buff* or *Always*. **Import Bar** fills the spell list from whatever you have memorized.
-3. **Pick a mode** on the **Control** tab and click **Start** (or type `/ac run`).
+3. In **Spell Gems**, mark emergency heals, lifetaps, or other spells **High Priority** to check them after Abilities and Disciplines but before Clickies. Other spells remain after Clickies; the overall action-category order stays fixed.
+4. **Pick a mode** on the **Control** tab and click **Start** (or type `/ac run`).
 
 Your setup is saved automatically and reloads next time.
 
@@ -107,6 +108,7 @@ Everything below is built in. Open them from the buttons on the main window's he
 | Buffbot | `/ac buffbot on` | A buff station: players `/tell` you for buffs, it casts them. Off unless you turn it on. |
 | Cursor Manager | `/ac cursorui` | Clears whatever is stuck on your cursor. |
 | Parcels | `/ac parcels` | Tells you when parcels arrive and collects them all at a parcel merchant. |
+| GM Commands | `/ac gm` | Reference and runner for the server's `#` GM commands: search every command, fill in its arguments, run it, keep favourites; `/ac gm zone poknowledge` runs one from a hot button. Off unless you turn it on, and only useful with GM status. |
 | Floating damage | Settings -> Plugins | Big animated numbers for crits. |
 | Updates | Header **Updates** button | Compares, stages, and applies files from the configured Main Download repository; monitors Gennro separately. |
 | Compact Mini HUD | `/ac compact` | The whole bot shrunk to a small strip. |
@@ -190,7 +192,7 @@ A plugin is one Lua file in `lua/tac/` that returns a table with an `id`, a `nam
 
 ## Version
 
-Current version: **3.1**
+Current version: **3.2**
 
 NeroMorte release: **Morte.10** | MQ2WebUpdate: **4.1.8**
 
@@ -252,3 +254,7 @@ The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X a
 
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
 
+
+### Gennro 3.2 integration test
+
+The `nero/upstream-3.2-test` branch identifies itself as `Morte.11-test` (Gennro 3.2). It preserves NeroMorte's existing zone-list UI, per-character lists, JSON sharing and clear/delete tools; the XTarget row's **Add to Zone Ignore List** uses the actual current zone. Auto AA keeps verified-purchase activation, repeatable limits and quiet messages. Camp keeps its fixed Pull Radius and optional pet-only return. Pet tracking keeps the existing unique remaining pet/class inference instead of assigning an unknown primary pet to the first unfilled class. Flag Tracker/HUD remain in their separate test PR. This integration does not introduce the requested strict MA Attack On option.

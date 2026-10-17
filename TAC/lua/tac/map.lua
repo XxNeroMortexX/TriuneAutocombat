@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/map.lua — Triune Map, Norrath Atlas & NPC Tracker Plugin
@@ -171,6 +172,7 @@ local state = {
     atlasRouteCache     = { key = nil, path = nil, hops = 0 },   -- last BFS route keyed on "cur>target"
     savedMapFolderName  = nil,    -- folder name restored from config once the folder scan has run
     pendingShowZone     = nil,    -- zone short requested via plugin.showZone before/outside the tick
+    pendingMapReload    = nil,    -- map (re)load requested from the UI, applied on the tick (see requestMapReload)
     customMapsDirInput  = nil,    -- edit buffer for the Base Path field (applied on Enter / Apply)
 
     -- UI tracking filter controls
@@ -286,6 +288,7 @@ local viewport = {
     minZoom             = 0.05,
     maxZoom             = 10.0,
     isDragging          = false,
+    dragMoved           = false, -- the press moved 3+ px (a real pan, not a click)
     dragStartMouseX     = 0,
     dragStartMouseY     = 0,
     dragStartCenterEqX  = 0,
@@ -1327,6 +1330,15 @@ local function parseMapFile(filePath, layerId)
             end
         end
 
+        -- labels count toward the bounds too, so a labels-only zone still
+        -- gets a centre / zoom instead of the +-999999 seed values
+        if nx < bMinX then bMinX = nx end
+        if nx > bMaxX then bMaxX = nx end
+        if ny < bMinY then bMinY = ny end
+        if ny > bMaxY then bMaxY = ny end
+        if nz < bMinZ then bMinZ = nz end
+        if nz > bMaxZ then bMaxZ = nz end
+
         local cleanText = text:gsub('_', ' ')
         labelsAdded = labelsAdded + 1
         targetLabels[#targetLabels + 1] = {
@@ -1473,6 +1485,38 @@ local function loadZoneMap(zoneShort, isAtlas)
     end
 end
 
+-- Map files are read and parsed on the engine tick, never inside the draw
+-- callback: UI actions record what they need here (flags merge) and tick()
+-- applies it, reloading whichever zone the view shows (the Atlas zone in
+-- ATLAS mode, the live zone otherwise).
+local function requestMapReload(opts)
+    local p = state.pendingMapReload or {}
+    for k, v in pairs(opts or {}) do
+        if v then p[k] = v end
+    end
+    state.pendingMapReload = p
+end
+
+local function applyPendingMapReload()
+    local p = state.pendingMapReload
+    if not p then return end
+    state.pendingMapReload = nil
+    if p.clearCache then clearZoneMapCache() end
+    if p.scanFolders then scanMapFolders() end
+    if p.scanFiles then
+        scanMapFiles()
+        filterAtlasZones()
+    end
+    if p.noLoad then return end
+    local isAtlas = (state.viewMode == 'ATLAS') and (state.atlasZoneShort or '') ~= ''
+    local keepX, keepY, keepZoom = viewport.centerEqX, viewport.centerEqY, viewport.zoom
+    loadZoneMap(isAtlas and state.atlasZoneShort or state.currentZoneShort, isAtlas)
+    if p.keepView then
+        viewport.centerEqX, viewport.centerEqY, viewport.zoom = keepX, keepY, keepZoom
+    end
+    if p.msg then state.statusMsg = p.msg end
+end
+
 local function navigateToAtlasZone(zoneShort, pushHistory)
     if not zoneShort or zoneShort == '' then return end
 
@@ -1497,7 +1541,7 @@ local function navigateToAtlasZone(zoneShort, pushHistory)
     state.atlasSelectedZone = found
     state.atlasZoneName = found.name
 
-    loadZoneMap(zoneShort, true)
+    requestMapReload()
 end
 
 local function returnToLiveZone()
@@ -1505,8 +1549,7 @@ local function returnToLiveZone()
     state.atlasZoneShort = ''
     state.atlasZoneName = ''
     cfg.followPlayer = true
-    loadZoneMap(state.currentZoneShort, false)
-    state.statusMsg = string.format('Returned to Live View: %s (%s)', state.currentZoneName, state.currentZoneShort)
+    requestMapReload({ msg = string.format('Returned to Live View: %s (%s)', state.currentZoneName, state.currentZoneShort) })
 end
 
 local function atlasHistoryBack()
@@ -1810,22 +1853,55 @@ local function updateSmartFloorBounds(pX, pY, pZ)
     local minObservedZ = 99999
     local maxObservedZ = -99999
 
-    for lId = 0, 3 do
-        local lines = mapData.layers[lId] or {}
-        local step = (#lines > 2000) and 3 or 1
-        for i = 1, #lines, step do
-            local seg = lines[i]
-            local midX = (seg.x1 + seg.x2) * 0.5
-            local midY = (seg.y1 + seg.y2) * 0.5
-            local dSq = (midX - pX)^2 + (midY - pY)^2
-            if dSq <= sampleRadiusSq then
-                local avgZ = (seg.z1 + seg.z2) * 0.5
-                local bin = math.floor(avgZ / binSize)
-                histogram[bin] = (histogram[bin] or 0) + 1
-                totalSamples = totalSamples + 1
-                if avgZ < minObservedZ then minObservedZ = avgZ end
-                if avgZ > maxObservedZ then maxObservedZ = avgZ end
+    local function sample(seg)
+        local midX = (seg.x1 + seg.x2) * 0.5
+        local midY = (seg.y1 + seg.y2) * 0.5
+        local dSq = (midX - pX)^2 + (midY - pY)^2
+        if dSq <= sampleRadiusSq then
+            local avgZ = (seg.z1 + seg.z2) * 0.5
+            local bin = math.floor(avgZ / binSize)
+            histogram[bin] = (histogram[bin] or 0) + 1
+            totalSamples = totalSamples + 1
+            if avgZ < minObservedZ then minObservedZ = avgZ end
+            if avgZ > maxObservedZ then maxObservedZ = avgZ end
+        end
+    end
+
+    local grid = mapData.grid
+    if grid and grid.layers then
+        -- Only the line buckets overlapping the sample radius. A segment in
+        -- several cells is sampled once, from the first queried cell it
+        -- touches (same rule as the canvas draw, see buildLineBuckets).
+        local inv = 1 / grid.cell
+        local qx0, qx1 = math.floor((pX - 200) * inv), math.floor((pX + 200) * inv)
+        local qy0, qy1 = math.floor((pY - 200) * inv), math.floor((pY + 200) * inv)
+        for lId = 0, 3 do
+            local gl = grid.layers[lId]
+            local cells = gl and gl.cells
+            if cells then
+                for cy = qy0, qy1 do
+                    local row = cells[cy]
+                    if row then
+                        for cx = qx0, qx1 do
+                            local bucket = row[cx]
+                            if bucket then
+                                for i = 1, #bucket do
+                                    local seg = bucket[i]
+                                    local sx = seg.cx0 > qx0 and seg.cx0 or qx0
+                                    local sy = seg.cy0 > qy0 and seg.cy0 or qy0
+                                    if sx == cx and sy == cy then sample(seg) end
+                                end
+                            end
+                        end
+                    end
+                end
             end
+        end
+    else
+        for lId = 0, 3 do
+            local lines = mapData.layers[lId] or {}
+            local step = (#lines > 2000) and 3 or 1
+            for i = 1, #lines, step do sample(lines[i]) end
         end
     end
 
@@ -2568,6 +2644,7 @@ local function DrawMapCanvas(availW, availH)
         if isItemActive and ImGui.IsMouseDown(0) and not hasCtrl then
             if not viewport.isDragging then
                 viewport.isDragging = true
+                viewport.dragMoved = false
                 viewport.dragStartMouseX = mousePos.x
                 viewport.dragStartMouseY = mousePos.y
                 viewport.dragStartCenterEqX = viewport.centerEqX
@@ -2580,12 +2657,23 @@ local function DrawMapCanvas(availW, availH)
         if ImGui.IsMouseDown(0) then
             local dx = mousePos.x - viewport.dragStartMouseX
             local dy = mousePos.y - viewport.dragStartMouseY
-            local z = math.max(viewport.zoom, 0.001)
-            viewport.centerEqX = viewport.dragStartCenterEqX + (dx / z)
-            viewport.centerEqY = viewport.dragStartCenterEqY + (dy / z)
-            cfg.followPlayer = false -- Temporarily suspend follow-player while manually panning
+            -- A click (press that stays within a few pixels) is not a pan:
+            -- it must not shift the view or turn Follow off.
+            if not viewport.dragMoved and (dx * dx + dy * dy) >= 9 then
+                viewport.dragMoved = true
+                -- pan from where the view is now (Follow kept it moving)
+                viewport.dragStartCenterEqX = viewport.centerEqX - (dx / math.max(viewport.zoom, 0.001))
+                viewport.dragStartCenterEqY = viewport.centerEqY - (dy / math.max(viewport.zoom, 0.001))
+            end
+            if viewport.dragMoved then
+                local z = math.max(viewport.zoom, 0.001)
+                viewport.centerEqX = viewport.dragStartCenterEqX + (dx / z)
+                viewport.centerEqY = viewport.dragStartCenterEqY + (dy / z)
+                cfg.followPlayer = false -- Temporarily suspend follow-player while manually panning
+            end
         else
             viewport.isDragging = false
+            viewport.dragMoved = false
         end
     end
 
@@ -3061,7 +3149,7 @@ local now = mq.gettime()
             local psx, psy = worldToScreen(meX, meY, cX, cY, availW, availH)
 
             -- Auto-follow player
-            if cfg.followPlayer and not viewport.isDragging then
+            if cfg.followPlayer and not viewport.dragMoved then
                 viewport.centerEqX = meX
                 viewport.centerEqY = meY
             end
@@ -3560,7 +3648,8 @@ local function DrawAtlasTab()
         if ImGui.BeginCombo('##AtlasEraCombo', curEra) then
             for idx, opt in ipairs(ATLAS_ERA_OPTIONS) do
                 local isSel = (idx == state.atlasEraFilterIdx)
-                if ImGui.Selectable(opt, isSel) then
+                local _, pressed = ImGui.Selectable(opt, isSel)
+                if pressed then
                     state.atlasEraFilterIdx = idx
                     filterAtlasZones()
                 end
@@ -3574,7 +3663,8 @@ local function DrawAtlasTab()
         if ImGui.BeginCombo('##AtlasTypeCombo', curType) then
             for idx, opt in ipairs(ATLAS_TYPE_OPTIONS) do
                 local isSel = (idx == state.atlasTypeFilterIdx)
-                if ImGui.Selectable(opt, isSel) then
+                local _, pressed = ImGui.Selectable(opt, isSel)
+                if pressed then
                     state.atlasTypeFilterIdx = idx
                     filterAtlasZones()
                 end
@@ -3588,8 +3678,7 @@ local function DrawAtlasTab()
 
         -- Scan / Reload Buttons
         if ImGui.SmallButton('Rescan Map Files##RescanBtn') then
-            scanMapFiles()
-            filterAtlasZones()
+            requestMapReload({ scanFiles = true, noLoad = true })
         end
         ImGui.SameLine()
         ImGui.TextColored(0.65, 0.72, 0.82, 0.8, string.format('%d zones (%d shown)', #state.atlasAllZones, #state.atlasZoneList))
@@ -3612,7 +3701,8 @@ local function DrawAtlasTab()
                     ImGui.TableNextColumn()
                     local prefix = isCurrent and '▶ ' or ''
                     local label = string.format('%s%s##z_%s', prefix, z.name, z.short)
-                    if ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns or 0) then
+                    local _, pressed = ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns or 0)
+                    if pressed then
                         state.atlasSelectedZone = z
                     end
                     if ImGui.IsItemHovered() then
@@ -3968,8 +4058,9 @@ local function DrawNPCTrackerTab()
             else
                 ImGui.PushStyleColor(ImGuiCol.Text, conStyle.r, conStyle.g, conStyle.b, 1.0)
             end
-            if ImGui.Selectable(nameLabel, isSelected, ImGuiSelectableFlags.AllowDoubleClick or 0) then
-                if ImGui.IsMouseDoubleClicked(0) then
+            local _, pressed = ImGui.Selectable(nameLabel, isSelected, ImGuiSelectableFlags.AllowDoubleClick or 0)
+            if pressed then
+                if ImGui.IsMouseDoubleClicked(0) and ImGui.IsItemHovered() then
                     actionQueue.pendingTargetId = mob.id
                     actionQueue.pendingNavId = mob.id
                     state.activeNavSpawnId = mob.id
@@ -4072,9 +4163,8 @@ local function DrawSettingsTab()
     if fChanged then
         state.selectedFolderIndex = fIdx
         if state.mapFolders[fIdx] then
-            clearZoneMapCache()
             state.activeMapsDirectory = state.mapFolders[fIdx].fullPath
-            loadZoneMap(state.currentZoneShort)
+            requestMapReload({ clearCache = true })
         end
         state.dirtySettings = true
         state.dirtySettingsTime = mq.gettime()
@@ -4083,15 +4173,11 @@ local function DrawSettingsTab()
 
     ImGui.SameLine()
     if ImGui.Button('Scan / Refresh Folders##ScanFoldersBtn') then
-        clearZoneMapCache()
-        scanMapFolders()
-        scanMapFiles()
-        loadZoneMap(state.currentZoneShort)
+        requestMapReload({ clearCache = true, scanFolders = true, scanFiles = true })
     end
     ImGui.SameLine()
     if ImGui.Button('Reload Map##ReloadMapBtn') then
-        clearZoneMapCache()
-        loadZoneMap(state.currentZoneShort)
+        requestMapReload({ clearCache = true })
     end
 
     -- Loaded Map Metrics for Current Zone
@@ -4130,10 +4216,9 @@ local function DrawSettingsTab()
                 state.selectedFolderIndex = #state.mapFolders
                 state.activeMapsDirectory = full
             end
-            loadZoneMap(state.currentZoneShort)
+            requestMapReload({ msg = string.format('Selected map pack "%s"', trimmed) })
             state.dirtySettings = true
             state.dirtySettingsTime = mq.gettime()
-            state.statusMsg = string.format('Selected map pack "%s"', trimmed)
         end
     end
     if ImGui.IsItemHovered() then
@@ -4157,10 +4242,7 @@ local function DrawSettingsTab()
         if entered == true or applyClicked then
             state.customMapsDir = (state.customMapsDirInput or ''):match('^%s*(.-)%s*$')
             state.customMapsDirInput = state.customMapsDir
-            clearZoneMapCache()
-            scanMapFolders()
-            scanMapFiles()
-            loadZoneMap(state.currentZoneShort)
+            requestMapReload({ clearCache = true, scanFolders = true, scanFiles = true })
             state.dirtySettings = true
             state.dirtySettingsTime = mq.gettime()
         end
@@ -4168,10 +4250,7 @@ local function DrawSettingsTab()
         if ImGui.Button('Reset to Auto##ResetAutoBaseBtn') then
             state.customMapsDir = ''
             state.customMapsDirInput = ''
-            clearZoneMapCache()
-            scanMapFolders()
-            scanMapFiles()
-            loadZoneMap(state.currentZoneShort)
+            requestMapReload({ clearCache = true, scanFolders = true, scanFiles = true })
             state.dirtySettings = true
             state.dirtySettingsTime = mq.gettime()
         end
@@ -4310,11 +4389,7 @@ local function DrawSettingsTab()
         state.dirtySettingsTime = mq.gettime()
         -- The brighten is applied at parse time: drop the parsed cache and
         -- re-parse the zone on view, keeping the current viewport.
-        clearZoneMapCache()
-        local keepX, keepY, keepZoom = viewport.centerEqX, viewport.centerEqY, viewport.zoom
-        local isAtlas = (state.viewMode == 'ATLAS')
-        loadZoneMap(isAtlas and state.atlasZoneShort or state.currentZoneShort, isAtlas)
-        viewport.centerEqX, viewport.centerEqY, viewport.zoom = keepX, keepY, keepZoom
+        requestMapReload({ clearCache = true, keepView = true })
     end
     if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Automatically converts black (0,0,0) and dark map lines/labels to crisp visible silver/white against dark backgrounds') end
 
@@ -4565,6 +4640,8 @@ local function tick()
         navigateToAtlasZone(zs, true)
         switchToTab(2)
     end
+    -- Map loads requested from the window (navigation, folder / path changes)
+    applyPendingMapReload()
 
     -- Periodic Triune Loadout Sync (every 2.5s)
     if (now - state.triuneData.lastSyncTime) >= 2500 then

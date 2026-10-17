@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/nms_looter_handoff.lua - NMS looter handoff by zone
@@ -687,8 +688,9 @@ local function drawNmsControls(idSuffix)
     ImGui.SetNextItemWidth(core.px and core.px(180) or 180)
     local scopeLabel = cfg.dzOnly and 'Dynamic zones only' or 'All zones'
     if ImGui.BeginCombo('Scope##nmsLooterHandoffScope' .. idSuffix, scopeLabel) then
-        if ImGui.Selectable('All zones##nmsLooterHandoffAll' .. idSuffix, not cfg.dzOnly) then setScope(false) end
-        if ImGui.Selectable('Dynamic zones only##nmsLooterHandoffDz' .. idSuffix, cfg.dzOnly) then setScope(true) end
+        -- MQ's Selectable returns (selected, pressed); act on the click only.
+        if select(2, ImGui.Selectable('All zones##nmsLooterHandoffAll' .. idSuffix, not cfg.dzOnly)) then setScope(false) end
+        if select(2, ImGui.Selectable('Dynamic zones only##nmsLooterHandoffDz' .. idSuffix, cfg.dzOnly)) then setScope(true) end
         ImGui.EndCombo()
     end
     ImGui.SetNextItemWidth(core.px and core.px(160) or 160)
@@ -696,7 +698,7 @@ local function drawNmsControls(idSuffix)
     if ImGui.BeginCombo('Priority##nmsLooterHandoffPriority' .. idSuffix, preview) then
         for priority = PRIORITY_MIN, PRIORITY_MAX do
             local label = string.format('%d%s', priority, priority == PRIORITY_MIN and ' (highest)' or '')
-            if ImGui.Selectable(label .. '##nmsLooterHandoffChoice' .. idSuffix .. priority, cfg.priority == priority) then
+            if select(2, ImGui.Selectable(label .. '##nmsLooterHandoffChoice' .. idSuffix .. priority, cfg.priority == priority)) then
                 cfg.priority = priority
                 state.priorities[lower(myName())] = { name = myName(), priority = priority }
                 state.lastPriorityBroadcastAt = -math.huge

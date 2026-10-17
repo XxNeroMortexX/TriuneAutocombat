@@ -1,5 +1,5 @@
 #!/usr/bin/env luajit
----@diagnostic disable: deprecated
+---@diagnostic disable: deprecated, duplicate-set-field, unused-local, redefined-local, need-check-nil, redundant-parameter, undefined-field, param-type-mismatch
 -- ==========================================================================
 -- tests/test_pure_logic.lua — Unit tests for pure-logic functions in triune.lua
 --
@@ -714,6 +714,33 @@ assert_eq(dc.auto_summon_fireworks, false, 'defaultCtrl: auto_summon_fireworks=f
 assert_eq(dc.pause_on_zone, true, 'defaultCtrl: pause_on_zone=true')
 assert_eq(dc.fov, 100, 'defaultCtrl: fov=100')
 assert_eq(dc.fov_enabled, false, 'defaultCtrl: fov_enabled=false')
+do
+    local spellIndicesForPass = loadFunc(src, 'spellIndicesForPass', {
+        runtime = { isHealAction = function(name) return name == 'Emergency Heal' or name == 'Lifetap' end },
+    })
+    local mixedSpellEntries = {
+        { spell = 'Damage Spell' },
+        { spell = 'Emergency Heal', priority_before_clickies = true },
+        { spell = 'Buff' },
+        { spell = 'Lifetap', priority_before_clickies = true },
+    }
+    assert_tbl_eq(spellIndicesForPass(mixedSpellEntries, true), { 4, 2 },
+        'high-priority spell pass preserves heal-first order for promoted spells')
+    assert_tbl_eq(spellIndicesForPass(mixedSpellEntries, false), { 1, 3 },
+        'normal spell pass excludes high-priority spells and preserves remaining order')
+    local dispatchedCategories = {}
+    local categoryRunners = {}
+    for _, category in ipairs({ 'abilities', 'disciplines', 'priority_spells', 'clickies', 'spells' }) do
+        categoryRunners[category] = function() dispatchedCategories[#dispatchedCategories + 1] = category end
+    end
+    local runCombatCategories = loadFunc(src, 'runCombatCategories')
+    runCombatCategories(categoryRunners)
+    assert_tbl_eq(dispatchedCategories, { 'abilities', 'disciplines', 'priority_spells', 'clickies', 'spells' },
+        'category order remains fixed with promoted spells immediately before clickies')
+    assert_true(src:find("ImGui%.Checkbox%('High Priority##priority'") ~= nil
+        and src:find("runtime%.spellIndicesForPass%(loadout%.gems, prioritySpellPass%)") ~= nil,
+        'Spell Gems exposes and applies High Priority')
+end
 
 -- ============================================================================
 -- 9.  isActionSkill(name) & defaultActionEntry
@@ -1031,24 +1058,8 @@ assert_eq(serializeToString(nil), 'nil', 'serialize: nil')
 -- 18. extractConName (runtime method) — parsing /consider chat lines
 -- ============================================================================
 print('--- extractConName ---')
--- extractConName is assigned as `function runtime.extractConName(line)`, which
--- our extractor can't pull since it's not `local function`.  Instead, test
--- the same regex logic inline.
-local function extractConName(line)
-    if not line or line == '' then return nil end
-    local name = line:match('^(.-)%s+scowls')
-        or line:match('^(.-)%s+glares')
-        or line:match('^(.-)%s+glowers')
-        or line:match('^(.-)%s+looks')
-        or line:match('^(.-)%s+regards')
-        or line:match('^(.-)%s+judges')
-        or line:match('^(.-)%s+judge')
-    if name then
-        name = name:gsub('^%s*(.-)%s*$', '%1')
-        if name ~= '' then return name end
-    end
-    return nil
-end
+-- The real runtime.extractConName from triune.lua.
+local extractConName = loadFunc(src, 'extractConName')
 
 assert_eq(extractConName('a fire beetle scowls at you'), 'a fire beetle', 'con: scowls')
 assert_eq(extractConName('Guard Hanlon glares at you'), 'Guard Hanlon', 'con: glares')
@@ -1125,190 +1136,24 @@ assert_eq(evalXtOk(0, 3, false), false, 'min_xtar: OOC beneficial spell with exp
 assert_eq(evalXtOk(3, 3, false), true, 'min_xtar: Combat beneficial spell with explicit min_xtar=3 allowed on 3 mobs')
 
 local function testCastTracker()
-    local failureCount     = {}
-    local lockouts         = {}
-    local targetLockouts   = {}
-    local targetImmunities = {}
-    local mockClock        = 100 -- fake os.clock()
-
-    local function getFailCount(spellName)
-        if not spellName then return 0 end
-        local entry = failureCount[spellName]
-        if not entry then return 0 end
-        if (mockClock - (tonumber(entry.lastFail) or 0)) > 15.0 then
-            failureCount[spellName] = nil
-            return 0
-        end
-        return tonumber(entry.count) or 0
-    end
-
-    local function incFailCount(spellName)
-        if not spellName then return 1 end
-        local count = getFailCount(spellName) + 1
-        failureCount[spellName] = { count = count, lastFail = mockClock }
-        return count
-    end
-
-    local function resetFailCount(spellName)
-        if spellName then failureCount[spellName] = nil end
-    end
-
-    local function isLockedOut(spellName, targetId, kind)
-        if not spellName or spellName == '' then return false end
-
-        -- Strictly enforce: Beneficial spells are NEVER locked out under any circumstance.
-        -- Only casted detrimental spells can ever be locked out.
-        if not isDetrimentalSpell(spellName, targetId, kind) then
-            return false
-        end
-
-        local tid = tonumber(targetId)
-
-        if tid and tid > 0 and targetImmunities[tid] and targetImmunities[tid][spellName] then
-            return true, 'Immune', 9999
-        end
-
-        if tid and tid > 0 and targetLockouts[tid] then
-            local untilTime = tonumber(targetLockouts[tid][spellName])
-            if untilTime then
-                if mockClock < untilTime then
-                    return true, 'TargetLock', math.ceil(untilTime - mockClock)
-                else
-                    targetLockouts[tid][spellName] = nil
-                end
-            end
-        end
-
-        local gUntil = tonumber(lockouts[spellName])
-        if gUntil then
-            if mockClock < gUntil then
-                return true, 'GlobalLock', math.ceil(gUntil - mockClock)
-            else
-                lockouts[spellName] = nil
-            end
-        end
-
-        return false
-    end
-
-    local function recordFailure(spellName, targetId, reason, maxRetries, lockoutSec, kind)
-        if not spellName or spellName == '' then return end
-        local tid = nil
-        local r = 'generic'
-        local mRetries = 2
-        local lSec = 30
-        local k = kind
-
-        if type(targetId) == 'number' and (type(reason) == 'string' or reason == nil) then
-            tid = targetId
-            r = reason or 'generic'
-            mRetries = tonumber(maxRetries) or 2
-            lSec = tonumber(lockoutSec) or 30
-        elseif type(targetId) == 'string' then
-            r = targetId
-            mRetries = tonumber(reason) or 2
-            lSec = tonumber(maxRetries) or 30
-            k = lockoutSec
-        elseif type(targetId) == 'number' and type(reason) == 'number' then
-            mRetries = targetId
-            lSec = tonumber(reason) or 30
-            r = 'generic'
-        else
-            mRetries = tonumber(maxRetries) or 2
-            lSec = tonumber(lockoutSec) or 30
-        end
-
-        -- Beneficial spells (heals, buffs, pets, cures) are NEVER locked out under any condition.
-        -- Only casted detrimental spells (offensive spells/debuffs) incur failures, immunities, or lockouts.
-        if not isDetrimentalSpell(spellName, tid, k) then
-            resetFailCount(spellName)
-            return
-        end
-
-        local rLow = tostring(r):lower()
-
-        if rLow == 'target immune' or rLow == 'immune' then
-            if tid and tid > 0 then
-                targetImmunities[tid] = targetImmunities[tid] or {}
-                targetImmunities[tid][spellName] = true
-                resetFailCount(spellName)
-            else
-                lockouts[spellName] = mockClock + lSec
-                resetFailCount(spellName)
-            end
-
-        elseif rLow == 'did not take hold' then
-            local backoff = math.max(lSec, 120)
-            if tid and tid > 0 then
-                targetLockouts[tid] = targetLockouts[tid] or {}
-                targetLockouts[tid][spellName] = mockClock + backoff
-                resetFailCount(spellName)
-            else
-                lockouts[spellName] = mockClock + lSec
-                resetFailCount(spellName)
-            end
-
-        elseif rLow == 'resisted' then
-            if k == 'dd' or k == 'dot' then
-                resetFailCount(spellName)
-                return
-            end
-            local fails = incFailCount(spellName)
-            if fails >= mRetries then
-                if tid and tid > 0 then
-                    targetLockouts[tid] = targetLockouts[tid] or {}
-                    targetLockouts[tid][spellName] = mockClock + lSec
-                    resetFailCount(spellName)
-                else
-                    lockouts[spellName] = mockClock + lSec
-                    resetFailCount(spellName)
-                end
-            end
-
-        elseif rLow == 'fizzled' or rLow == 'interrupted' then
-            local threshold = math.max(mRetries * 2, 4)
-            local fails = incFailCount(spellName)
-            if fails >= threshold then
-                local shortLock = math.min(lSec, 8)
-                lockouts[spellName] = mockClock + shortLock
-                resetFailCount(spellName)
-            end
-
-        elseif rLow == 'cannot see target' or rLow == 'out of range' or rLow == 'dead target'
-            or rLow == 'cannot cast' or rLow == 'insufficient mana' or rLow == 'not ready' then
-            return
-
-        else
-            local fails = incFailCount(spellName)
-            if fails >= mRetries then
-                lockouts[spellName] = mockClock + lSec
-                resetFailCount(spellName)
-            end
-        end
-    end
-
-    local function recordSuccess(spellName, targetId)
-        if not spellName then return end
-        resetFailCount(spellName)
-        lockouts[spellName] = nil
-        local tid = tonumber(targetId)
-        if tid and tid > 0 and targetLockouts[tid] then
-            targetLockouts[tid][spellName] = nil
-        end
-    end
-
-    local function clear(targetId)
-        local tid = tonumber(targetId)
-        if tid and tid > 0 then
-            targetLockouts[tid] = nil
-            targetImmunities[tid] = nil
-        else
-            failureCount     = {}
-            lockouts         = {}
-            targetLockouts   = {}
-            targetImmunities = {}
-        end
-    end
+    -- The real createCastTracker from triune.lua, with os.clock() under test
+    -- control (clk.now) and a spawn TLO whose names never change.
+    local body = triuneSrc:match("local function createCastTracker%(%).-\nend\n")
+    assert_true(body ~= nil, 'tracker: createCastTracker body extracted')
+    local clk = { now = 100 }
+    local env = setmetatable({
+        isDetrimentalSpell = isDetrimentalSpell,
+        runtime = {},
+        print = function() end,
+        os = setmetatable({ clock = function() return clk.now end }, { __index = os }),
+        mq = { TLO = { Spawn = function(id)
+            return setmetatable({ CleanName = function() return 'mob' .. tostring(id) end }, { __call = function() return true end })
+        end } },
+    }, { __index = _G })
+    local chunk = assert(loadstring(body .. '\nreturn createCastTracker()'))
+    setfenv(chunk, env)
+    local trk = chunk()
+    local isLockedOut, recordFailure, recordSuccess, clear = trk.isLockedOut, trk.recordFailure, trk.recordSuccess, trk.clear
 
     -- 1. Test: Beneficial spells (Heals, Buffs, etc.) NEVER lock out
     assert_eq(isLockedOut('Heal'), false, 'tracker: Heal not locked initially')
@@ -1334,7 +1179,7 @@ local function testCastTracker()
     assert_eq(isLockedOut('Nuke'), false, 'tracker: Nuke 2/3 fails, not locked yet')
     recordFailure('Nuke', 3, 60)
     assert_eq(isLockedOut('Nuke'), true, 'tracker: Nuke 3/3 fails, locked out')
-    mockClock = 161 -- 100 + 60 + 1
+    clk.now = 161 -- 100 + 60 + 1
     assert_eq(isLockedOut('Nuke'), false, 'tracker: Nuke lockout expired')
 
     -- 5. Test: recordSuccess clears failure count on detrimental spell
@@ -1346,29 +1191,29 @@ local function testCastTracker()
     assert_eq(isLockedOut('Nuke'), false, 'tracker: success resets count')
 
     -- 6. Test: Detrimental Target-Scoped Immunity (e.g. Slow on immune mob)
-    mockClock = 200
+    clk.now = 200
     recordFailure('Slow', 101, 'target immune', 2, 30, 'debuff')
     assert_eq(isLockedOut('Slow', 101), true, 'tracker: target 101 is immune to Slow')
     assert_eq(isLockedOut('Slow', 102), false, 'tracker: target 102 is NOT immune to Slow')
     assert_eq(isLockedOut('Slow'), false, 'tracker: Slow is NOT locked out globally')
 
     -- 7. Test: Detrimental "Did Not Take Hold" (Non-stacking debuff backoff on enemy)
-    mockClock = 300
+    clk.now = 300
     recordFailure('Tash', 55, 'did not take hold', 2, 30, 'debuff')
     assert_eq(isLockedOut('Tash', 55), true, 'tracker: Tash backed off on target 55')
     assert_eq(isLockedOut('Tash', 56), false, 'tracker: Tash available for target 56')
-    mockClock = 421 -- 300 + 120 + 1
+    clk.now = 421 -- 300 + 120 + 1
     assert_eq(isLockedOut('Tash', 55), false, 'tracker: Tash backoff expired on target 55')
 
     -- 8. Test: Direct Damage Resists do NOT trigger lockouts
-    mockClock = 500
+    clk.now = 500
     recordFailure('Ice Comet', 101, 'resisted', 2, 30, 'dd')
     recordFailure('Ice Comet', 101, 'resisted', 2, 30, 'dd')
     recordFailure('Ice Comet', 101, 'resisted', 2, 30, 'dd')
     assert_eq(isLockedOut('Ice Comet', 101), false, 'tracker: DD nukes never lock out on resists')
 
     -- 9. Test: Debuff Resists back off only on specific target after maxRetries
-    mockClock = 600
+    clk.now = 600
     recordFailure('Tash', 201, 'resisted', 2, 30, 'debuff')
     assert_eq(isLockedOut('Tash', 201), false, 'tracker: 1 debuff resist does not lock')
     recordFailure('Tash', 201, 'resisted', 2, 30, 'debuff')
@@ -1376,21 +1221,21 @@ local function testCastTracker()
     assert_eq(isLockedOut('Tash', 202), false, 'tracker: Tash remains usable on target 202')
 
     -- 10. Test: Failure count TTL decay (15s)
-    mockClock = 700
+    clk.now = 700
     recordFailure('Root', 301, 'resisted', 2, 30, 'debuff')
-    mockClock = 720 -- 20 seconds later (> 15s decay)
+    clk.now = 720 -- 20 seconds later (> 15s decay)
     recordFailure('Root', 301, 'resisted', 2, 30, 'debuff')
     assert_eq(isLockedOut('Root', 301), false, 'tracker: failure count decayed after 20s')
 
     -- 11. Test: Dead target / Positional events have 0 penalty
-    mockClock = 800
+    clk.now = 800
     recordFailure('Nuke', 10, 'dead target', 1, 10, 'dd')
     recordFailure('Nuke', 10, 'out of range', 1, 10, 'dd')
     recordFailure('Nuke', 10, 'cannot see target', 1, 10, 'dd')
     assert_eq(isLockedOut('Nuke', 10), false, 'tracker: positional/dead target events incur 0 penalty')
 
     -- 12. Test: Targeted clear vs global clear
-    mockClock = 850
+    clk.now = 850
     recordFailure('Tash', 201, 'resisted', 2, 30, 'debuff')
     recordFailure('Tash', 201, 'resisted', 2, 30, 'debuff')
     assert_eq(isLockedOut('Tash', 201), true, 'tracker: target 201 locked out')
@@ -1771,9 +1616,11 @@ do
             end
         }
     }
+    local findPcSpawnExact = loadFunc(bbSrc, 'findPcSpawnExact', { mq = mockSpawnLookup })
     local isPlayerSameGuild = loadFunc(bbSrc, 'isPlayerSameGuild', {
         mq = mockSpawnLookup,
-        isSameGuild = isSameGuild
+        isSameGuild = isSameGuild,
+        findPcSpawnExact = findPcSpawnExact
     })
     assert_true(isPlayerSameGuild('guildmate'), 'isPlayerSameGuild: guildmate returns true')
     assert_eq(isPlayerSameGuild('stranger'), false, 'isPlayerSameGuild: stranger returns false')
@@ -2679,6 +2526,7 @@ do
         do
             local st = { combat = false, cs = 'ACTIVE', haters = 0, slotCounts = false }
             local slotObj = setmetatable({ ID = function() return 301 end }, { __call = function() return true end })
+            local rtIC = { targetIsEngaged = function() return st.engaged end, pullTargetId = 0 }
             local isCombat = loadFunc(src, 'isCombat', {
                 ctrl = ctrlBox,
                 mq = { TLO = {
@@ -2691,9 +2539,15 @@ do
                         XTargetSlots = function() return 1 end,
                         XTarget = function() return slotObj end,
                     },
-                    Target = setmetatable({}, { __call = function() return false end }),
+                    Target = setmetatable({
+                        ID = function() return 777 end,
+                        Type = function() return 'NPC' end,
+                        Dead = function() return false end,
+                        CleanName = function() return 'a_merchant' end,
+                    }, { __call = function() return st.hasTarget end }),
                     Spawn = function() return setmetatable({ Type = function() return 'NPC' end, Dead = function() return false end, CleanName = function() return 'a_rat' end }, { __call = function() return true end }) end,
                 } },
+                runtime = rtIC,
                 isSpawnAlive = function() return true end,
                 isGroupOrRaidMember = function() return false end,
                 isSpawnPetOrPlayer = function() return false end,
@@ -2715,6 +2569,18 @@ do
             ctrlBox.mode = 'Puller'
             assert_eq(isCombat(), true, 'isCombat (Puller): group hater count still means combat')
             ctrlBox.mode = 'Manual'
+            -- A targeted live NPC that nobody is fighting (merchant, a mob
+            -- conned from afar) is not combat; an engaged one or the
+            -- puller's own pull target is.
+            st.haters = 0; st.hasTarget = true; st.engaged = false
+            assert_eq(isCombat(), false, 'isCombat: targeting an unengaged NPC is not combat')
+            st.engaged = true
+            assert_eq(isCombat(), true, 'isCombat: an engaged target is combat')
+            st.engaged = false
+            rtIC.pullTargetId = 777
+            assert_eq(isCombat(), true, 'isCombat: the pull target counts as combat')
+            rtIC.pullTargetId = 0
+            st.hasTarget = false
         end
 
         -- End to end through the scanners: slot 1 (mob 201) becomes the tank's
@@ -3248,33 +3114,9 @@ end
 -- ============================================================================
 print('--- triune_map Smart Auto-Z & Depth Fading ---')
 do
-    local function getZAlphaMultiplier(avgZ, minZ, maxZ, zFilterMode, zDepthFading)
-        if zFilterMode == 3 then
-            return 1.0, true
-        end
-        if avgZ < minZ or avgZ > maxZ then
-            if zDepthFading then
-                local d = (avgZ < minZ) and (minZ - avgZ) or (avgZ - maxZ)
-                if d <= 10 then
-                    local alpha = 0.22 * (1.0 - (d / 10))
-                    return alpha, true
-                end
-            end
-            return 0.0, false
-        end
-        if not zDepthFading then
-            return 1.0, true
-        end
-        local fadeEdge = 6.0
-        local distToMin = avgZ - minZ
-        local distToMax = maxZ - avgZ
-        local edgeDist = math.min(distToMin, distToMax)
-        if edgeDist < fadeEdge then
-            local factor = 0.35 + 0.65 * (math.max(0, edgeDist) / fadeEdge)
-            return factor, true
-        end
-        return 1.0, true
-    end
+    -- The real getZAlphaMultiplier from tac/map.lua (explicit mode/fading
+    -- arguments; cfg is only the fallback when they are nil).
+    local getZAlphaMultiplier = loadFunc(readFile('TAC/lua/tac/map.lua'), 'getZAlphaMultiplier', { cfg = { zFilterMode = 1, zDepthFading = false } })
 
     -- Test exact center of floor: 100% opacity
     local a1, vis1 = getZAlphaMultiplier(50, 40, 65, 1, true)
@@ -3300,6 +3142,15 @@ do
     local a5, vis5 = getZAlphaMultiplier(-500, 40, 65, 3, true)
     assert_true(vis5, 'disabled mode: always visible')
     assert_eq(a5, 1.0, 'disabled mode: 100% alpha')
+
+    -- Depth fading off: hard cut at the floor bounds, no edge fade
+    local a6, vis6 = getZAlphaMultiplier(41, 40, 65, 1, false)
+    assert_true(vis6 and a6 == 1.0, 'no depth fading: floor edge stays at 100% alpha')
+    local _, vis7 = getZAlphaMultiplier(38, 40, 65, 1, false)
+    assert_true(not vis7, 'no depth fading: just outside the floor is culled')
+    -- nil arguments fall back to the saved cfg (fading off here)
+    local a8 = getZAlphaMultiplier(41, 40, 65)
+    assert_eq(a8, 1.0, 'nil mode/fading fall back to cfg')
 end
 
 -- ============================================================================
@@ -3435,82 +3286,16 @@ do
         { short = 'hohonora',     name = 'Halls of Honor',            era = 'Planes of Power',  type = 'Dungeon', connections = {'povalor'} },
     }
 
-    local function testFindZoneRoute(startShort, targetShort, allZones)
-        if not startShort or startShort == '' or not targetShort or targetShort == '' then
-            return nil, 0
-        end
-        local sStart = startShort:lower():match('^%s*(.-)%s*$')
-        local sTarget = targetShort:lower():match('^%s*(.-)%s*$')
-        if sStart == '' or sTarget == '' then return nil, 0 end
-
-        local zoneLookup = {}
-        for _, z in ipairs(allZones or {}) do
-            if z.short then zoneLookup[z.short:lower()] = z end
-        end
-
-        local startEntry = zoneLookup[sStart] or { short = sStart, name = sStart, era = 'Unknown', type = 'Zone' }
-        local targetEntry = zoneLookup[sTarget] or { short = sTarget, name = sTarget, era = 'Unknown', type = 'Zone' }
-
-        if sStart == sTarget then
-            return { startEntry }, 0
-        end
-
-        local adj = {}
-        local function addEdge(u, v)
-            if not u or not v or u == '' or v == '' then return end
-            u = u:lower()
-            v = v:lower()
-            if not adj[u] then adj[u] = {} end
-            if not adj[v] then adj[v] = {} end
-            adj[u][v] = true
-            adj[v][u] = true
-        end
-
-        for _, z in ipairs(allZones or {}) do
-            local u = z.short:lower()
-            for _, c in ipairs(z.connections or {}) do
-                addEdge(u, c)
-            end
-        end
-
-        local queue = { sStart }
-        local visited = { [sStart] = true }
-        local parent = {}
-
-        local found = false
-        local qHead = 1
-        while qHead <= #queue do
-            local curr = queue[qHead]
-            qHead = qHead + 1
-
-            if curr == sTarget then
-                found = true
-                break
-            end
-
-            local neighbors = adj[curr] or {}
-            for nbr, _ in pairs(neighbors) do
-                if not visited[nbr] then
-                    visited[nbr] = true
-                    parent[nbr] = curr
-                    queue[#queue + 1] = nbr
-                end
-            end
-        end
-
-        if not found then return nil, 0 end
-
-        local path = {}
-        local curr = sTarget
-        while curr do
-            local zInfo = zoneLookup[curr] or { short = curr, name = curr, era = 'Unknown', type = 'Zone' }
-            table.insert(path, 1, zInfo)
-            curr = parent[curr]
-        end
-
-        local hops = math.max(0, #path - 1)
-        return path, hops
-    end
+    -- The real findZoneRoute / rebuildAtlasGraph from tac/map.lua over a
+    -- sandboxed atlas registry (state.atlasAllZones = routeZones).
+    local testFindZoneRoute = (function()
+        local routeState = { atlasAllZones = routeZones, atlasRouteCache = {} }
+        local routeGraph = { lookup = nil, adj = nil }
+        local rebuildAtlasGraph = loadFunc(mapSrc, 'rebuildAtlasGraph', {
+            state = routeState, atlasGraph = routeGraph, decorateAtlasEntry = loadFunc(mapSrc, 'decorateAtlasEntry'),
+        })
+        return loadFunc(mapSrc, 'findZoneRoute', { state = routeState, atlasGraph = routeGraph, rebuildAtlasGraph = rebuildAtlasGraph })
+    end)()
 
     -- Same zone test
     local pSame, hSame = testFindZoneRoute('poknowledge', 'poknowledge', routeZones)
@@ -3644,20 +3429,7 @@ end
 print('--- Spell Gem Enhancements ---')
 do
     -- A. Deep copy & Preset Management
-    local function deepCopyTable(orig)
-        local orig_type = type(orig)
-        local copy
-        if orig_type == 'table' then
-            copy = {}
-            for orig_key, orig_value in next, orig, nil do
-                copy[deepCopyTable(orig_key)] = deepCopyTable(orig_value)
-            end
-            setmetatable(copy, deepCopyTable(getmetatable(orig)))
-        else
-            copy = orig
-        end
-        return copy
-    end
+    local deepCopyTable = loadFunc(src, 'deepCopyTable') -- real runtime.deepCopyTable
 
     local testGems = {
         [1] = { cls = 'Clr', spell = 'Complete Healing', target = 'F: Tank', when = 'HP <=', pct = 50 },
@@ -3838,15 +3610,7 @@ do
     assert_eq(ABILITY_BASE_COOLDOWNS['Feign Death'], 8, 'ability cd: Feign Death is 8s')
 
     -- D. AA and Discipline Timer Conversions & Timer Groups
-    local function parseCombatAbilityTimer(rawVal)
-        if type(rawVal) == 'table' and rawVal.TotalSeconds then
-            return rawVal.TotalSeconds
-        end
-        local n = tonumber(rawVal) or 0
-        if n > 1000 then return n / 1000.0 end
-        if n > 0 and n <= 500 then return n * 6 end -- ticks to seconds
-        return n
-    end
+    local parseCombatAbilityTimer = loadFunc(src, 'parseCombatAbilityTimer', { tloTotalSeconds = loadFunc(src, 'tloTotalSeconds') })
 
     assert_eq(parseCombatAbilityTimer(5), 30, 'disc timer: 5 ticks = 30s')
     assert_eq(parseCombatAbilityTimer(10), 60, 'disc timer: 10 ticks = 60s')
@@ -3881,78 +3645,16 @@ do
     assert_true(triuneContent:find('pm.drawTabs', 1, true) == nil, 'cooldown window: pm.drawTabs removed from the plugin manager')
 
     -- F. parseDurationSec & parseSpellRecastTime Comprehensive Tests
-    local function parseDurationSec(durObj)
-        if not durObj then return 0 end
-        local sec = 0
-        pcall(function()
-            if type(durObj) == 'number' then
-                if durObj >= 2147483647 or durObj < 0 then
-                    sec = 0
-                elseif durObj > 10000 then
-                    sec = durObj / 1000.0
-                elseif durObj > 0 and durObj <= 500 then
-                    sec = durObj * 6
-                else
-                    sec = durObj
-                end
-                if sec >= 2000000 or sec < 0 then sec = 0 end
-                return
-            end
-            if type(durObj) == 'table' then
-                if durObj.TotalSeconds then
-                    if type(durObj.TotalSeconds) == 'function' then
-                        sec = tonumber(durObj.TotalSeconds() or 0) or 0
-                    else
-                        sec = tonumber(durObj.TotalSeconds) or 0
-                    end
-                    if sec >= 2000000 or sec < 0 then sec = 0 end
-                    if sec > 0 then return end
-                end
-                if durObj.Raw then
-                    local r = type(durObj.Raw) == 'function' and durObj.Raw() or durObj.Raw
-                    local nr = tonumber(r or 0) or 0
-                    if nr > 0 and nr < 2147483647 then
-                        sec = nr / 1000.0
-                        if sec > 0 then return end
-                    end
-                end
-                if durObj.Ticks then
-                    local t = type(durObj.Ticks) == 'function' and durObj.Ticks() or durObj.Ticks
-                    local nt = tonumber(t or 0) or 0
-                    if nt > 0 and nt < 350000 then
-                        sec = nt * 6
-                        if sec > 0 then return end
-                    end
-                end
-            end
-            if type(durObj) == 'function' then
-                local val = durObj()
-                if val ~= nil then
-                    local n = tonumber(val) or 0
-                    if n >= 2147483647 or n < 0 then
-                        sec = 0
-                    elseif n > 1800 then
-                        sec = n / 1000.0
-                    elseif n > 0 and n <= 500 then
-                        sec = n * 6
-                    else
-                        sec = n
-                    end
-                    if sec >= 2000000 or sec < 0 then sec = 0 end
-                end
-            end
-        end)
-        if sec >= 2000000 or sec < 0 then sec = 0 end
-        return sec
-    end
+    local parseDurationSec = loadFunc(src, 'parseDurationSec', { tloTotalSeconds = loadFunc(src, 'tloTotalSeconds') }) -- real helper
 
     -- MacroQuest Me.Buff.Duration tests
     assert_eq(parseDurationSec({ TotalSeconds = function() return 180 end }), 180, 'parseDurationSec: TotalSeconds() method')
     assert_eq(parseDurationSec({ TotalSeconds = 45 }), 45, 'parseDurationSec: TotalSeconds property')
     assert_eq(parseDurationSec({ Raw = function() return 18000 end }), 18, 'parseDurationSec: Raw() ms method (18000ms = 18s)')
     assert_eq(parseDurationSec({ Ticks = function() return 10 end }), 60, 'parseDurationSec: Ticks() method (10 ticks = 60s)')
-    assert_eq(parseDurationSec(function() return "18000" end), 18, 'parseDurationSec: string ms fallback (18000ms = 18s)')
-    assert_eq(parseDurationSec(function() return "5" end), 30, 'parseDurationSec: string ticks fallback (5 ticks = 30s)')
+    -- callable tables stand in for MQ TLO objects whose value is read with ()
+    assert_eq(parseDurationSec(setmetatable({}, { __call = function() return "18000" end })), 18, 'parseDurationSec: string ms fallback (18000ms = 18s)')
+    assert_eq(parseDurationSec(setmetatable({}, { __call = function() return "5" end })), 30, 'parseDurationSec: string ticks fallback (5 ticks = 30s)')
     -- Sentinel / 0xFFFFFFFF unsigned underflow rejection (prevents 1194h)
     assert_eq(parseDurationSec({ Raw = function() return 4294967295 end }), 0, 'parseDurationSec: rejects 0xFFFFFFFF Raw ms sentinel')
     assert_eq(parseDurationSec({ TotalSeconds = function() return 4294967 end }), 0, 'parseDurationSec: rejects 4294967s TotalSeconds sentinel (1194h)')
@@ -4328,15 +4030,7 @@ do
     local PET_SCOPE_LIST = {
         'all', 'swarm', 'mag', 'bst', 'nec', 'enc', 'shm', 'dru', 'brd', 'shd'
     }
-    local function classToPetCmdScope(cls)
-        if not cls or type(cls) ~= 'string' then return 'all' end
-        local lower = string.lower(cls)
-        if lower == 'sk' or lower == 'shd' then return 'shd' end
-        for _, s in ipairs(PET_SCOPE_LIST) do
-            if lower == s then return s end
-        end
-        return 'all'
-    end
+    local classToPetCmdScope = loadFunc(src, 'classToPetCmdScope', { petState = { PET_SCOPE_LIST = PET_SCOPE_LIST } })
 
     assert_eq(classToPetCmdScope('Mag'), 'mag', 'pet scope: Mag -> mag')
     assert_eq(classToPetCmdScope('mag'), 'mag', 'pet scope: mag -> mag')
@@ -4668,35 +4362,70 @@ end
 -- ============================================================================
 print('--- Target Retention During Spell Casting ---')
 do
+    -- Real triune.lua helpers (isTargetRequiredSpell, isCastingOrStarting,
+    -- getActiveTargetRequiredCastingId, setTarget, clearTarget,
+    -- checkAggroSwitch) run against a mock TLO driven by mockState below.
+    local spellMap = {
+        ['Complete Healing'] = 'Single',
+        ['Greater Healing'] = 'Single',
+        ['Chloroplast'] = 'Single',
+        ['Light Healing'] = 'Single',
+        ['Ice Comet'] = 'Single',
+        ['Tashani'] = 'Single',
+        ['Slow'] = 'Single',
+        ['Word of Shadow'] = 'PB AE',
+        ['Color Flux'] = 'PB AE',
+        ['Cannibalize'] = 'Self',
+        ['Armor of Protection'] = 'Self',
+        ['Celestial Elixir'] = 'Group v1',
+        ['Word of Redemption'] = 'Group v2',
+    }
+    local function mkSpell(tt)
+        return setmetatable({ TargetType = function() return tt end }, { __call = function() return tt ~= nil end })
+    end
+    local mockState = {
+        isCasting = false,
+        castTracker = {
+            targetRequired = false,
+            activeTargetId = nil,
+            activeSpell = nil,
+            castStartTime = 0,
+            failed = false,
+        },
+        currentTargetId = 0,
+        targetCleared = false,
+    }
+    local myId = 1
+    local function isHostile(id)
+        return id and id >= 1000 and id < 2000
+    end
+    local retentionMq = {
+        TLO = {
+            Spell = function(name) return mkSpell(spellMap[name]) end,
+            Me = {
+                ID = function() return myId end,
+                Combat = function() return false end,
+                Casting = setmetatable({
+                    ID = function() return mockState.isCasting and 999 or nil end,
+                    TargetType = function() return spellMap[mockState.castTracker.activeSpell or ''] end,
+                }, { __call = function() return mockState.isCasting end }),
+            },
+            Target = { ID = function() return mockState.currentTargetId end },
+            Spawn = function(id)
+                return setmetatable({ Dead = function() return false end, Type = function() return 'NPC' end, State = function() return 'STAND' end },
+                    { __call = function() return id and id > 0 end })
+            end,
+        },
+        cmd = function(c) if c == '/target clear' then mockState.currentTargetId = 0 mockState.targetCleared = true end end,
+        cmdf = function(fmt, id)
+            if fmt == '/target id %d' then mockState.currentTargetId = id mockState.targetCleared = false end
+        end,
+        delay = function() end,
+    }
+    local isTargetRequiredSpellReal = loadFunc(src, 'isTargetRequiredSpell', { mq = retentionMq })
     local function isTargetRequiredSpell(spell)
-        if not spell then return false end
-        local tt = nil
-        if type(spell) == 'table' and spell.TargetType then
-            tt = spell.TargetType
-        elseif type(spell) == 'string' then
-            local spellMap = {
-                ['Complete Healing'] = 'Single',
-                ['Greater Healing'] = 'Single',
-                ['Chloroplast'] = 'Single',
-                ['Light Healing'] = 'Single',
-                ['Ice Comet'] = 'Single',
-                ['Tashani'] = 'Single',
-                ['Slow'] = 'Single',
-                ['Word of Shadow'] = 'PB AE',
-                ['Color Flux'] = 'PB AE',
-                ['Cannibalize'] = 'Self',
-                ['Armor of Protection'] = 'Self',
-                ['Celestial Elixir'] = 'Group v1',
-                ['Word of Redemption'] = 'Group v2',
-            }
-            tt = spellMap[spell] or 'Single'
-        end
-        if not tt or tt == '' or tt == 'NULL' then return false end
-        local s = tostring(tt):lower()
-        if s == 'self' or s == 'pb ae' or s == 'group v1' or s == 'group v2' or s:find('group') then
-            return false
-        end
-        return true
+        if type(spell) == 'table' then return isTargetRequiredSpellReal(mkSpell(spell.TargetType)) end
+        return isTargetRequiredSpellReal(spell)
     end
 
     -- 1. isTargetRequiredSpell classification
@@ -4717,73 +4446,26 @@ do
     assert_eq(isTargetRequiredSpell({ TargetType = 'Group v1' }), false, 'table spell Group v1 does not require target')
 
     -- 2. getActiveTargetRequiredCastingId & Target Retention Simulation
-    local mockState = {
-        isCasting = false,
-        castTracker = {
-            targetRequired = false,
-            activeTargetId = nil,
-            activeSpell = nil,
-            castStartTime = 0,
-            failed = false,
-        },
-        currentTargetId = 0,
-        targetCleared = false,
-    }
-
-    local function isCastingOrStarting()
-        if mockState.isCasting then return true end
-        if mockState.castTracker.activeSpell and not mockState.castTracker.failed and mockState.castTracker.castStartTime > 0 then
-            local elapsed = os.clock() - mockState.castTracker.castStartTime
-            if elapsed >= 0 and elapsed < 0.8 then return true end
-        end
-        return false
-    end
-
-    local myId = 1
-    local function isHostile(id)
-        return id and id >= 1000 and id < 2000
-    end
-
-    local function getActiveTargetRequiredCastingId()
-        if not isCastingOrStarting() then return nil end
-        if mockState.castTracker.targetRequired and mockState.castTracker.activeTargetId and mockState.castTracker.activeTargetId > 0 then
-            if mockState.castTracker.activeTargetId == myId then
-                local tid = mockState.currentTargetId or 0
-                if tid > 0 and isHostile(tid) then
-                    return nil
-                end
-            end
-            return mockState.castTracker.activeTargetId
-        end
-        return nil
-    end
-
-    local function setTarget(id)
-        if not id or id == 0 then return false end
-        local reqId = getActiveTargetRequiredCastingId()
-        if reqId and reqId > 0 and id ~= reqId then
-            return false
-        end
-        mockState.currentTargetId = id
-        mockState.targetCleared = false
-        return true
-    end
-
-    local function clearTarget()
-        local reqId = getActiveTargetRequiredCastingId()
-        if reqId and reqId > 0 then
-            return false
-        end
-        mockState.currentTargetId = 0
-        mockState.targetCleared = true
-        return true
-    end
-
-    local function checkAggroSwitch(newMobId)
-        if isCastingOrStarting() or getActiveTargetRequiredCastingId() then
-            return false
-        end
-        return setTarget(newMobId)
+    local isCastingReal = loadFunc(src, 'isCasting', { mq = retentionMq })
+    local isCastingOrStarting = loadFunc(src, 'isCastingOrStarting', { isCasting = isCastingReal, castTracker = mockState.castTracker })
+    local getActiveTargetRequiredCastingId = loadFunc(src, 'getActiveTargetRequiredCastingId', {
+        mq = retentionMq, castTracker = mockState.castTracker, isCastingOrStarting = isCastingOrStarting,
+        isHostileTarget = isHostile, isTargetRequiredSpell = isTargetRequiredSpellReal,
+    })
+    local setTarget = loadFunc(src, 'setTarget', {
+        mq = retentionMq, getActiveTargetRequiredCastingId = getActiveTargetRequiredCastingId, isHostileTarget = isHostile,
+    })
+    local clearTarget = loadFunc(src, 'clearTarget', { mq = retentionMq, getActiveTargetRequiredCastingId = getActiveTargetRequiredCastingId })
+    -- checkAggroSwitch: the cast gate is its first check; forcedTargetId is the
+    -- next thing it consults, so reaching it means the gate let the call through.
+    local aggroGate = { reached = false }
+    local checkAggroSwitchReal = loadFunc(src, 'checkAggroSwitch', {
+        mq = retentionMq, isCastingOrStarting = isCastingOrStarting, getActiveTargetRequiredCastingId = getActiveTargetRequiredCastingId,
+        forcedTargetId = function() aggroGate.reached = true return 1 end,
+    })
+    local function checkAggroSwitch()
+        aggroGate.reached = false
+        return checkAggroSwitchReal()
     end
 
     -- Test Idle state (not casting)
@@ -4815,7 +4497,8 @@ do
     assert_eq(mockState.currentTargetId, 2002, 'target was not cleared, remains on 2002')
 
     -- Attempt aggro switch while casting heal
-    assert_eq(checkAggroSwitch(3003), false, 'aggro switch blocked while casting heal')
+    assert_eq(checkAggroSwitch(), false, 'aggro switch blocked while casting heal')
+    assert_eq(aggroGate.reached, false, 'aggro switch stops at the cast gate while casting heal')
     assert_eq(mockState.currentTargetId, 2002, 'target remains on 2002 after blocked aggro switch')
 
     -- Re-targeting the same ally 2002 is permitted (re-synchronization)
@@ -4831,6 +4514,8 @@ do
 
     -- Now that casting finished, target can be switched to combat target (1001)
     assert_eq(getActiveTargetRequiredCastingId(), nil, 'post-cast: no active casting target')
+    checkAggroSwitch()
+    assert_eq(aggroGate.reached, true, 'post-cast: aggro switch passes the cast gate')
     assert_eq(setTarget(1001), true, 'post-cast: can restore target to enemy mob 1001')
     assert_eq(mockState.currentTargetId, 1001, 'post-cast: target restored to 1001')
 
@@ -4982,11 +4667,359 @@ do
 end
 
 -- ============================================================================
+-- 46b. Ordered Cure Targeting With Real Runtime Logic
+-- ============================================================================
+print('--- Ordered Cure Targeting With Real Runtime Logic ---')
+do
+(function()
+    local meId, allyId, mobId = 1001, 2002, 9009
+    local world = { clock = 100, target = mobId, counters = {}, hp = {}, castMs = 2500 }
+    local runtime = { healActionCache = {}, lastCast = {} }
+    local ctrl = { running = true, mode = 'Assist', medbreak_enabled = false }
+    local loadout = { clickies = {} }
+    local tracker = { isLockedOut = function() return false end, recordSuccess = function() end }
+    local function noop() end
+    local function no() return false end
+    local function yes() return true end
+    local function callable(t, call)
+        return setmetatable(t, { __call = call or yes })
+    end
+    local cures = {
+        { spell = 'Cure Poison', when = 'has Poison', key = 'poison', spa = 36 },
+        { spell = 'Cure Disease', when = 'has Disease', key = 'disease', spa = 35 },
+        { spell = 'Counter Remedy', when = 'has Poison/Disease', key = 'poison', spa = 36 },
+        { spell = 'Counter Remedy', when = 'has Poison/Disease', key = 'disease', spa = 35 },
+        { spell = 'Cure Curse', when = 'has Curse', key = 'curse', spa = 116 },
+        { spell = 'Cure Corruption', when = 'has Corruption', key = 'corruption', spa = 369 },
+    }
+    local spells = {}
+    local function addSpell(name, effects, targetType, beneficial)
+        local id = 100 + #name
+        spells[name] = callable({
+            ID = function() return id end,
+            Name = function() return name end,
+            Beneficial = function() return beneficial ~= false end,
+            TargetType = function() return targetType or 'Single' end,
+            Category = function() return 'Heals' end,
+            Subcategory = function() return 'Cure' end,
+            HasSPA = function(spa) return effects[spa] == true end,
+            Duration = function() return 0 end,
+            Mana = function() return 10 end,
+            EnduranceCost = function() return 0 end,
+            CastTime = function() return world.castMs end,
+        })
+    end
+    for _, cure in ipairs(cures) do addSpell(cure.spell, { [cure.spa] = true }) end
+    addSpell('Counter Remedy', { [35] = true, [36] = true })
+    addSpell('Greater Healing', { [0] = true })
+    addSpell('Group Healing', { [0] = true }, 'Group v1')
+    addSpell('Healing Focus', { [125] = true })
+    addSpell('HP Damage', { [0] = true }, 'Single', false)
+
+    local function counter(id, key)
+        return (world.counters[id] and world.counters[id][key]) or 0
+    end
+    local spawns = {}
+    for _, id in ipairs({ meId, allyId, mobId }) do
+        spawns[id] = callable({
+            ID = function() return id end,
+            CleanName = function() return 'Character' .. id end,
+            Type = function() return id == mobId and 'NPC' or 'PC' end,
+            State = function() return 'STAND' end,
+            Dead = no,
+            Present = yes,
+            OtherZone = no,
+            Offline = no,
+            PctHPs = function() return world.hp[id] or 100 end,
+            CountersPoison = function() return counter(id, 'poison') end,
+            CountersDisease = function() return counter(id, 'disease') end,
+            CountersCurse = function() return counter(id, 'curse') end,
+            CountersCorruption = function() return counter(id, 'corruption') end,
+        })
+    end
+    local me = spawns[meId]
+    me.Combat = function() return world.attacking end
+    me.Sitting, me.Ducking, me.Moving, me.Feigning = no, no, no, no
+    me.PctMana = function() return 100 end
+    me.CurrentMana, me.CurrentEndurance = me.PctMana, me.PctMana
+    me.CountBuffs = function() return 0 end
+    me.Class = { ShortName = function() return 'CLR' end }
+    me.Pet = { ID = function() return 0 end }
+    me.Casting = callable({
+        ID = function() return world.casting and 123 or 0 end,
+        TargetType = function() return spells[world.casting].TargetType() end,
+    }, function() return world.casting ~= nil end)
+    me.ItemReady, me.SpellReady, me.AltAbilityReady = function() return callable({}) end,
+        function() return callable({}) end, function() return callable({}) end
+    me.Gem = function() return callable({}, function() return 1 end) end
+    local function aa()
+        return callable({
+            ID = function() return 42 end,
+            Rank = function() return 1 end,
+            MyReuseTime = function() return 60 end,
+            Spell = spells[world.aaSpell],
+        })
+    end
+    me.AltAbility = aa
+    local mockMq = {
+        TLO = {
+            Me = me,
+            Target = { ID = function() return world.target end },
+            Spawn = function(id) return spawns[id] or callable({}, no) end,
+            Spell = function(name) return spells[name] or callable({}, no) end,
+            Group = {
+                Members = function() return 1 end,
+                Member = function(i) return i == 0 and me or spawns[allyId] end,
+            },
+            NetBots = function() return callable({}, no) end,
+            FindItem = function()
+                return callable({
+                    CastTime = function() return world.castMs end,
+                    TimerReady = function() return 0 end,
+                })
+            end,
+            AltAbility = aa,
+        },
+        doevents = noop,
+        delay = function(ms)
+            world.clock = world.clock + ms / 1000
+            if world.onDelay then world.onDelay(ms) end
+        end,
+    }
+    mockMq.cmd = function(command)
+        local target = command:match('^/target id (%d+)$')
+        if target then
+            world.target = tonumber(target)
+        elseif command == '/target clear' then
+            world.target = 0
+        elseif command == '/attack on' then
+            world.attacking = true
+        elseif command:find('^/useitem ') or command:find('^/cast ') or command:find('^/alt act ') then
+            world.firedTarget = world.target
+            world.firedCommand = command
+            world.casting = world.castMs > 0 and
+                (command:match('^/cast "(.-)"$') or (command:find('^/alt act ') and world.aaSpell) or world.itemSpell) or nil
+        end
+    end
+    mockMq.cmdf = function(fmt, ...) mockMq.cmd(string.format(fmt, ...)) end
+
+    local env = {
+        mq = mockMq, runtime = runtime, ctrl = ctrl, loadout = loadout, castTracker = tracker,
+        os = setmetatable({ clock = function() return world.clock end }, { __index = os }),
+        print = noop, clearCursor = noop, updatePetTracking = noop,
+        isSitting = no, isDucking = no, isMoveActive = no, navLoaded = no, stickLoaded = no,
+        isHostileTarget = function(id) return id == mobId end,
+        isSpawnAlive = function(id) return spawns[id] ~= nil end,
+        isIgnored = no, isSpawnMyPet = no, isAnyPet = no,
+        isCombat = yes, buffActive = no, bardKeepSinging = no,
+        hasSpellReagents = yes, isGemMatching = yes,
+        distToId = function(id) return id == meId and 0 or 20 end,
+        AFFLICTION_MEMBERS = {
+            Poison = { flag = 'Poisoned', counter = 'CountersPoison', boxnet = 'poison' },
+            Disease = { flag = 'Diseased', counter = 'CountersDisease', boxnet = 'disease' },
+        },
+    }
+    local function real(name) return loadFunc(src, name, env) end
+    env.baseTok = real('baseTok')
+    env.isFeignDeathAbility = real('isFeignDeathAbility')
+    env.checkHasSPA = real('checkHasSPA')
+    env.isDetrimentalSpell = real('isDetrimentalSpell')
+    runtime.isDetrimentalAction = real('isDetrimentalAction')
+    runtime.computeIsHealAction = real('computeIsHealAction')
+    runtime.isHealAction = real('isHealAction')
+    runtime.isRedirectableHeal = real('isRedirectableHeal')
+    env.castThroughHostileTarget = real('castThroughHostileTarget')
+    env.isTargetRequiredSpell = real('isTargetRequiredSpell')
+    env.isCasting = real('isCasting')
+    env.isCastingOrStarting = real('isCastingOrStarting')
+    env.getActiveTargetRequiredCastingId = real('getActiveTargetRequiredCastingId')
+    runtime.setTarget = real('setTarget')
+    runtime.clearTarget = real('clearTarget')
+    runtime.abortPendingCast = real('abortPendingCast')
+    env.pctHP = real('pctHP')
+    env.hasAffliction = real('hasAffliction')
+    env.isPoisoned = real('isPoisoned')
+    env.isDiseased = real('isDiseased')
+    env.isPoisonedOrDiseased = real('isPoisonedOrDiseased')
+    env.isCursed = real('isCursed')
+    env.isCorrupted = real('isCorrupted')
+    runtime.conditionMet = real('conditionMet')
+    runtime.isTargetInRange = real('isTargetInRange')
+    runtime.anyGroupMemberId = real('anyGroupMemberId')
+    runtime.resolveTargetId = real('resolveTargetId')
+    runtime.stopMovementForCast, runtime.noteAAEffectStarted = noop, noop
+    runtime.checkStuck, runtime.checkCombatStall, runtime.checkGemMemSync, runtime.decayZoneHazards = noop, noop, noop, noop
+    runtime.wpBeginTick = noop
+    runtime.isMoveActive, runtime.aaGroupBusy = no, no
+    runtime.aaTabOrder = function() return {} end
+    runtime.sortedAAEntries = real('sortedAAEntries')
+    runtime.useClickie = real('useClickie')
+    runtime.castGem = real('castGem')
+    runtime.fireAA = real('fireAA')
+    runtime.processHealPriority = real('processHealPriority')
+    local combatTick = real('combatTick')
+
+    local function reset(entry, original, castMs)
+        world.clock, world.target = 100, original == nil and mobId or original
+        world.counters, world.hp = {}, {}
+        world.castMs = castMs == nil and 2500 or castMs
+        world.casting, world.firedTarget, world.firedCommand, world.onDelay = nil, nil, nil, nil
+        world.attacking, world.itemSpell, world.aaSpell = true, entry.spell, entry.spell
+        runtime.lastCast, runtime.healActionCache = {}, {}
+        runtime.npcCastCounts, runtime.npcSpellLastCast = {}, {}
+        runtime.restoreTargetId = nil
+        tracker.activeSpell, tracker.activeTargetId, tracker.activeKind, tracker.targetRequired = nil, nil, nil, nil
+        tracker.wasCasting, tracker.failed, tracker.castStartTime = false, false, 0
+        loadout.gems, loadout.aas, loadout.actions, loadout.discs = nil, nil, nil, nil
+        loadout.clickies = { entry }
+    end
+    local function finishCast()
+        world.casting, world.clock = nil, world.clock + 3
+        local priority = runtime.processHealPriority
+        runtime.processHealPriority = yes -- stop the real combat tick after its cast-completion/restoration block
+        combatTick()
+        runtime.processHealPriority = priority
+    end
+    local function checkHeldAndRestored(id, label)
+        assert_eq(world.firedTarget, id, label .. ': item fires on the selected character')
+        assert_eq(world.target, id, label .. ': selected character remains targeted')
+        assert_eq(tracker.targetRequired, true, label .. ': cast requires its selected target')
+        assert_eq(runtime.restoreTargetId, mobId, label .. ': hostile saved for restoration')
+        assert_eq(env.getActiveTargetRequiredCastingId(), id, label .. ': target lock uses the real tracker')
+        assert_eq(runtime.setTarget(mobId), false, label .. ': combat retargeting blocked during cast')
+        assert_eq(runtime.clearTarget(), false, label .. ': clearing target blocked during cast')
+        combatTick()
+        world.target = mobId -- simulate an external target change, not one allowed by setTarget
+        combatTick()
+        assert_eq(world.target, id, label .. ': combat tick reasserts the required target')
+        finishCast()
+        assert_eq(world.target, mobId, label .. ': hostile restored after cast completion')
+        assert_nil(runtime.restoreTargetId, label .. ': pending restoration consumed')
+        assert_nil(tracker.targetRequired, label .. ': target lock released')
+    end
+
+    for _, selector in ipairs({ 'F: Me, then Group', 'F: Group, then Me' }) do
+        for _, cure in ipairs(cures) do
+            local entry = { name = cure.spell .. ' Clickie', spell = cure.spell,
+                target = selector, when = cure.when, pct = 100, enabled = true, cls = 'Clr' }
+            local label = selector .. ' / ' .. cure.when .. ' / ' .. cure.key
+            reset(entry)
+            assert_true(runtime.computeIsHealAction(entry.spell, selector, entry), label .. ': real classification preserves cure priority')
+            assert_true(runtime.isHealAction(entry.spell, selector, entry), label .. ': memoized cure priority remains eligible')
+            assert_eq(runtime.isRedirectableHeal(entry.spell, entry), false, label .. ': cure may not redirect through hostile')
+            assert_nil(runtime.resolveTargetId(selector, 'ALL', entry.when, entry.spell, 100, entry),
+                label .. ': clean characters do not match the cure condition')
+            assert_eq(runtime.processHealPriority(), false, label .. ': no cure fired without affliction')
+            world.counters[meId] = { [cure.key] = 3 }
+            assert_eq(runtime.resolveTargetId(selector, 'ALL', entry.when, entry.spell, 100, entry), meId,
+                label .. ': afflicted caster resolved while hostile is targeted')
+            assert_true(runtime.processHealPriority(), label .. ': cure dispatched by the real priority engine')
+            checkHeldAndRestored(meId, label .. ' self')
+
+            reset(entry)
+            world.counters[allyId] = { [cure.key] = 3 }
+            assert_eq(runtime.resolveTargetId(selector, 'ALL', entry.when, entry.spell, 100, entry), allyId,
+                label .. ': affliction is checked on each group member')
+            assert_true(runtime.processHealPriority(), label .. ': ally cure dispatched')
+            checkHeldAndRestored(allyId, label .. ' ally')
+
+            reset(entry)
+            world.counters[meId], world.counters[allyId] = { [cure.key] = 3 }, { [cure.key] = 3 }
+            local first = selector == 'F: Me, then Group' and meId or allyId
+            assert_eq(runtime.resolveTargetId(selector, 'ALL', entry.when, entry.spell, 100, entry), first,
+                label .. ': configured order preserved when both characters are afflicted')
+        end
+
+        local heal = { name = 'Healing Clickie', spell = 'Greater Healing', target = selector, when = 'HP <=', pct = 75 }
+        reset(heal)
+        world.hp[meId] = 50
+        assert_true(runtime.isRedirectableHeal(heal.spell, heal), selector .. ': actual HP heal is redirectable')
+        assert_true(runtime.processHealPriority(), selector .. ': actual self-heal dispatched')
+        assert_eq(world.firedTarget, mobId, selector .. ': actual self-heal fires through hostile')
+        assert_eq(tracker.activeTargetId, meId, selector .. ': self-heal records caster as recipient')
+        assert_eq(tracker.targetRequired, false, selector .. ': self-heal does not require a self target lock')
+        assert_nil(runtime.restoreTargetId, selector .. ': self-heal has no target to restore')
+        combatTick()
+        assert_eq(world.target, mobId, selector .. ': hostile preserved throughout actual self-heal')
+        finishCast()
+        assert_eq(world.target, mobId, selector .. ': hostile unchanged after actual self-heal')
+
+        reset(heal)
+        world.hp[allyId] = 50
+        assert_true(runtime.processHealPriority(), selector .. ': actual ally heal dispatched')
+        checkHeldAndRestored(allyId, selector .. ' HP heal on ally')
+    end
+
+    for _, spa in ipairs({ 0, 79, 100, 101, 147 }) do
+        local name = 'HP Effect ' .. spa
+        addSpell(name, { [spa] = true })
+        assert_true(runtime.isRedirectableHeal(name, {}), name .. ': HP effect metadata recognized')
+    end
+    for _, spa in ipairs({ 35, 36, 116, 369 }) do
+        local name = 'Heal With Counter ' .. spa
+        addSpell(name, { [0] = true, [spa] = true })
+        assert_eq(runtime.isRedirectableHeal(name, { kind = 'heal', when = 'always' }), false,
+            name .. ': cure metadata overrides heal kind and HP effect')
+    end
+    for _, name in ipairs({ 'Group Healing', 'Healing Focus', 'HP Damage', 'Unknown Heal' }) do
+        assert_eq(runtime.isRedirectableHeal(name, { kind = 'heal', target = 'F: Me, then Group' }), false,
+            name .. ': category, name, kind, and ally selector cannot prove safe redirection')
+    end
+    assert_eq(runtime.isRedirectableHeal('Greater Healing', { kind = 'cure' }), false, 'explicit cure kind cannot redirect')
+
+    for _, surface in ipairs({ 'gem', 'aa' }) do
+        for _, id in ipairs({ meId, allyId }) do
+            local entry = { spell = 'Cure Curse', target = 'F: Group, then Me', when = 'has Curse',
+                pct = 100, enabled = true, cls = 'Clr', gem = 1 }
+            reset(entry)
+            world.counters[id] = { curse = 3 }
+            loadout.clickies = {}
+            if surface == 'gem' then loadout.gems = { entry } else loadout.aas = { ['Purifying AA'] = entry } end
+            assert_true(runtime.processHealPriority(), surface .. ': cure remains priority eligible')
+            checkHeldAndRestored(id, surface .. ' cure on ' .. id)
+        end
+        local heal = { spell = 'Greater Healing', target = 'F: Me, then Group', when = 'HP <=',
+            pct = 75, enabled = true, cls = 'Clr', gem = 1 }
+        reset(heal)
+        world.hp[meId], loadout.clickies = 50, {}
+        if surface == 'gem' then loadout.gems = { heal } else loadout.aas = { ['Healing AA'] = heal } end
+        assert_true(runtime.processHealPriority(), surface .. ': actual self-heal remains eligible')
+        assert_eq(world.firedTarget, mobId, surface .. ': actual HP heal uses spell metadata to preserve hostile')
+        assert_eq(tracker.targetRequired, false, surface .. ': actual self-heal does not lock self')
+        assert_nil(runtime.restoreTargetId, surface .. ': actual self-heal does not schedule restoration')
+    end
+
+    local cure = { name = 'Curse Clickie', spell = 'Cure Curse', target = 'F: Me, then Group',
+        when = 'has Curse', pct = 100 }
+    for _, castMs in ipairs({ 0, 2500 }) do
+        for _, original in ipairs({ mobId, 0 }) do
+            reset(cure, original, castMs)
+            assert_true(runtime.useClickie(cure, meId), 'cure cast with duration ' .. castMs .. ' and original target ' .. original)
+            assert_eq(world.firedTarget, meId, 'cure selects self before useitem for either restoration path')
+            if castMs > 0 then
+                assert_eq(world.target, meId, 'non-instant cure holds self until completion')
+                assert_eq(runtime.restoreTargetId, original, 'non-instant cure preserves zero original target too')
+                combatTick()
+                finishCast()
+            end
+            assert_eq(world.target, original, 'cure restores hostile or clears an originally empty target')
+            assert_nil(runtime.restoreTargetId, 'restoration leaves no pending original target')
+        end
+    end
+    reset(cure, 0, 0)
+    world.onDelay = function(ms) if ms == 60 then world.target = allyId end end
+    assert_true(runtime.useClickie(cure, meId), 'instant cure with an external target change fires')
+    assert_eq(world.target, allyId, 'instant cure without an original target does not clear a newly selected character')
+end)()
+end
+
+-- ============================================================================
 -- Suite 49: Decoupled Spell Gems & Downtime Buff Swapping Logic
 -- ============================================================================
 print('--- Decoupled Spell Gems & Downtime Buff Swapping Logic ---')
 do
-    -- 1. getPrimarySpellForGem resolution
+    -- 1. getPrimarySpellForGem resolution (real runtime.getPrimarySpellForGem
+    -- over a sandboxed loadout)
     local decoupledGems = {
         { gem = 1, spell = 'Heal', when = 'HP <=', pct = 50 },
         { gem = 12, spell = 'Ice Comet', when = 'in combat', pct = 100 },
@@ -4994,174 +5027,111 @@ do
         { gem = 12, spell = 'Shield of Fire', when = 'missing buff', pct = 100 },
         { gem = 4, spell = 'Slow', when = 'in combat', pct = 100 },
     }
+    local gemEnv = { loadout = { gems = decoupledGems } }
+    local getPrimarySpellForGem = loadFunc(src, 'getPrimarySpellForGem', gemEnv)
+    assert_eq(getPrimarySpellForGem(1), 'Heal', 'gem 1 primary spell is Heal')
+    assert_eq(getPrimarySpellForGem(12), 'Ice Comet', 'gem 12 primary spell is Ice Comet (first configured for gem 12)')
+    assert_eq(getPrimarySpellForGem('4'), 'Slow', 'gem 4 primary spell is Slow (string slot accepted)')
+    assert_eq(getPrimarySpellForGem(2), nil, 'gem 2 has no configured spells')
+    local _, primaryEntry = getPrimarySpellForGem(12)
+    assert_true(primaryEntry == decoupledGems[2], 'getPrimarySpellForGem returns the loadout entry as its second value')
 
-    local function getPrimarySpellForGem(slot, gems)
-        slot = tonumber(slot) or 1
-        for _, g in ipairs(gems) do
-            if g and (tonumber(g.gem) or 1) == slot and g.spell and g.spell ~= '' then
-                return g.spell
-            end
-        end
-        return nil
-    end
+    -- Priority spell selection: the top entry of the list wins; an entry
+    -- switched off with pct 0 is skipped while another entry for the slot is
+    -- usable, and is only the fallback when it is the slot's only entry.
+    gemEnv.loadout.gems = {
+        { gem = 12, spell = 'Touch of the Cursed', target = 'E: Target', when = 'HP <= 80', pct = 80 }, -- Priority 1 (top of list)
+        { gem = 12, spell = 'Voice of the Berserker', target = 'M: Self', when = 'missing buff', pct = 100 }, -- Priority 2 (buff)
+        { gem = 3, spell = 'Disabled Nuke', pct = 0 },
+        { gem = 3, spell = 'Backup Nuke', pct = 90 },
+        { gem = 5, spell = 'Only Off', pct = 0 },
+    }
+    assert_eq(getPrimarySpellForGem(12), 'Touch of the Cursed', 'G12 priority spell is Touch of the Cursed (lifetap at top of list)')
+    assert_eq(getPrimarySpellForGem(3), 'Backup Nuke', 'pct 0 entry is skipped in favour of a usable entry on the same gem')
+    assert_eq(getPrimarySpellForGem(5), 'Only Off', 'pct 0 entry is still the fallback when it is the only entry for the gem')
+    gemEnv.loadout.gems = nil
+    assert_eq(getPrimarySpellForGem(1), nil, 'no loadout gems -> nil')
 
-    assert_eq(getPrimarySpellForGem(1, decoupledGems), 'Heal', 'gem 1 primary spell is Heal')
-    assert_eq(getPrimarySpellForGem(12, decoupledGems), 'Ice Comet', 'gem 12 primary spell is Ice Comet (first configured for gem 12)')
-    assert_eq(getPrimarySpellForGem(4, decoupledGems), 'Slow', 'gem 4 primary spell is Slow')
-    assert_eq(getPrimarySpellForGem(2, decoupledGems), nil, 'gem 2 has no configured spells')
-
-    -- 2. Sanitization of decoupled loadout entries
-    local rawLoadout = {
+    -- 2. Sanitization of decoupled loadout entries (real runtime.applyEntry)
+    local applyEnv = { loadout = {}, myClasses = { 'War' }, clearFilteredSpellsCache = function() end }
+    local applyEntry = loadFunc(src, 'applyEntry', applyEnv)
+    applyEntry({
         gems = {
-            { spell = 'Spell A' },             -- default to gem 1
+            { spell = 'Spell A' },             -- default to its list position (1)
             { gem = 12, spell = 'Spell B' },
             { gem = 99, spell = 'Spell C' },    -- clamped to 12
             { gem = 0, spell = 'Spell D' },     -- clamped to 1
+            'not a table',                      -- dropped
         }
-    }
-    local sanitizedGems = {}
-    for i, g in ipairs(rawLoadout.gems) do
-        local entry = { gem = tonumber(g.gem) or math.min(i, 12), spell = g.spell }
-        if entry.gem < 1 then entry.gem = 1 end
-        if entry.gem > 12 then entry.gem = 12 end
-        table.insert(sanitizedGems, entry)
-    end
+    })
+    local sanitizedGems = applyEnv.loadout.gems
     assert_eq(#sanitizedGems, 4, '4 sanitized gems')
     assert_eq(sanitizedGems[1].gem, 1, 'entry 1 defaulted to gem 1')
     assert_eq(sanitizedGems[2].gem, 12, 'entry 2 kept gem 12')
     assert_eq(sanitizedGems[3].gem, 12, 'entry 3 clamped to gem 12')
     assert_eq(sanitizedGems[4].gem, 1, 'entry 4 clamped to gem 1')
 
-    -- 3. Downtime Aggro Detection logic
-    local function hasDowntimeAggroThreat(combat, isCombatFn, anyXtarFn, countXtarFn)
-        if combat then return true end
-        if isCombatFn and isCombatFn() then return true end
-        if anyXtarFn and anyXtarFn(true) then return true end
-        if countXtarFn and countXtarFn() > 0 then return true end
-        return false
+    -- 3. Downtime Aggro Detection logic (real runtime.hasDowntimeAggroThreat)
+    local aggro = { combat = false, state = 'ACTIVE', haters = 0, aggroCount = 0, xtar = false, targetAggro = 0 }
+    local aggroMq = { TLO = {
+        Me = {
+            Combat = function() return aggro.combat end,
+            CombatState = function() return aggro.state end,
+            XTHaterCount = function() return aggro.haters end,
+            XTAggroCount = function() return aggro.aggroCount end,
+        },
+        Target = setmetatable({
+            ID = function() return 77 end, Dead = function() return false end, Type = function() return 'NPC' end,
+            PctAggro = function() return aggro.targetAggro end, SecondaryPctAggro = function() return 0 end,
+        }, { __call = function() return true end }),
+    } }
+    local hasDowntimeAggroThreat = loadFunc(src, 'hasDowntimeAggroThreat',
+        { mq = aggroMq, isSpawnMyPet = function() return false end,
+          anyXtarAlive = function(onlyHostile) return onlyHostile == true and aggro.xtar end })
+    local function aggroCase(field, value, label)
+        local saved = aggro[field]
+        aggro[field] = value
+        assert_eq(hasDowntimeAggroThreat(), true, label)
+        aggro[field] = saved
     end
+    assert_eq(hasDowntimeAggroThreat(), false, 'no aggro threat')
+    aggroCase('combat', true, 'Me.Combat() detects aggro')
+    aggroCase('state', 'COMBAT', 'Me.CombatState() == COMBAT detects aggro')
+    aggroCase('haters', 2, 'XTHaterCount() > 0 detects aggro')
+    aggroCase('aggroCount', 1, 'XTAggroCount() > 0 detects aggro')
+    aggroCase('xtar', true, 'anyXtarAlive(true) detects aggro')
+    aggroCase('targetAggro', 40, 'aggro on the current NPC target detects aggro')
+    assert_eq(hasDowntimeAggroThreat(), false, 'aggro threat clears once every signal is quiet')
 
-    assert_eq(hasDowntimeAggroThreat(false, function() return false end, function() return false end, function() return 0 end), false, 'no aggro threat')
-    assert_eq(hasDowntimeAggroThreat(true, function() return false end, function() return false end, function() return 0 end), true, 'Me.Combat() detects aggro')
-    assert_eq(hasDowntimeAggroThreat(false, function() return true end, function() return false end, function() return 0 end), true, 'isCombat() detects aggro')
-    assert_eq(hasDowntimeAggroThreat(false, function() return false end, function() return true end, function() return 0 end), true, 'anyXtarAlive(true) detects aggro')
-    assert_eq(hasDowntimeAggroThreat(false, function() return false end, function() return false end, function() return 2 end), true, 'countNPCXtarget() > 0 detects aggro')
-
-    -- 4. In-combat gem filtering: only cast memorized spells
-    local physicalBar = { [1] = 'Heal', [12] = 'Ice Comet' }
-    local function isGemMatching(slot, spName)
-        return physicalBar[slot] == spName
-    end
-
-    local castableCombatSpells = {}
-    for i, g in ipairs(decoupledGems) do
-        local slot = tonumber(g.gem) or i
-        if isGemMatching(slot, g.spell) then
-            table.insert(castableCombatSpells, g.spell)
-        end
-    end
-    assert_eq(#castableCombatSpells, 2, 'only 2 spells memorized on physical bar')
-    assert_eq(castableCombatSpells[1], 'Heal', 'Heal is castable in combat')
-    assert_eq(castableCombatSpells[2], 'Ice Comet', 'Ice Comet is castable in combat')
-
-    -- 5. Priority spell selection and out-of-combat restoration
-    local multiGems = {
-        { gem = 12, spell = 'Touch of the Cursed', target = 'E: Target', when = 'HP <= 80', pct = 80 }, -- Priority 1 (top of list)
-        { gem = 12, spell = 'Voice of the Berserker', target = 'M: Self', when = 'missing buff', pct = 100 }, -- Priority 2 (buff)
-    }
-    local function getPrimarySpellForGem(slot, gemList)
-        for _, g in ipairs(gemList) do
-            if g and (tonumber(g.gem) or 1) == slot and g.spell and g.spell ~= '' then
-                local pctVal = tonumber(g.pct)
-                if pctVal == nil or pctVal > 0 then
-                    return g.spell, g
-                end
-            end
-        end
-        return nil
-    end
-
-    local pSpell = getPrimarySpellForGem(12, multiGems)
-    assert_eq(pSpell, 'Touch of the Cursed', 'G12 priority spell is Touch of the Cursed (lifetap at top of list)')
-
-    -- Test restoration decision:
-    -- Scenario A: Voice of the Berserker is currently memmed in Gem 12, and buff is already active (not needed)
-    local physicalBar2 = { [12] = 'Voice of the Berserker' }
-    local function evaluateRestoreNeeded(slot, gemList, currentBar, buffNeededFn)
-        local primary = getPrimarySpellForGem(slot, gemList)
-        if not primary or currentBar[slot] == primary then return false end
-        local lowerNeeded = false
-        for _, g in ipairs(gemList) do
-            if g and (tonumber(g.gem) or 1) == slot and g.spell and g.spell ~= '' and g.spell ~= primary then
-                if buffNeededFn(g) then
-                    lowerNeeded = true
-                    break
-                end
-            end
-        end
-        return not lowerNeeded
-    end
-
-    local shouldRememLifetap = evaluateRestoreNeeded(12, multiGems, physicalBar2, function(g) return false end)
-    assert_true(shouldRememLifetap, 'Gem 12 should remem priority lifetap back when buff is not needed')
-
-    -- Scenario B: Buff is missing and needed
-    local shouldKeepBuff = evaluateRestoreNeeded(12, multiGems, physicalBar2, function(g) return true end)
-    assert_eq(shouldKeepBuff, false, 'Gem 12 should not remem priority spell while lower priority buff is still needed')
-
-    -- 6. importCurrentGems auto-population logic
+    -- 4. importCurrentGems auto-population logic (real runtime.importCurrentGems
+    -- with the real defaultsForKind)
     local mockGems = {
         [1] = 'Minor Healing',
         [2] = 'Courage',
         [3] = 'Frost Bolt',
     }
-    local function mockDefaultsForKind(kind, bene)
-        if kind == 'heal' then return 'F: Myself', 'my HP <=', 75 end
-        if kind == 'buff' then return 'F: Myself', 'missing buff', 100 end
-        if kind == 'dd' then return 'E: Current Target', 'target HP <=', 95 end
-        return 'E: Current Target', 'target HP <=', 95
-    end
     local function mockSpellClassInfo(name)
         if name == 'Minor Healing' then return 'Clr', true, 'heal' end
         if name == 'Courage' then return 'Clr', true, 'buff' end
         if name == 'Frost Bolt' then return 'Wiz', false, 'dd' end
         return 'War', false, 'other'
     end
+    local importEnv = {
+        loadout = { gems = {} },
+        getNumGems = function() return 8 end,
+        spellClassInfo = mockSpellClassInfo,
+        defaultsForKind = loadFunc(src, 'defaultsForKind'),
+        saveLoadout = function() end,
+        print = function() end,
+        mq = { TLO = { Me = { Gem = function(i)
+            local nm = mockGems[i]
+            return setmetatable({ Name = function() return nm end }, { __call = function() return nm ~= nil end })
+        end } } },
+    }
+    local importCurrentGems = loadFunc(src, 'importCurrentGems', importEnv)
 
-    local function simulateImportCurrentGems(targetGemsTable, numG, activeGems)
-        targetGemsTable = targetGemsTable or {}
-        local newGems = {}
-        for i = 1, numG do
-            local nm = activeGems[i]
-            if nm and nm ~= '' and nm ~= 'NULL' then
-                local cls, bene, kind = mockSpellClassInfo(nm)
-                local tgt, wn, pc = mockDefaultsForKind(kind, bene)
-                table.insert(newGems, {
-                    gem = i,
-                    cls = cls,
-                    spell = nm,
-                    target = tgt,
-                    when = wn,
-                    pct = pc,
-                    min_xtar = 1,
-                    max_casts = 0,
-                    burn_only = false,
-                })
-            end
-        end
-        if targetGemsTable then
-            for idx = numG + 1, #targetGemsTable do
-                if targetGemsTable[idx] then
-                    table.insert(newGems, targetGemsTable[idx])
-                end
-            end
-        end
-        for k in pairs(targetGemsTable) do targetGemsTable[k] = nil end
-        for idx, v in ipairs(newGems) do targetGemsTable[idx] = v end
-        return targetGemsTable
-    end
-
-    local imported = simulateImportCurrentGems({}, 8, mockGems)
+    local imported = {}
+    assert_eq(importCurrentGems(imported), 3, 'importCurrentGems reports 3 imported lines')
     assert_eq(#imported, 3, 'imported 3 active spells from gem bar')
     assert_eq(imported[1].gem, 1, 'slot 1 gem is 1')
     assert_eq(imported[1].spell, 'Minor Healing', 'slot 1 spell is Minor Healing')
@@ -5180,28 +5150,27 @@ do
     assert_eq(imported[3].spell, 'Frost Bolt', 'slot 3 spell is Frost Bolt')
     assert_eq(imported[3].when, 'target HP <=', 'slot 3 when condition is dd default')
 
-    -- Retaining extra configured spells beyond physical bar count
+    -- Entries bound to gem slots beyond the physical bar (8 gems here) are
+    -- retained; entries for slots on the bar are replaced by what is memmed.
     local existingLoadout = {
         { gem = 1, spell = 'Old 1' },
         { gem = 2, spell = 'Old 2' },
         { gem = 3, spell = 'Old 3' },
         { gem = 4, spell = 'Old 4' },
-        { gem = 5, spell = 'Old 5' },
-        { gem = 6, spell = 'Old 6' },
-        { gem = 7, spell = 'Old 7' },
         { gem = 8, spell = 'Old 8' },
-        { gem = 1, spell = 'Downtime Buff 1' },
-        { gem = 2, spell = 'Downtime Buff 2' },
+        { gem = 9, spell = 'Downtime Buff 1' },
+        { gem = 1, spell = 'Second line on gem 1' },
+        { gem = 12, spell = 'Downtime Buff 2' },
     }
-    local reimported = simulateImportCurrentGems(existingLoadout, 8, mockGems)
-    assert_eq(#reimported, 5, 'reimported 3 physical gems + 2 retained downtime gems')
-    assert_eq(reimported[1].spell, 'Minor Healing', 'gem 1 replaced by active bar')
-    assert_eq(reimported[2].spell, 'Courage', 'gem 2 replaced by active bar')
-    assert_eq(reimported[3].spell, 'Frost Bolt', 'gem 3 replaced by active bar')
-    assert_eq(reimported[4].spell, 'Downtime Buff 1', 'retained extra spell line 1')
-    assert_eq(reimported[5].spell, 'Downtime Buff 2', 'retained extra spell line 2')
+    importCurrentGems(existingLoadout)
+    assert_eq(#existingLoadout, 5, 'reimported 3 physical gems + 2 retained off-bar gems')
+    assert_eq(existingLoadout[1].spell, 'Minor Healing', 'gem 1 replaced by active bar')
+    assert_eq(existingLoadout[2].spell, 'Courage', 'gem 2 replaced by active bar')
+    assert_eq(existingLoadout[3].spell, 'Frost Bolt', 'gem 3 replaced by active bar')
+    assert_eq(existingLoadout[4].spell, 'Downtime Buff 1', 'retained gem 9 line')
+    assert_eq(existingLoadout[5].spell, 'Downtime Buff 2', 'retained gem 12 line')
 
-    -- 7. triune.lua source verification for Import Bar button & slash command
+    -- 5. triune.lua source verification for Import Bar button & slash command
     local triuneCode = readFile('TAC/lua/triune.lua')
     assert_true(triuneCode:find("function runtime.importCurrentGems", 1, true) ~= nil, 'triune.lua defines runtime.importCurrentGems')
     assert_true(triuneCode:find("Import Bar##importBarBtn", 1, true) ~= nil, 'triune.lua includes Import Bar button in UI.drawGemTabHeader')
@@ -5791,15 +5760,25 @@ do
     -- Register counts differ between Lua versions; prefer the 5.1 compiler
     -- (what LuaJIT / MQ enforce, and what CI installs) over whatever `luac`
     -- happens to be on PATH so the numbers match GitHub.
-    local luac = (os.execute('command -v luac5.1 >/dev/null 2>&1') == 0) and 'luac5.1' or 'luac'
-    for _, filePath in ipairs(files) do
-        local handle = io.popen(string.format('%s -l -p %s 2>&1', luac, filePath))
-        if handle then
-            local out = handle:read('*a')
-            local ok = handle:close()
-            assert_true(ok == true or ok == 0, string.format('luac syntax check passes for %s (no 200 local limit error)', filePath))
-            assert_true(not out:find('too many local variables'), string.format('%s does not exceed 200 local variables limit', filePath))
+    -- os.execute returns 0 (Lua 5.1) or true (LuaJIT 5.2 compat) on success.
+    local function hasCmd(name)
+        local r = os.execute('command -v ' .. name .. ' >/dev/null 2>&1')
+        return r == 0 or r == true
+    end
+    local luac = (hasCmd('luac5.1') and 'luac5.1') or (hasCmd('luac') and 'luac') or nil
+    if not luac then
+        print('  SKIP: Suite 52 locals-limit check -- neither luac5.1 nor luac is on PATH')
+    else
+        for _, filePath in ipairs(files) do
+            local handle = io.popen(string.format('%s -l -p %s 2>&1', luac, filePath))
+            local out = handle and handle:read('*a') or ''
+            if handle then handle:close() end
+            -- io.popen's close() does not report the exit status under Lua 5.1,
+            -- so trust the listing only when it actually contains the main
+            -- chunk's slot count; a syntax / too-many-locals error has none.
             local slots = tonumber(out:match('(%d+)%s+slots'))
+            assert_true(slots ~= nil, string.format('%s -l lists %s (no syntax / 200 local limit error); output: %s', luac, filePath, out:sub(1, 200)))
+            assert_true(not out:find('too many local variables'), string.format('%s does not exceed 200 local variables limit', filePath))
             if slots and filePath == 'TAC/lua/triune.lua' then
                 assert_true(slots <= 185, string.format('triune.lua main chunk slots (%d) has comfortable buffer under 200 limit (<= 185)', slots))
             end
@@ -5813,161 +5792,36 @@ end
 do
     print('--- Pet Buff Detection & Management Logic ---')
 
-    -- Setup mock environment for pet buff detection
+    -- The real runtime.recordPetBuff / runtime.isPetBuffActive over a mock
+    -- TLO: primary pet #100 (Me.Pet), nothing targeted, no other spawns.
     local mockMePetBuffs = {}
     local mockMePetDurations = {}
-    local mockTargetBuffs = {}
-    local mockTargetDurations = {}
-    local mockSpawnBuffs = {}
-    local mockSpawnDurations = {}
     local mockSpellStacksPet = {}
-    local mockSpellStacksTarget = {}
-    local mockSpellStacksSpawn = {}
-
-    local petState = {
-        myPets = {},
-        cachedPetBuffs = {}
+    local function callable(v) return setmetatable({}, { __call = function() return v end }) end
+    local petMq = { TLO = {
+        Me = { Pet = {
+            ID = function() return 100 end,
+            Buff = function(b)
+                if type(b) == 'number' then return callable(mockMePetBuffs[b]) end
+                return callable(nil)
+            end,
+            BuffDuration = function(b) return callable(type(b) == 'number' and mockMePetDurations[b] or nil) end,
+        } },
+        Target = { ID = function() return 0 end },
+        Spawn = function() return callable(false) end,
+        Spell = function(name)
+            return setmetatable({
+                Beneficial = function() return true end,
+                StacksPet = function() return mockSpellStacksPet[name] end,
+            }, { __call = function() return true end })
+        end,
+    } }
+    local petState = { myPets = {}, cachedPetBuffs = {} }
+    local petEnv = { mq = petMq, petState = petState, cleanSpellName = loadFunc(src, 'cleanSpellName') }
+    local testRuntime = {
+        recordPetBuff = loadFunc(src, 'recordPetBuff', petEnv),
+        isPetBuffActive = loadFunc(src, 'isPetBuffActive', petEnv),
     }
-
-    local testRuntime = {}
-
-    function testRuntime.recordPetBuff(petId, spellName, durSec)
-        if not petId or petId <= 0 or not spellName or spellName == '' then return end
-        petState.cachedPetBuffs = petState.cachedPetBuffs or {}
-        local cData = petState.cachedPetBuffs[petId] or { time = os.clock(), buffs = {}, buffDetails = {} }
-        cData.time = os.clock()
-        cData.buffs = cData.buffs or {}
-        cData.buffDetails = cData.buffDetails or {}
-        local alreadyIn = false
-        for _, bn in ipairs(cData.buffs) do
-            if bn == spellName then alreadyIn = true break end
-        end
-        if not alreadyIn then
-            table.insert(cData.buffs, spellName)
-        end
-        table.insert(cData.buffDetails, { name = spellName, duration = durSec or 0 })
-        petState.cachedPetBuffs[petId] = cData
-    end
-
-    local function isGemMatching(gName, tName)
-        if not gName or not tName then return false end
-        if gName == tName or gName:lower() == tName:lower() then return true end
-        return false
-    end
-
-    local function cleanSpellName(nm) return nm or '' end
-
-    function testRuntime.isPetBuffActive(petId, name, minSec)
-        if not petId or petId == 0 then return false end
-        name = tostring(name or '')
-        if name == '' then return false end
-        minSec = tonumber(minSec) or 0
-
-        local myPetId = 100 -- mock primary pet ID
-
-        local function isBuffNameMatch(candidateName)
-            if not candidateName or candidateName == '' or candidateName == 'NONE' then return false end
-            if candidateName == name then return true end
-            if candidateName:lower() == name:lower() then return true end
-            if isGemMatching(candidateName, name) then return true end
-            if cleanSpellName(candidateName):lower() == cleanSpellName(name):lower() then return true end
-            return false
-        end
-
-        -- 1. Primary pet inspection via Me.Pet
-        if myPetId > 0 and petId == myPetId then
-            local found = false
-            local remSec = -1
-            local activeBuffNames = {}
-            local activeBuffDetails = {}
-
-            for b = 1, 30 do
-                local pb = mockMePetBuffs[b]
-                if pb then
-                    local bName = pb
-                    local durSec = -1
-                    local dur = mockMePetDurations[b] or 0
-                    if type(dur) == 'number' and dur > 0 then
-                        durSec = math.floor(dur / 1000)
-                    end
-                    table.insert(activeBuffNames, bName)
-                    table.insert(activeBuffDetails, { slot = b, name = bName, duration = durSec })
-
-                    if not found and isBuffNameMatch(bName) then
-                        found = true
-                        remSec = durSec
-                    end
-                end
-            end
-
-            if petState and petState.cachedPetBuffs and #activeBuffNames > 0 then
-                petState.cachedPetBuffs[petId] = {
-                    time = os.clock(),
-                    buffs = activeBuffNames,
-                    buffDetails = activeBuffDetails
-                }
-            end
-
-            if found then
-                if minSec > 0 and remSec >= 0 then
-                    return remSec > minSec
-                end
-                return true
-            end
-
-            -- Stacking check
-            if mockSpellStacksPet[name] == false then
-                return true
-            end
-
-            return false
-        end
-
-        -- 2. Target buffs
-        if mockTargetBuffs[petId] then
-            for b = 1, 30 do
-                local bName = mockTargetBuffs[petId][b]
-                if bName and isBuffNameMatch(bName) then
-                    local remSec = mockTargetDurations[petId] and mockTargetDurations[petId][b] or -1
-                    if minSec > 0 and remSec >= 0 then
-                        return remSec > minSec
-                    end
-                    return true
-                end
-            end
-            if mockSpellStacksTarget[name] == false then
-                return true
-            end
-        end
-
-        -- 3. Cached buffs in petState
-        if petState and petState.cachedPetBuffs and petState.cachedPetBuffs[petId] then
-            local cData = petState.cachedPetBuffs[petId]
-            local elapsed = os.clock() - (cData.time or 0)
-            if elapsed < 300 then
-                if cData.buffDetails then
-                    for _, d in ipairs(cData.buffDetails) do
-                        if isBuffNameMatch(d.name) then
-                            local remSec = (d.duration or 0) - elapsed
-                            if minSec > 0 and (d.duration or 0) > 0 then
-                                return remSec > minSec
-                            end
-                            return true
-                        end
-                    end
-                end
-                if cData.buffs then
-                    for _, bName in ipairs(cData.buffs) do
-                        if isBuffNameMatch(bName) then
-                            return true
-                        end
-                    end
-                end
-            end
-        end
-
-        return false
-    end
 
     -- Test 1: Empty pet buffs returns false
     mockMePetBuffs = {}
@@ -6319,10 +6173,17 @@ do
     assert_eq(cName, 'Charlie', 'Names sorted alphabetically (Charlie)')
     assert_eq(cId, 300, 'Charlie has ID 300')
 
-    -- Adding purely by ID number
+    -- Adding by ID only works for a PC in zone (resolved to their name); an
+    -- unresolvable ID is refused (names alone authorize).
     testRuntime.addAutoAcceptName(450)
-    assert_true(testRuntime.isAutoAcceptListed(450), 'isAutoAcceptListed matches numeric player ID 450')
-    assert_true(testRuntime.isAutoAcceptListed('450'), 'isAutoAcceptListed matches string player ID "450"')
+    assert_eq(#testCtrl.auto_accept_names, 3, 'Unresolvable ID 450 not added')
+    assert_eq(testRuntime.isAutoAcceptListed(450), false, 'isAutoAcceptListed never matches a bare numeric ID')
+    testRuntime.addAutoAcceptName(501)
+    assert_true(testRuntime.isAutoAcceptListed('GuildieOne'), 'ID 501 resolved to GuildieOne and added by name')
+    assert_eq(#testCtrl.auto_accept_names, 4, 'Resolved ID adds one named row')
+    testRuntime.addAutoAcceptName('Bad Name')
+    testRuntime.addAutoAcceptName('Player_77')
+    assert_eq(#testCtrl.auto_accept_names, 4, 'Names that are not letters-only are refused')
 
     -- Case-insensitive duplicate rejection and ID update
     testRuntime.addAutoAcceptName('ALICE', 100)
@@ -6332,9 +6193,8 @@ do
     -- Case-insensitive whitelist matching by name and by ID
     assert_true(testRuntime.isAutoAcceptListed('alice'), 'isAutoAcceptListed matches lowercase alice')
     assert_true(testRuntime.isAutoAcceptListed('BOB'), 'isAutoAcceptListed matches uppercase BOB')
-    assert_true(testRuntime.isAutoAcceptListed(100), 'isAutoAcceptListed matches ID 100')
-    assert_true(testRuntime.isAutoAcceptListed(200), 'isAutoAcceptListed matches ID 200')
-    assert_true(testRuntime.isAutoAcceptListed(300), 'isAutoAcceptListed matches ID 300')
+    assert_eq(testRuntime.isAutoAcceptListed(100), false, 'isAutoAcceptListed does not authorize by stored ID 100')
+    assert_eq(testRuntime.isAutoAcceptListed('ali'), false, 'isAutoAcceptListed requires the exact name (no substring)')
     assert_eq(testRuntime.isAutoAcceptListed('David'), false, 'David not in whitelist')
     assert_eq(testRuntime.isAutoAcceptListed(999), false, 'ID 999 not in whitelist')
 
@@ -6346,8 +6206,17 @@ do
     assert_true(testRuntime.removeAutoAcceptName('charlie'), 'Successfully removed Charlie by name')
     assert_eq(testRuntime.isAutoAcceptListed('charlie'), false, 'Charlie no longer listed')
 
-    assert_true(testRuntime.removeAutoAcceptName({ name = 'Player_450', id = 450 }), 'Successfully removed entry by table')
-    assert_eq(testRuntime.isAutoAcceptListed(450), false, 'Player_450 no longer listed')
+    assert_true(testRuntime.removeAutoAcceptName({ name = 'GuildieOne', id = 501 }), 'Successfully removed entry by table')
+    assert_eq(testRuntime.isAutoAcceptListed('GuildieOne'), false, 'GuildieOne no longer listed')
+
+    -- Old saved entries with ids still load and match by name only
+    table.insert(testCtrl.auto_accept_names, { name = 'Legacy', id = 777 })
+    table.insert(testCtrl.auto_accept_names, { name = 'Player_888', id = 888 })
+    assert_true(testRuntime.isAutoAcceptListed('legacy'), 'Legacy saved entry still matches by name')
+    assert_eq(testRuntime.isAutoAcceptListed(777), false, 'Legacy saved entry id does not authorize')
+    assert_eq(testRuntime.isAutoAcceptAllowed('Someone', 888), false, 'Old Player_<id> entry never authorizes by id')
+    assert_true(testRuntime.removeAutoAcceptName('Legacy'), 'Legacy entry removable')
+    assert_true(testRuntime.removeAutoAcceptName(888), 'Player_888 entry removable by id')
 
     assert_true(testRuntime.isAutoAcceptListed('Alice'), 'Alice still listed')
 
@@ -6364,7 +6233,9 @@ do
     -- Whitelist authorization by Name and by ID
     testRuntime.addAutoAcceptName('Alice', 100)
     assert_true(testRuntime.isAutoAcceptAllowed('alice', 100), 'Allowed: Alice matched by name and ID')
-    assert_true(testRuntime.isAutoAcceptAllowed('Unknown', 100), 'Allowed: Matched by whitelisted Player ID 100')
+    assert_eq(testRuntime.isAutoAcceptAllowed('Unknown', 100), false, 'Denied: stored ID 100 alone does not authorize Unknown')
+    assert_eq(testRuntime.isAutoAcceptAllowed('Alice Smith', 0), false, 'Denied: sender names with spaces are rejected')
+    assert_eq(testRuntime.isAutoAcceptAllowed('Alicex', 0), false, 'Denied: no substring/prefix match')
     assert_true(testRuntime.isAutoAcceptAllowed('Alice', 0), 'Allowed: Matched by whitelisted Name Alice')
     assert_eq(testRuntime.isAutoAcceptAllowed('Bob', 999), false, 'Denied: Bob (ID 999) not on whitelist')
 
@@ -6377,7 +6248,7 @@ do
     -- Accept from Group Members (matching by Name or ID)
     testCtrl.auto_accept_group = true
     assert_true(testRuntime.isAutoAcceptAllowed('TrioHealer', 101), 'Allowed: TrioHealer is group member (Name and ID)')
-    assert_true(testRuntime.isAutoAcceptAllowed('Unknown', 102), 'Allowed: TrioTank matched by group member ID 102')
+    assert_eq(testRuntime.isAutoAcceptAllowed('Unknown', 102), false, 'Denied: group member ID 102 does not authorize another name')
     assert_true(testRuntime.isAutoAcceptAllowed('triotank', 0), 'Allowed: triotank matched by group member name case-insensitively')
     assert_eq(testRuntime.isAutoAcceptAllowed('GuildieOne', 501), false, 'Denied: GuildieOne is not in group')
     testCtrl.auto_accept_group = false
@@ -6420,12 +6291,8 @@ end
 -- ============================================================================
 print('--- Suite 56: Multi-Target All Enemies XTarget Logic ---')
 do
-    local testRuntime = {
-        npcCastCounts = {},
-        npcSpellApplied = {},
-        npcSpellLastCast = {},
-    }
-
+    -- The real runtime.resolveAllEnemiesTargetId + runtime.isNpcSpellActive
+    -- over a mock XTarget world (three goblins, all in range).
     local mockSpawns = {
         [101] = { id = 101, name = 'a_goblin01', clean = 'a goblin', type = 'NPC', dead = false, hp = 80, dist = 30, z = 10 },
         [102] = { id = 102, name = 'a_goblin02', clean = 'a goblin', type = 'NPC', dead = false, hp = 95, dist = 45, z = 12 },
@@ -6436,78 +6303,46 @@ do
         ['Sicken'] = { duration = 10 },
         ['Ice Comet'] = { duration = 0 },
     }
-    local mockTargetBuffs = {}
     local mockLockouts = {}
-
-    local function buffActive(id, name)
-        return mockTargetBuffs[id] and mockTargetBuffs[id][name] or false
-    end
-
-    function testRuntime.isNpcSpellActive(id, spellName)
-        if not id or id <= 0 or not spellName or spellName == '' then return false end
-        if buffActive(id, spellName) then return true end
-        if testRuntime.npcSpellApplied and testRuntime.npcSpellApplied[id] then
-            local now = os.clock()
-            for sName, expireAt in pairs(testRuntime.npcSpellApplied[id]) do
-                if expireAt and now < expireAt then
-                    if sName == spellName or sName:lower() == spellName:lower() then
-                        return true
-                    end
-                else
-                    testRuntime.npcSpellApplied[id][sName] = nil
-                end
-            end
-        end
-        return false
-    end
-
-    function testRuntime.resolveAllEnemiesTargetId(spellName, when, pct, cls, extra)
-        local hasDur = false
-        if extra and (extra.kind == 'dot' or extra.kind == 'debuff') then
-            hasDur = true
-        elseif mockSpells[spellName] and mockSpells[spellName].duration > 0 then
-            hasDur = true
-        end
-
-        local isDet = true
-        local maxC = tonumber(extra and extra.max_casts) or 0
-        local candidates = {}
-
-        for _, id in ipairs(mockXTarget) do
-            local s = mockSpawns[id]
-            if s and not s.dead and s.type == 'NPC' then
-                local lockedOut = mockLockouts[id] and mockLockouts[id][spellName]
-                if not lockedOut then
-                    local currentCasts = (testRuntime.npcCastCounts and testRuntime.npcCastCounts[id] and testRuntime.npcCastCounts[id][spellName]) or 0
-                    local castLimitOk = (maxC == 0 or currentCasts < maxC)
-                    if castLimitOk then
-                        local spellActive = (hasDur and isDet and testRuntime.isNpcSpellActive(id, spellName))
-                        if not spellActive then
-                            local lastCastTime = (testRuntime.npcSpellLastCast and testRuntime.npcSpellLastCast[id] and testRuntime.npcSpellLastCast[id][spellName]) or 0
-                            table.insert(candidates, {
-                                id = id,
-                                casts = currentCasts,
-                                lastCast = lastCastTime,
-                                hp = s.hp,
-                                dist = s.dist
-                            })
-                        end
-                    end
-                end
-            end
-        end
-
-        if #candidates > 0 then
-            table.sort(candidates, function(a, b)
-                if a.casts ~= b.casts then return a.casts < b.casts end
-                if a.lastCast ~= b.lastCast then return a.lastCast < b.lastCast end
-                if a.hp ~= b.hp then return a.hp < b.hp end
-                return a.dist < b.dist
-            end)
-            return candidates[1].id
-        end
-        return nil
-    end
+    local function fnv(v) return function() return v end end
+    local allEnemiesMq = { TLO = {
+        Me = {
+            Z = fnv(10),
+            XTargetSlots = fnv(#mockXTarget),
+            XTarget = function(i)
+                local id = mockXTarget[i]
+                return setmetatable({ ID = fnv(id) }, { __call = function() return id ~= nil end })
+            end,
+        },
+        Spawn = function(id)
+            local sp = mockSpawns[id]
+            return setmetatable({
+                Type = fnv(sp and sp.type), CleanName = fnv(sp and sp.clean), Distance3D = fnv(sp and sp.dist),
+                Z = fnv(sp and sp.z), Dead = fnv(sp and sp.dead), PctHPs = fnv(sp and sp.hp),
+            }, { __call = function() return sp ~= nil end })
+        end,
+        Spell = function(name)
+            local sp = mockSpells[name]
+            return setmetatable({ Duration = fnv(sp and sp.duration) }, { __call = function() return sp ~= nil end })
+        end,
+        Target = { ID = fnv(0) },
+    } }
+    local yes, no = function() return true end, function() return false end
+    local resolveAllEnemiesTargetId = loadFunc(src, 'resolveAllEnemiesTargetId', {
+        mq = allEnemiesMq, ctrl = { mode = 'Manual' }, isDetrimentalSpell = isDetrimentalSpell,
+        isSpawnAlive = yes, isGroupOrRaidMember = no, isSpawnPetOrPlayer = no, isHostileTarget = yes,
+        isIgnored = no, isUnreachable = no,
+        castTracker = { isLockedOut = function(spell, id) return (mockLockouts[id] and mockLockouts[id][spell]) and true or false end },
+    })
+    -- Both functions share one runtime table (the per-NPC cast bookkeeping).
+    local testRuntime = debug.getfenv(resolveAllEnemiesTargetId).runtime
+    testRuntime.resolveAllEnemiesTargetId = resolveAllEnemiesTargetId
+    testRuntime.isNpcSpellActive = loadFunc(src, 'isNpcSpellActive', { buffActive = no, cleanSpellName = loadFunc(src, 'cleanSpellName') })
+    debug.getfenv(testRuntime.isNpcSpellActive).runtime = testRuntime
+    testRuntime.isTargetInRange = yes
+    testRuntime.conditionMet = yes
+    testRuntime.countNPCXtarget = function() return #mockXTarget end
+    testRuntime.npcCastCounts, testRuntime.npcSpellApplied, testRuntime.npcSpellLastCast = {}, {}, {}
 
     -- 1. DoT casting across multiple XTarget enemies (Sicken)
     local t1 = testRuntime.resolveAllEnemiesTargetId('Sicken', 'in combat', 100, 'Shm', { kind = 'dot' })
@@ -6572,262 +6407,6 @@ do
     local r1 = testRuntime.resolveAllEnemiesTargetId('Sicken', 'in combat', 100, 'Shm', { kind = 'dot' })
     assert_eq(r1, 101, 'Skips locked-out mob 103 and selects mob 101')
     mockLockouts = {}
-end
-
--- ============================================================================
--- Suite 57: Triune Quest Guide Logic & Database Validation
--- ============================================================================
-do
-    print('--- Suite 57: Triune Quest Guide Logic & Database Validation ---')
-    local catFn = loadfile('TAC/resources/triune_quest/catalog.lua')
-    if catFn then
-        assert_true(catFn ~= nil, 'catalog.lua loads cleanly')
-        local cat = catFn()
-        assert_true(type(cat) == 'table', 'catalog is a table')
-        assert_true(#cat >= 2000, string.format('catalog contains >= 2000 quests (found: %d)', #cat))
-        assert_true(cat[1].title ~= nil, 'catalog quest has title')
-        assert_true(cat[1].zone ~= nil, 'catalog quest has zone shortname')
-    end
-
-    local expFn = loadfile('TAC/resources/triune_quest/expansions.lua')
-    if expFn then
-        assert_true(expFn ~= nil, 'expansions.lua loads cleanly')
-        local exps = expFn()
-        assert_true(type(exps) == 'table', 'expansions is a table')
-        assert_eq(#exps, 33, 'expansions has 33 entries (00 through 32)')
-        assert_eq(exps[1].id, '00', 'first expansion is 00')
-        assert_eq(exps[33].id, '32', 'last expansion is 32')
-    end
-
-    local zoneFn = loadfile('TAC/resources/triune_quest/zones/cabeast.lua')
-    if zoneFn then
-        assert_true(zoneFn ~= nil, 'cabeast.lua zone package loads cleanly')
-        local zpkg = zoneFn()
-        assert_eq(zpkg.zone, 'cabeast', 'zone shortname matches cabeast')
-        assert_true(type(zpkg.quests) == 'table', 'zone package has quests table')
-        assert_true(#zpkg.quests > 0, 'cabeast has >= 1 quest')
-        assert_true(zpkg.quests[1].walkthrough ~= nil, 'quest entry has walkthrough')
-    end
-
-    -- Server Era Filtering Logic Check
-    local sampleCatalog = {
-        { id = "1", exp = "01", title = "Kunark Quest" },
-        { id = "2", exp = "04", title = "PoP Quest" },
-        { id = "3", exp = "05", title = "LoY Quest" },
-        { id = "4", exp = "15", title = "SoD Quest" },
-        { id = "5", exp = "32", title = "Modern Ro Quest" },
-    }
-    local function filterByEra(cat, limitEra, maxCap)
-        local out = {}
-        for _, q in ipairs(cat) do
-            local eNum = tonumber(q.exp) or 0
-            if not limitEra or (maxCap and eNum <= maxCap) then
-                table.insert(out, q)
-            end
-        end
-        return out
-    end
-    local capped5 = filterByEra(sampleCatalog, true, 5)
-    assert_eq(#capped5, 3, 'capped to era 5 returns 3 quests')
-    assert_eq(capped5[3].title, 'LoY Quest', 'era 5 includes LoY Quest')
-    local uncapped = filterByEra(sampleCatalog, false, 5)
-    assert_eq(#uncapped, 5, 'uncapped returns all 5 quests')
-
-    -- Zone Directory and Global Quest Lookup Logic Tests
-    local lookupCatalog = {
-        { id = "101", title = "Crushbone Belts", zone = "gfaydark", zone_name = "Greater Faydark", exp = "00", exp_name = "Classic", min_lvl = 5, max_lvl = 15, npc = "Captain Hazran" },
-        { id = "102", title = "Orc Hatchets", zone = "gfaydark", zone_name = "Greater Faydark", exp = "00", exp_name = "Classic", min_lvl = 3, max_lvl = 10, npc = "Dill Fireshine" },
-        { id = "103", title = "Bone Chips", zone = "qeynos2", zone_name = "North Qeynos", exp = "00", exp_name = "Classic", min_lvl = 1, max_lvl = 5, npc = "Lashun Novashine" },
-        { id = "104", title = "Iksar Berserker Club", zone = "cabeast", zone_name = "East Cabilis", exp = "01", exp_name = "Ruins of Kunark", min_lvl = 15, max_lvl = 25, npc = "Trooper Mozo" },
-        { id = "105", title = "Trial of Tactics", zone = "solrotower", zone_name = "Tower of Solusek Ro", exp = "04", exp_name = "Planes of Power", min_lvl = 60, max_lvl = 65, npc = "Rizlona" },
-        { id = "106", title = "Late Era Task", zone = "argath", zone_name = "Argath", exp = "18", exp_name = "Veil of Alaris", min_lvl = 90, max_lvl = 95, npc = "Commander Galenth" },
-    }
-
-    -- 1. Build Zone List from Catalog
-    local function buildZoneList(cat)
-        local zoneMap = {}
-        local zList = {}
-        for _, q in ipairs(cat) do
-            local z = q.zone and q.zone:lower() or "unknown"
-            if not zoneMap[z] then
-                local zObj = {
-                    shortname = z,
-                    name = q.zone_name or z,
-                    exp = tonumber(q.exp) or 0,
-                    exp_name = q.exp_name or "",
-                    count = 0,
-                }
-                zoneMap[z] = zObj
-                table.insert(zList, zObj)
-            end
-            zoneMap[z].count = zoneMap[z].count + 1
-            local qExp = tonumber(q.exp) or 0
-            if qExp < zoneMap[z].exp then
-                zoneMap[z].exp = qExp
-                zoneMap[z].exp_name = q.exp_name
-            end
-        end
-        table.sort(zList, function(a, b)
-            return (a.name or a.shortname) < (b.name or b.shortname)
-        end)
-        return zList
-    end
-
-    local zList = buildZoneList(lookupCatalog)
-    assert_eq(#zList, 5, '5 unique zones identified')
-    assert_eq(zList[1].name, 'Argath', 'alphabetical sorting: Argath first')
-    assert_eq(zList[3].name, 'Greater Faydark', 'Greater Faydark present')
-    assert_eq(zList[3].count, 2, 'Greater Faydark has 2 quests')
-    assert_eq(zList[3].exp, 0, 'Greater Faydark min exp is 0')
-
-    -- 2. Zone Lookup Search Filter
-    local function filterZoneList(list, query, limitEra, maxCap)
-        local out = {}
-        local qLow = query:lower()
-        for _, z in ipairs(list) do
-            local matchesEra = not limitEra or (z.exp <= (maxCap or 32))
-            if matchesEra then
-                local matchesText = (qLow == "") or (z.name:lower():find(qLow, 1, true) ~= nil) or (z.shortname:lower():find(qLow, 1, true) ~= nil)
-                if matchesText then
-                    table.insert(out, z)
-                end
-            end
-        end
-        return out
-    end
-
-    local zFilt1 = filterZoneList(zList, "fay", false, 32)
-    assert_eq(#zFilt1, 1, 'zone filter "fay" matches 1 zone')
-    assert_eq(zFilt1[1].shortname, 'gfaydark', 'zone matched is gfaydark')
-
-    local zFiltEra = filterZoneList(zList, "", true, 4)
-    assert_eq(#zFiltEra, 4, 'era cap 4 excludes Argath (exp 18)')
-
-    -- 3. Global Quest Search Filter
-    local function searchQuests(cat, term, limitEra, maxCap, hideDone, completedMap)
-        local out = {}
-        local tLow = term:lower()
-        for _, q in ipairs(cat) do
-            local expNum = tonumber(q.exp) or 0
-            local eraMatch = not limitEra or (expNum <= (maxCap or 32))
-            if eraMatch then
-                local isDone = completedMap and (completedMap[q.id] == true)
-                if not (hideDone and isDone) then
-                    local textMatch = (tLow == "") or (q.title:lower():find(tLow, 1, true) ~= nil) or (q.npc:lower():find(tLow, 1, true) ~= nil) or (q.zone_name:lower():find(tLow, 1, true) ~= nil)
-                    if textMatch then
-                        table.insert(out, q)
-                    end
-                end
-            end
-        end
-        return out
-    end
-
-    local qSearch1 = searchQuests(lookupCatalog, "belt", false, 32, false, nil)
-    assert_eq(#qSearch1, 1, 'search "belt" matches Crushbone Belts')
-    assert_eq(qSearch1[1].id, "101", 'quest id is 101')
-
-    local qSearchNpc = searchQuests(lookupCatalog, "novashine", false, 32, false, nil)
-    assert_eq(#qSearchNpc, 1, 'search by NPC "novashine" matches Bone Chips')
-
-    local qSearchCompleted = searchQuests(lookupCatalog, "", false, 32, true, { ["101"] = true, ["102"] = true })
-    assert_eq(#qSearchCompleted, 4, 'hide completed filters out 2 done quests')
-
-    -- 4. Walkthrough Narrative Cleaning & Tokenizer Tests
-    local rawWalkthroughSample = [[
-Quest Started By: | Description:
-**Where:**
-- North Qeynos [zone=4]
-**Who:**
-- Captain Hazran [npc=18176]
-Rating:
-0/0**_*__*__*__*__*_**
-Information:
-**Level:** | 10
-**Maximum Level:** | 125
-**Monster Mission:** | No
-**Repeatable:** | Yes
-**Can Be Shrouded?:** | No
-**Quest Type:** | Quest
-**Quest Goal:**
-- Advancement
-Modified: Tue Dec 5 05:21:04 2023 | | Speak with Captain Hazran in North Qeynos.
-You say, 'Hail, Captain Hazran'
-Captain Hazran says, 'Greetings, _____! We are having trouble with the local orcs.'
-You say, 'What orcs?'
-Captain Hazran says, 'Crushbone orcs. Bring me their belts.'
----
-**Task Steps**
-1. Loot 4 Crushbone Belts
-2. Deliver 4 Crushbone Belts to Captain Hazran
-NOTE: Beware of the orc emissary roaming nearby!
-Your faction standing with Guards of Qeynos has been adjusted by 10.
-Your faction standing with Corrupt Qeynos Guards has been adjusted by -2.
-You receive 5 gold from Captain Hazran.
-You gain experience!!
-Submitted by: Tester
-]]
-
-    local function testCleanPreamble(raw)
-        local pos = raw:find("Modified:[^\n|]+|%s*|%s*") or raw:find("Entered:[^\n|]+|%s*|%s*")
-        local body = raw
-        if pos then
-            local after = raw:sub(pos):match("^[^\n|]+|%s*|%s*(.*)$")
-            if after and after ~= "" then body = after end
-        end
-        local subPos = body:find("Submitted by:") or body:find("%*%*Submitted by:")
-        if subPos then body = body:sub(1, subPos - 1) end
-        body = body:gsub("____+", "Bob")
-        return body:match("^%s*(.-)%s*$") or ""
-    end
-
-    local cleanWt = testCleanPreamble(rawWalkthroughSample)
-    assert_true(not cleanWt:find("Quest Started By:"), 'preamble stripped from walkthrough')
-    assert_true(not cleanWt:find("Submitted by:"), 'submission footer stripped from walkthrough')
-    assert_true(cleanWt:find("Greetings, Bob!"), 'player name substituted into dialogue')
-
-    local function testTokenize(cleaned)
-        local toks = {}
-        for line in cleaned:gmatch("[^\r\n]+") do
-            local l = line:match("^%s*(.-)%s*$")
-            if l and l ~= "" then
-                if l == "---" then
-                    table.insert(toks, { type = "divider" })
-                elseif l:find("^[Yy]ou say") then
-                    local phrase = l:match("^[Yy]ou say,?%s*['\"](.-)['\"]")
-                    table.insert(toks, { type = "player_say", phrase = phrase })
-                elseif l:find(" says") then
-                    local spk, spc = l:match("^([%w%s%-%_%.%`']+)[%s,]+says?,?%s*['\"](.-)['\"]")
-                    table.insert(toks, { type = "npc_say", speaker = spk, text = spc })
-                elseif l:find("^[Yy]our faction standing with") then
-                    table.insert(toks, { type = "faction" })
-                elseif l:find("^[Yy]ou receive") or l:find("^[Yy]ou gain") then
-                    table.insert(toks, { type = "reward" })
-                elseif l:find("^NOTE:") then
-                    table.insert(toks, { type = "note" })
-                elseif l:match("^%d+[%.)]%s+") then
-                    table.insert(toks, { type = "step" })
-                elseif l:match("^%*%*(.-)%*%*$") then
-                    table.insert(toks, { type = "header" })
-                else
-                    table.insert(toks, { type = "text" })
-                end
-            end
-        end
-        return toks
-    end
-
-    local toks = testTokenize(cleanWt)
-    assert_eq(#toks, 14, '14 tokens parsed from sample walkthrough')
-    assert_eq(toks[2].type, 'player_say', 'second token is player_say')
-    assert_eq(toks[2].phrase, 'Hail, Captain Hazran', 'player say phrase is Hail, Captain Hazran')
-    assert_eq(toks[3].type, 'npc_say', 'third token is npc_say')
-    assert_eq(toks[3].speaker, 'Captain Hazran', 'npc speaker is Captain Hazran')
-    assert_eq(toks[7].type, 'header', 'token 7 is header Task Steps')
-    assert_eq(toks[8].type, 'step', 'token 8 is step')
-    assert_eq(toks[10].type, 'note', 'token 10 is note')
-    assert_eq(toks[11].type, 'faction', 'token 11 is faction')
-    assert_eq(toks[13].type, 'reward', 'token 13 is reward')
 end
 
 -- ============================================================================
@@ -7803,80 +7382,41 @@ end
 -- ============================================================================
 print('--- Suite 65: Unreachable Target Abandonment & Pursuit Stall Logic ---')
 do
-    -- 1. Unreachable tracking and TTL
-    local unreachableIds = {}
-    local function markUnreachable(id, now)
-        unreachableIds[id] = now or os.clock()
-    end
-    local function isUnreachable(id, now)
-        local t = unreachableIds[id]
-        if not t then return false end
-        now = now or os.clock()
-        if (now - t) > 60 then
-            unreachableIds[id] = nil
-            return false
-        end
-        return true
-    end
-
-    markUnreachable(1001, 100.0)
-    assert_true(isUnreachable(1001, 110.0), 'Suite 65: mob 1001 is unreachable at +10s')
-    assert_true(isUnreachable(1001, 159.0), 'Suite 65: mob 1001 is unreachable at +59s')
-    assert_true(not isUnreachable(1001, 161.0), 'Suite 65: mob 1001 expires after 60s TTL')
-    assert_true(not isUnreachable(1002, 110.0), 'Suite 65: mob 1002 was never marked unreachable')
-
-    -- 2. XTarget selection skips unreachable mob IDs
-    local mockXtargets = {
-        { id = 1001, name = 'orc_pawn', hp = 80 },
-        { id = 1002, name = 'orc_centurion', hp = 90 },
+    -- 1. Unreachable tracking and TTL (real runtime.markUnreachable /
+    -- isUnreachable on a sandboxed pursuit table and a controllable clock)
+    local clock = { now = 100.0 }
+    local hooks = { burst = {}, detours = 0 }
+    local unreachEnv = {
+        pursuit = { unreachableIds = {} },
+        os = setmetatable({ clock = function() return clock.now end }, { __index = os }),
+        print = function() end,
+        noteUnreachableBurst = function(id) hooks.burst[#hooks.burst + 1] = id end,
+        clearDetour = function() hooks.detours = hooks.detours + 1 end,
     }
-    markUnreachable(1001, 100.0)
-    local function selectFirstXtarget(xtList, now)
-        for _, xt in ipairs(xtList) do
-            if not isUnreachable(xt.id, now) then
-                return xt.id
-            end
-        end
-        return nil
-    end
+    local markUnreachable = loadFunc(src, 'markUnreachable', unreachEnv)
+    local isUnreachable = loadFunc(src, 'isUnreachable', unreachEnv)
+    local function at(t, id) clock.now = t return isUnreachable(id) end
 
-    local chosen = selectFirstXtarget(mockXtargets, 110.0)
-    assert_eq(chosen, 1002, 'Suite 65: skips unreachable 1001 and selects 1002')
+    markUnreachable(1001)
+    assert_true(at(110.0, 1001), 'Suite 65: mob 1001 is unreachable at +10s')
+    assert_true(at(159.0, 1001), 'Suite 65: mob 1001 is unreachable at +59s')
+    assert_true(not at(161.0, 1001), 'Suite 65: mob 1001 expires after 60s TTL')
+    assert_nil(unreachEnv.pursuit.unreachableIds[1001], 'Suite 65: expired entry is dropped from the table')
+    assert_true(not at(110.0, 1002), 'Suite 65: mob 1002 was never marked unreachable')
+    assert_eq(hooks.burst[1], 1001, 'Suite 65: markUnreachable feeds the unreachable-burst detector')
+    assert_eq(hooks.detours, 1, 'Suite 65: markUnreachable clears any active detour')
 
-    -- 3. 15-second approach watchdog logic
-    local pursuitState = { approachTargetId = 0, approachStartedAt = 0 }
-    local function evaluateApproachWatchdog(tid, inReach, inCombatEngaged, now)
-        if tid <= 0 then
-            pursuitState.approachTargetId = 0
-            pursuitState.approachStartedAt = 0
-            return 'NO_TARGET'
-        end
-        if pursuitState.approachTargetId ~= tid then
-            pursuitState.approachTargetId = tid
-            pursuitState.approachStartedAt = now
-        end
-        if inReach or inCombatEngaged then
-            pursuitState.approachStartedAt = now
-            return 'ENGAGED'
-        elseif (now - pursuitState.approachStartedAt) > 15.0 then
-            pursuitState.approachTargetId = 0
-            pursuitState.approachStartedAt = 0
-            return 'UNREACHABLE_TIMEOUT'
-        end
-        return 'APPROACHING'
-    end
+    -- 2. A forced target that turns out to be unreachable is released
+    local unreachRuntime = debug.getfenv(markUnreachable).runtime
+    unreachRuntime.xtForceId = 1003
+    markUnreachable(1003)
+    assert_eq(unreachRuntime.xtForceId, 0, 'Suite 65: force target released once it is marked unreachable')
+    unreachRuntime.xtForceId = 1004
+    markUnreachable(1005)
+    assert_eq(unreachRuntime.xtForceId, 1004, 'Suite 65: an unrelated force target is kept')
 
-    assert_eq(evaluateApproachWatchdog(500, false, false, 1000.0), 'APPROACHING', 'Suite 65: start approaching at 1000s')
-    assert_eq(evaluateApproachWatchdog(500, false, false, 1010.0), 'APPROACHING', 'Suite 65: still approaching at 1010s (+10s)')
-    assert_eq(evaluateApproachWatchdog(500, false, false, 1015.1), 'UNREACHABLE_TIMEOUT', 'Suite 65: times out after 15.1s unable to reach')
-
-    -- 4. In-reach / engaged resets approach timer
-    assert_eq(evaluateApproachWatchdog(600, false, false, 2000.0), 'APPROACHING', 'Suite 65: mob 600 approaching')
-    assert_eq(evaluateApproachWatchdog(600, true, true, 2012.0), 'ENGAGED', 'Suite 65: mob 600 in reach at 12s resets timer')
-    assert_eq(evaluateApproachWatchdog(600, false, false, 2020.0), 'APPROACHING', 'Suite 65: mob 600 approaching again (8s after reset)')
-    assert_eq(evaluateApproachWatchdog(600, false, false, 2028.0), 'UNREACHABLE_TIMEOUT', 'Suite 65: mob 600 times out 16s after last in-reach')
-
-    -- 5. Source code validation in triune.lua
+    -- 3. Source code validation in triune.lua (the approach watchdog lives
+    -- inline in the combat tick, so it is checked by source contract)
     local triuneContent = readFile('TAC/lua/triune.lua')
     assert_true(triuneContent:find("pursuit.noPathFails") ~= nil, 'Suite 65: triune.lua tracks noPathFails')
     assert_true(triuneContent:find("No navigation path to target") ~= nil, 'Suite 65: triune.lua logs no navigation path to target')
@@ -7947,20 +7487,8 @@ do
     end
     assert_eq(countAliveNPCXtarget(mockDeadOnlyXtar), 0, 'Suite 66: countAliveNPCXtarget returns 0 when all XTargets dead')
 
-    -- 4. Slain event resets lastTick to 0 for instant loop iteration
-    local mockRuntime = { lastTick = 12345.67, cleared = false }
-    mockRuntime.clearTarget = function() mockRuntime.cleared = true end
-    local function onMobSlain(targetDead)
-        if targetDead then
-            mockRuntime.clearTarget()
-            mockRuntime.lastTick = 0
-        end
-    end
-    onMobSlain(true)
-    assert_true(mockRuntime.cleared, 'Suite 66: slain event calls clearTarget')
-    assert_eq(mockRuntime.lastTick, 0, 'Suite 66: slain event resets lastTick to 0')
-
-    -- 5. Source code validation in TAC/lua/triune.lua
+    -- 4. Source code validation in TAC/lua/triune.lua (the slain handler is
+    -- an inline event callback, so it is checked by source contract)
     local triuneContent = readFile('TAC/lua/triune.lua')
     assert_true(triuneContent:find("TriuneSlain1") ~= nil, 'Suite 66: triune.lua registers TriuneSlain1 event')
     assert_true(triuneContent:find("TriuneSlain2") ~= nil, 'Suite 66: triune.lua registers TriuneSlain2 event')
@@ -8487,66 +8015,46 @@ end
 -- ============================================================================
 print('--- Suite 70: Player-Specific AA Filtering & Cross-Class Ability Rejection ---')
 do
-    -- 1. Simulation of isAAAllowedForPlayer
-    local CLASS_ARCHETYPES = {
-        War = 'Melee', Pal = 'Priest/Melee', SK = 'Caster/Melee', Rng = 'Melee/Caster',
-        Rog = 'Melee', Mnk = 'Melee', Ber = 'Melee', Brd = 'Melee/Bard',
-        Clr = 'Priest', Dru = 'Priest/Caster', Shm = 'Priest/Caster',
-        Wiz = 'Caster', Mag = 'Caster', Enc = 'Caster', Nec = 'Caster', Bst = 'Melee/Priest',
-    }
-    local ARCHETYPE_CLASSES = {
-        Melee = { War = true, Pal = true, SK = true, Rng = true, Rog = true, Mnk = true, Ber = true, Brd = true, Bst = true },
-        Priest = { Clr = true, Dru = true, Shm = true, Pal = true },
-        Caster = { Wiz = true, Mag = true, Enc = true, Nec = true, Dru = true, Shm = true, Rng = true, SK = true, Bst = true },
-        Pet = { Mag = true, Nec = true, Bst = true, Shm = true, Enc = true },
-    }
-    local ARCHETYPE_RESTRICTIONS = {
-        ['Combat Fury'] = 'Melee', ['Ambidexterity'] = 'Melee', ['Physical Enhancement'] = 'Melee',
-        ['Healing Gift'] = 'Priest', ['Healing Adept'] = 'Priest',
-        ['Spell Casting Mastery'] = 'Caster', ['Fury of Magic'] = 'Caster', ['Destructive Fury'] = 'Caster',
-        ['Mend Companion'] = 'Pet', ['Companion\'s Blessing'] = 'Pet',
-    }
-    local CLASS_SPECIFIC_ABILITIES = {
-        War = { 'Area Taunt', 'Rampage', 'Blade Guardian' },
-        Clr = { 'Divine Arbitration', 'Purify Soul', 'Celestial Regeneration' },
-        Rng = { 'Headshot', 'Endless Quiver' },
-        Wiz = { 'Mana Burn', 'Harvest of Druzzil' },
-        SK  = { 'Harm Touch', 'Leech Touch' },
-        Enc = { 'Gather Mana', 'Color Shock' },
-        Nec = { 'Life Burn', 'Swarm of Decay' },
-        Shm = { 'Cannibalization', 'Turgur\'s Swarm' },
-    }
-    local AA_CLASS_RESTRICTIONS = {}
-    for cls, abilities in pairs(CLASS_SPECIFIC_ABILITIES) do
-        for _, nm in ipairs(abilities) do
-            if not AA_CLASS_RESTRICTIONS[nm] then AA_CLASS_RESTRICTIONS[nm] = {} end
-            AA_CLASS_RESTRICTIONS[nm][cls] = true
-        end
+    -- 1. The real AA.isAAAllowedForPlayer from the auto_aa plugin, initialised
+    -- on a mock core. mockRanks feeds Me.AltAbility (owned ranks); the
+    -- priority list is the live ctrl.auto_aa_priorities.
+    local aaAllow = { ranks = {}, ctrl = { auto_aa_priorities = {} } }
+    local function aaTlo(fields, exists)
+        return setmetatable(fields, { __call = function() return exists ~= false end })
     end
-
+    aaAllow.core = {
+        ctrl = aaAllow.ctrl, runtime = { cachedAAData = {}, isCasting = function() return false end },
+        ImGui = {}, DATA = {}, myClasses = { 'War' }, saveLoadout = function() end, colors = {},
+        mq = {
+            cmd = function() end, cmdf = function() end,
+            TLO = {
+                Me = {
+                    AAPoints = function() return 0 end, AAPointsSpent = function() return 0 end,
+                    Level = function() return 60 end, Moving = function() return false end,
+                    Combat = function() return false end, CombatState = function() return 'ACTIVE' end,
+                    AltAbility = function(name)
+                        local r = aaAllow.ranks[name]
+                        return aaTlo({ Rank = function() return r or 0 end, MaxRank = function() return r and 5 or 0 end }, r ~= nil)
+                    end,
+                },
+                AltAbility = function() return aaTlo({}, false) end,
+                Window = function() return aaTlo({}, false) end,
+            },
+        },
+    }
+    do
+        local origPrint = print
+        print = function() end ---@diagnostic disable-line: lowercase-global
+        aaAllow.P = assert(loadfile('TAC/lua/tac/auto_aa.lua'))()
+        local okInit, errInit = pcall(aaAllow.P.onInit, aaAllow.core)
+        print = origPrint ---@diagnostic disable-line: lowercase-global
+        assert_true(okInit, 'Suite 70: auto_aa plugin initialises on the mock core: ' .. tostring(errInit))
+    end
     local function isAllowed(name, playerClasses, isFromUI, mockRanks)
-        if isFromUI then return true end
-        if mockRanks and (mockRanks[name] or 0) > 0 then return true end
-        local allowedClasses = AA_CLASS_RESTRICTIONS[name]
-        if allowedClasses then
-            local matched = false
-            for _, cls in ipairs(playerClasses) do
-                if allowedClasses[cls] then matched = true; break end
-            end
-            if not matched then return false end
-        end
-        local reqArch = ARCHETYPE_RESTRICTIONS[name]
-        if reqArch then
-            local archMap = ARCHETYPE_CLASSES[reqArch]
-            if archMap then
-                local matched = false
-                for _, cls in ipairs(playerClasses) do
-                    if archMap[cls] then matched = true; break end
-                end
-                if not matched then return false end
-            end
-        end
-        return true
+        aaAllow.ranks = mockRanks or {}
+        local ok = aaAllow.P.AA.isAAAllowedForPlayer(name, playerClasses, isFromUI)
+        aaAllow.ranks = {}
+        return ok
     end
 
     -- Warrior tests
@@ -8578,11 +8086,14 @@ do
 
     -- Bypass if explicitly prioritized by user (custom server compatibility)
     local function isAllowedWithPrio(name, playerClasses, isPrio)
-        if isPrio then return true end
-        return isAllowed(name, playerClasses, false)
+        aaAllow.ctrl.auto_aa_priorities = isPrio and { [name] = true } or {}
+        local ok = isAllowed(name, playerClasses, false)
+        aaAllow.ctrl.auto_aa_priorities = {}
+        return ok
     end
     assert_true(isAllowedWithPrio('Bestial Frenzy', warClasses, true), 'Suite 70: Prioritized Bestial Frenzy allowed unconditionally for custom servers')
     assert_true(isAllowedWithPrio('Mana Burn', warClasses, true), 'Suite 70: Prioritized Mana Burn allowed unconditionally for custom servers')
+    assert_true(not isAllowedWithPrio('Mana Burn', warClasses, false), 'Suite 70: Mana Burn rejected again once it is no longer prioritized')
 
     -- 2. Cache pruning simulation
     local pollutedCache = {
@@ -9383,18 +8894,12 @@ do
         { name = 'Boil Blood', duration = 45, isSong = false, isBeneficial = false },
     }
 
+    -- The real sortEffects from tac/hud_effects.lua
+    local sortEffects = loadFunc(readFile('TAC/lua/tac/hud_effects.lua'), 'sortEffects')
+
     -- Test Time Left (Ascending): 18s -> 45s -> 300s -> Aura (0s)
     local asc = { testList[1], testList[2], testList[3], testList[4] }
-    table.sort(asc, function(a, b)
-        local aTimed = (a.duration and a.duration > 0)
-        local bTimed = (b.duration and b.duration > 0)
-        if aTimed and not bTimed then return true end
-        if not aTimed and bTimed then return false end
-        if aTimed and bTimed then
-            if a.duration ~= b.duration then return a.duration < b.duration end
-        end
-        return (a.name or ''):lower() < (b.name or ''):lower()
-    end)
+    sortEffects(asc, 'Time Left (Ascending)')
     assert_eq(asc[1].name, 'Selo Song', 'Suite 77: Asc sort soonest expiring first (Selo)')
     assert_eq(asc[2].name, 'Boil Blood', 'Suite 77: Asc sort second (Boil Blood)')
     assert_eq(asc[3].name, 'Brevity', 'Suite 77: Asc sort third (Brevity)')
@@ -9402,40 +8907,14 @@ do
 
     -- Test Time Left (Descending): Aura (0s / Perm) -> 300s -> 45s -> 18s
     local desc = { testList[1], testList[2], testList[3], testList[4] }
-    table.sort(desc, function(a, b)
-        local aTimed = (a.duration and a.duration > 0)
-        local bTimed = (b.duration and b.duration > 0)
-        if not aTimed and bTimed then return true end
-        if aTimed and not bTimed then return false end
-        if aTimed and bTimed then
-            if a.duration ~= b.duration then return a.duration > b.duration end
-        end
-        return (a.name or ''):lower() < (b.name or ''):lower()
-    end)
+    sortEffects(desc, 'Time Left (Descending)')
     assert_eq(desc[1].name, 'Aura of Insight', 'Suite 77: Desc sort permanent first')
     assert_eq(desc[2].name, 'Brevity', 'Suite 77: Desc sort longest timed next')
     assert_eq(desc[4].name, 'Selo Song', 'Suite 77: Desc sort shortest timed last')
 
     -- Test Buff Type: Detrimental (Boil Blood) -> Songs (Selo) -> Timed Buffs (Brevity) -> Perm (Aura)
     local btype = { testList[1], testList[2], testList[3], testList[4] }
-    table.sort(btype, function(a, b)
-        local function typeRank(e)
-            if not e.isBeneficial then return 1 end
-            if e.isSong then return 2 end
-            if e.duration and e.duration > 0 then return 3 end
-            return 4
-        end
-        local rA, rB = typeRank(a), typeRank(b)
-        if rA ~= rB then return rA < rB end
-        local aTimed = (a.duration and a.duration > 0)
-        local bTimed = (b.duration and b.duration > 0)
-        if aTimed and not bTimed then return true end
-        if not aTimed and bTimed then return false end
-        if aTimed and bTimed then
-            if a.duration ~= b.duration then return a.duration < b.duration end
-        end
-        return (a.name or ''):lower() < (b.name or ''):lower()
-    end)
+    sortEffects(btype, 'Buff Type')
     assert_eq(btype[1].name, 'Boil Blood', 'Suite 77: Buff Type sort detrimental first')
     assert_eq(btype[2].name, 'Selo Song', 'Suite 77: Buff Type sort song second')
     assert_eq(btype[3].name, 'Brevity', 'Suite 77: Buff Type sort timed buff third')
@@ -9450,8 +8929,8 @@ do
     -- 9. Verify version sync
     local vTriune = triuneContent:match("local VERSION%s*=%s*'(.-)'")
     local vReadme = readmeContent:match("Current version:%s*%*%*(.-)%*%*")
-    assert_eq(vTriune, '3.1', 'Suite 77: triune.lua VERSION is 3.1')
-    assert_eq(vReadme, '3.1', 'Suite 77: README.md version is 3.1')
+    assert_eq(vTriune, '3.2', 'Suite 77: triune.lua VERSION is 3.2')
+    assert_eq(vReadme, '3.2', 'Suite 77: README.md version is 3.2')
     assert_eq(vTriune, vReadme, 'Suite 77: Version numbers match across triune.lua and README.md')
 end
 
@@ -9566,8 +9045,8 @@ do
     -- 6. Verify version sync
     local vTriune = triuneContent:match("local VERSION%s*=%s*'(.-)'")
     local vReadme = readmeContent:match("Current version:%s*%*%*(.-)%*%*")
-    assert_eq(vTriune, '3.1', 'Suite 78: triune.lua VERSION is 3.1')
-    assert_eq(vReadme, '3.1', 'Suite 78: README.md version is 3.1')
+    assert_eq(vTriune, '3.2', 'Suite 78: triune.lua VERSION is 3.2')
+    assert_eq(vReadme, '3.2', 'Suite 78: README.md version is 3.2')
     assert_eq(vTriune, vReadme, 'Suite 78: Version numbers match across triune.lua and README.md')
 end
 
@@ -9728,8 +9207,8 @@ do
     -- 9. Verify version sync
     local vTriune = triuneContent:match("local VERSION%s*=%s*'(.-)'")
     local vReadme = readmeContent:match("Current version:%s*%*%*(.-)%*%*")
-    assert_eq(vTriune, '3.1', 'Suite 79: triune.lua VERSION is 3.1')
-    assert_eq(vReadme, '3.1', 'Suite 79: README.md version is 3.1')
+    assert_eq(vTriune, '3.2', 'Suite 79: triune.lua VERSION is 3.2')
+    assert_eq(vReadme, '3.2', 'Suite 79: README.md version is 3.2')
     assert_eq(vTriune, vReadme, 'Suite 79: Version numbers match across triune.lua and README.md')
 end
 
@@ -9915,8 +9394,8 @@ do
     -- 7. Verify version sync
     local vTriune = triuneContent:match("local VERSION%s*=%s*'(.-)'")
     local vReadme = readmeContent:match("Current version:%s*%*%*(.-)%*%*")
-    assert_eq(vTriune, '3.1', 'Suite 81: triune.lua VERSION is 3.1')
-    assert_eq(vReadme, '3.1', 'Suite 81: README.md version is 3.1')
+    assert_eq(vTriune, '3.2', 'Suite 81: triune.lua VERSION is 3.2')
+    assert_eq(vReadme, '3.2', 'Suite 81: README.md version is 3.2')
     assert_eq(vTriune, vReadme, 'Suite 81: Version numbers match across triune.lua and README.md')
 end
 
@@ -10420,8 +9899,11 @@ do
         fdHandlers.TacAssassinate('Bob ASSASSINATES their victim!!', 'Bob')
         fdHandlers.TacHeadshot('Bob performs a FATAL BOW SHOT!!', 'Bob')
         fdHandlers.TacFlurry2('Bob executes a FLURRY of attacks on a rat!', 'Bob')
+        -- typed chat with the trigger words must not fire the loose DoT / heal fallbacks
+        fdHandlers.TacDotCrit("Bob tells the group, 'your critical dot hit (99999)'", '99999')
+        fdHandlers.TacHealCrit2("You tell your party, 'critical heal (99999)'", '99999')
         pFD.onDrawUI()
-        assert_eq(begun, 0, "Suite 86: floating_damage ignores other players' melee crits")
+        assert_eq(begun, 0, "Suite 86: floating_damage ignores other players' melee crits and quoted chat")
 
         -- Own crits: a crit, a bigger crit (record), and a massive spell crit (particles + rings + flash)
         fdHandlers.TacCritHit('Triunetester scores a critical hit! (420)', 'Triunetester', '420')
@@ -10604,7 +10086,7 @@ do
     -- Test lifecycle with mock core API
     local mockCore = {
         ctrl = { show_unit_frames = true, uf_lock = false, uf_alpha = 0.85 },
-        VERSION = '3.1',
+        VERSION = '3.2',
         mq = {
             TLO = {
                 Me = {
@@ -10752,6 +10234,7 @@ do
         { file = 'buttons',         id = 'buttons' },
         { file = 'parcels',         id = 'parcels' },
         { file = 'nmsloot',         id = 'nmsloot' },
+        { file = 'gm_commands',     id = 'gm_commands' },
     }
     for _, sp in ipairs(shipped) do
         local fn = assert(loadfile('TAC/lua/tac/' .. sp.file .. '.lua'))
@@ -10827,7 +10310,7 @@ do
         mq = mockMq,
         ImGui = mockImGui,
         UI = mockUI,
-        VERSION = '3.1',
+        VERSION = '3.2',
         DATA = {},
         loadout = {},
         scriptDir = './',
@@ -10850,8 +10333,9 @@ do
     initPM()
     local pm = rt.pluginManager
     assert_true(pm ~= nil, 'Suite 88: runtime.initPluginManager creates runtime.pluginManager')
-    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager', 'nms_looter_handoff' }
-    local disabledByDefault = { nms_looter_handoff = true }
+    local expected = { 'auto_aa', 'auto_accept', 'boxnet', 'buffbot', 'buttons', 'chat', 'cursor', 'dps', 'floating_damage', 'gamedb', 'gm_commands', 'hud_cooldowns', 'hud_effects', 'hud_group', 'hud_spellgems', 'hud_unitframes', 'hud_xtarget', 'inventory', 'map', 'nms_looter_handoff', 'nmsloot', 'parcels', 'spellbook', 'update_check', 'update_manager' }
+    -- Plugins that ship off (defaultEnabled = false): discovered, registered, not started.
+    local disabledByDefault = { gm_commands = true, nms_looter_handoff = true }
     for _, id in ipairs(expected) do
         local p = pm.plugins[id]
         assert_true(p ~= nil, 'Suite 88: discover() loaded ' .. id)
@@ -11102,7 +10586,7 @@ do
             },
         }
         local core = {
-            VERSION = '3.1', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
+            VERSION = '3.2', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
             colors = { GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 } },
             px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
             preBeginWindow = noop, postBeginWindow = noop,
@@ -11181,10 +10665,17 @@ do
         assert_eq(cur.state.sessionHistory[1].action, 'Auto Inventoried', 'Suite 89: cursor history action recorded')
         assert_eq(cur.state.clearing, nil, 'Suite 89: cursor clear sequence finished')
         curId = 77
-        cur.state.pendingAction = 'destroy'
+        -- Destroy only fires on the item it was clicked for.
+        local nBefore = #rec.cmds
+        cur.state.pendingAction, cur.state.destroyTargetId, cur.state.confirmDestroy = 'destroy', 55, true
+        cur.onTick()
+        assert_eq(#rec.cmds, nBefore, 'Suite 89: cursor destroy aborts when the cursor holds a different item')
+        assert_eq(cur.state.confirmDestroy, false, 'Suite 89: cursor destroy resets the confirmation')
+        cur.state.pendingAction, cur.state.destroyTargetId, cur.state.confirmDestroy = 'destroy', 77, true
         cur.onTick()
         assert_eq(rec.cmds[#rec.cmds], '/destroy', 'Suite 89: cursor destroy issues /destroy')
         assert_eq(cur.state.sessionHistory[1].action, 'Destroyed', 'Suite 89: cursor destroy logged')
+        assert_eq(cur.state.confirmDestroy, false, 'Suite 89: cursor destroy needs a fresh confirmation each time')
         cur.state.autoClearOnPick = true
         cur.onTick()
         assert_eq(rec.cmds[#rec.cmds], '/autoinventory', 'Suite 89: auto-clear on pick inventories items that land on the cursor')
@@ -11205,8 +10696,8 @@ do
         dps.onInit(core)
         local evCount = 0
         for _ in pairs(rec.events) do evCount = evCount + 1 end
-        assert_eq(evCount, 22, 'Suite 89: dps registers its 22 combat-log events')
-        assert_eq(#dps.registeredEvents(), 22, 'Suite 89: dps tracks registered event names')
+        assert_eq(evCount, 20, 'Suite 89: dps registers its 20 combat-log events')
+        assert_eq(#dps.registeredEvents(), 20, 'Suite 89: dps tracks registered event names')
         assert_true(rec.binds['/dps'] and rec.binds['/triunedps'], 'Suite 89: dps binds /dps and /triunedps')
         assert_eq(ctrl.show_dps, false, 'Suite 89: dps seeds show_dps = false')
         assert_true(dps.onCommand('dps', { 'dps' }), 'Suite 89: /ac dps handled by the plugin')
@@ -11433,7 +10924,15 @@ do
 
     -- 8. pm.delay: yields the fiber until the condition / deadline, mq.delay outside a fiber
     do
+        -- Plugins loaded by the manager below persist settings under
+        -- mq.configDir on disable (map writes triune_map_config.lua): point it
+        -- at the system temp dir so the run never writes into the repo.
         local mockMq = {
+            configDir = (function()
+                local n = os.tmpname()
+                os.remove(n)
+                return n:match('^(.*)[/\\][^/\\]*$') or '.'
+            end)(),
             event = noop, unevent = noop, cmd = noop, cmdf = noop, bind = noop, unbind = noop,
             gettime = function() return 0 end,
             TLO = {
@@ -11451,7 +10950,7 @@ do
             UI = { accent = noop, setTooltip = noop, pushTheme = noop, popTheme = noop, preBeginWindow = noop, postBeginWindow = noop,
                    drawStatusProgressBar = noop, drawSpellIcon = function() return false end,
                    getConColorRgb = function() return { 1, 1, 1, 1 } end, resolveTargetOfTarget = function() return nil end },
-            VERSION = '3.1', DATA = {}, loadout = {}, scriptDir = './',
+            VERSION = '3.2', DATA = {}, loadout = {}, scriptDir = './',
             GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 },
             saveLoadout = noop, print = quietPrint,
             idxOf = function() return 0 end, fmtSec = tostring, parseDurationSec = function() return 0 end,
@@ -11705,7 +11204,7 @@ do
         ctrl = { auto_summon_fireworks = true, auto_fireworks_cursor_action = 'leave', auto_spend_aa_id = 17788, plugins = {} }, mq = mq,
         ImGui = setmetatable({}, { __index = function() return noop end }),
         runtime = { isCasting = function() return false end, cachedAAData = {} },
-        DATA = {}, colors = {}, accent = noop, saveLoadout = noop, VERSION = '3.1',
+        DATA = {}, colors = {}, accent = noop, saveLoadout = noop, VERSION = '3.2',
     }
     local origPrint = print
     print = quietPrint
@@ -11840,7 +11339,7 @@ do
                 ['Alternately Advanced Fireworks'] = { cost = 25, rank = 0, maxRank = 1, category = 'Special' },
             },
         },
-        DATA = {}, colors = {}, accent = noop, saveLoadout = noop, VERSION = '3.1',
+        DATA = {}, colors = {}, accent = noop, saveLoadout = noop, VERSION = '3.2',
     }
     local origPrint = print
     print = quietPrint
@@ -11971,6 +11470,7 @@ do
         petState.PET_SCOPE_LIST = { 'all', 'swarm', 'mag', 'bst', 'nec', 'enc', 'shm', 'dru', 'brd', 'shd' }
         ctrl.pet_names = names or {}; ctrl.debug_mode = false
         runtime.detectPetClassFromSpawn = env.detectPetClassFromSpawn -- reconcilePets calls it as a runtime method
+        runtime.petEligibleForCls = env.petEligibleForCls
         for i, c in ipairs(classes) do myClasses[i] = c end
     end
     local function addPet(id, name, opts)
@@ -11993,6 +11493,8 @@ do
     env.classToPetCmdScope = loadFunc(src, 'classToPetCmdScope', env)
     env.detectPetClassFromSpawn = loadFunc(src, 'detectPetClassFromSpawn', env)
     runtime.detectPetClassFromSpawn = env.detectPetClassFromSpawn
+    env.petEligibleForCls = loadFunc(src, 'petEligibleForCls', env)
+    runtime.petEligibleForCls = env.petEligibleForCls
     env.reconcilePets = loadFunc(src, 'reconcilePets', env)
     env.getMultiPetList = loadFunc(src, 'getMultiPetList', env)
     env.PET_SUMMON_GRACE_SEC = 12
@@ -12146,13 +11648,17 @@ do
     world.clock = world.clock + 61; petState.petsCache = nil; petState.lastReconcileAt = 0
     assert_eq(F.isPetMissingForClass('Nec'), true, 'Suite 92: block expires after 60s')
 
-    -- I. Single pet class: any of our pets satisfies it; nil cls = any pet at all
+    -- Edited By: NeroMorte - Preserve the fork's unique remaining pet/class inference.
+    -- I. Single pet class: one owned pet satisfies it; nil cls = any pet at all
     resetWorld({ 'Mag', 'War', 'Clr' })
     assert_eq(F.isPetMissingForClass('Mag'), true, 'Suite 92: single pet class with no pets -> missing')
     assert_eq(F.isPetMissingForClass(nil), true, 'Suite 92: no class, no pets -> missing')
     addPet(100, 'Xobarb', { race = 'Unknown' })
     tick()
-    assert_eq(F.isPetMissingForClass('Mag'), false, 'Suite 92: single pet class picks up any of our pets')
+    assert_eq(F.isPetMissingForClass('Mag'), false, 'Suite 92: preserve unique owned-pet/class inference from NeroMorte main')
+    world.mePetId = 100
+    tick()
+    assert_eq(F.isPetMissingForClass('Mag'), false, 'Suite 92: single pet class picks up its Me.Pet')
     assert_eq(F.isPetMissingForClass(nil), false, 'Suite 92: no class, a pet exists -> not missing')
 
     -- J. Source wiring
@@ -12354,7 +11860,7 @@ do
         UI = { accent = noop, setTooltip = noop, pushTheme = noop, popTheme = noop, preBeginWindow = noop, postBeginWindow = noop,
                drawStatusProgressBar = noop, drawSpellIcon = function() return false end,
                getConColorRgb = function() return { 1, 1, 1, 1 } end, resolveTargetOfTarget = function() return nil end },
-        VERSION = '3.1', DATA = {}, loadout = {}, scriptDir = './',
+        VERSION = '3.2', DATA = {}, loadout = {}, scriptDir = './',
         GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 },
         saveLoadout = noop, print = quietPrint,
         idxOf = function() return 0 end, fmtSec = tostring, parseDurationSec = function() return 0 end,
@@ -12366,7 +11872,7 @@ do
     initPM()
     local pm = rt.pluginManager
     S.shipped = #pm.pluginOrder
-    assert_eq(S.shipped, 24, 'Suite 92: all shipped plugins still load under the load-time guards')
+    assert_eq(S.shipped, 25, 'Suite 92: all shipped plugins still load under the load-time guards')
 
     -- Soft plugin dependencies (`uses`): normalised at registration, reverse-listed, state-tracked
     assert_eq(#pm.normalizeUses(nil), 0, 'Suite 92: no uses -> empty list')
@@ -12763,7 +12269,7 @@ end
             },
         }
         local core = setmetatable({
-            mq = mq, ImGui = mockImGui, runtime = { pullState = 'IDLE' }, VERSION = '3.1',
+            mq = mq, ImGui = mockImGui, runtime = { pullState = 'IDLE' }, VERSION = '3.2',
             colors = {}, saveLoadout = function() box.saves = box.saves + 1 end,
             px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
             preBeginWindow = noop, postBeginWindow = noop,
@@ -12832,6 +12338,9 @@ end
     assert_eq(A.inst.normalizeLine('/dzquit'), '/dzquit', 'Suite 95: any slash command is kept whole')
     assert_eq(A.inst.normalizeLine('/acme'), '/acme', 'Suite 95: "/acme" is a slash command, not a bare /ac')
     assert_eq(A.inst.normalizeLine('/ac net all run'), nil, 'Suite 95: "/ac net" is still a nested net command')
+    assert_eq(A.inst.normalizeLine('/AC net all run'), nil, 'Suite 95: "/AC net" (any case) is still a nested net command')
+    assert_eq(A.inst.normalizeLine('/nomodkey /ac net all run'), nil, 'Suite 95: "/nomodkey /ac net" is still a nested net command')
+    assert_eq(A.inst.normalizeLine('/AC burn on'), 'burn on', 'Suite 95: "/AC" is stripped case-insensitively')
     assert_true(A.inst.isSlashLine('/camp') and not A.inst.isSlashLine('burn on'), 'Suite 95: isSlashLine spots raw slash lines')
     assert_eq(A.inst.displayLine('burn on'), '/ac burn on', 'Suite 95: displayLine shows an /ac command with its prefix')
     assert_eq(A.inst.displayLine('/camp'), '/camp', 'Suite 95: displayLine shows a slash command as is')
@@ -13426,7 +12935,7 @@ end)()
         },
     }
     local core = setmetatable({
-        mq = mq, ImGui = mockImGui, runtime = {}, VERSION = '3.1', colors = {},
+        mq = mq, ImGui = mockImGui, runtime = {}, VERSION = '3.2', colors = {},
         saveLoadout = function() saves = saves + 1 end,
         px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
         preBeginWindow = noop, postBeginWindow = noop,
@@ -14477,7 +13986,11 @@ end)()
     local dpsCore = setmetatable({ mq = mockMq, boxnet = { available = function() return true end, subscribe = function(kind, fn) subs[kind] = fn return function() subs[kind] = nil end end, broadcast = function(kind, data) S.lastShare = { kind = kind, data = data } return true end } },
         { __index = function() return nil end })
     mockMq.bind, mockMq.unbind, mockMq.event, mockMq.unevent = function() end, function() end, function() end, function() end
-    mockMq.configDir = '/tmp/claude-1000/-home-gennro-Documents-github-TriuneAutocombat/ac73ae47-5c31-4666-aa5a-ca1276e99826/scratchpad'
+    mockMq.configDir = (function() -- system temp dir, never the repo
+        local n = os.tmpname()
+        os.remove(n)
+        return n:match('^(.*)[/\\][^/\\]*$') or '.'
+    end)()
     mockMq.TLO.Me.CleanName = function() return 'Me' end
     local realPrint97 = print
     print = function() end ---@diagnostic disable-line: lowercase-global
@@ -14779,7 +14292,7 @@ end)()
         SameLine = function(x) if x then S.imgui.lastSameLineX = x end end,
     }, { __index = function() return function() end end })
     local core = setmetatable({
-        VERSION = '3.1', ctrl = { plugins = {}, show_dps = true }, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
+        VERSION = '3.2', ctrl = { plugins = {}, show_dps = true }, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
         px = function(n) return n end, colors = {}, pushTheme = function() end, popTheme = function() end, accent = function() end, setTooltip = function() end,
         preBeginWindow = function() end, postBeginWindow = function() end, saveLoadout = function() end,
         drawStatusProgressBar = function(frac, w, h, label, r, g, b) S.imgui.bars = (S.imgui.bars or 0) + 1 S.lastBar = { frac = frac, label = label, r = r, g = g, b = b } texts[#texts + 1] = tostring(label) end,
@@ -15022,7 +14535,7 @@ end)()
     }
     local UI = {}
     local env = setmetatable({
-        ctrl = ctrl, runtime = runtime, mq = mq, ImGui = mockImGui, UI = UI, VERSION = '3.1', open = true,
+        ctrl = ctrl, runtime = runtime, mq = mq, ImGui = mockImGui, UI = UI, VERSION = '3.2', open = true,
         GOLD = { 1, 0.7, 0.54, 1 }, ARC = { 0.3, 0.7, 1, 1 }, MUTED = { 0.49, 0.56, 0.65, 1 }, GOOD = { 0.37, 0.88, 0.64, 1 }, WARN = { 1, 0.72, 0.3, 1 },
         accent = function(c, txt) mockImGui.TextColored(c[1], c[2], c[3], c[4], txt) end,
         idxOf = loadFunc(src, 'idxOf', {}),
@@ -17588,6 +17101,13 @@ end)()
     local rec5 = DB.npcRecord(5)
     rec5.special_abilities = '1\\c1^13\\c1'
     assert_eq(plugin.npcIdForSpawn(77), 5, 'Suite 103: live spawn resolves through name, zone and level')
+    local liveSpawnTLO = core.mq.TLO.Spawn
+    core.mq.TLO.Spawn = function()
+        return setmetatable({ CleanName = function() return 'a_gnoll' end, Name = function() return 'x' end, Level = function() return 3 end }, { __call = function() return true end })
+    end
+    assert_true(plugin.npcIdForSpawn(77) ~= 5, 'Suite 103: a reused spawn id with another name does not keep the cached NPC')
+    core.mq.TLO.Spawn = liveSpawnTLO
+    assert_eq(plugin.npcIdForSpawn(77), 5, 'Suite 103: spawn resolves again once the name matches')
     assert_eq(plugin.immunityReason('Mesmerize', 77), 'Unmezzable', 'Suite 103: cast tracker hook reports the immunity')
     assert_eq(plugin.immunityReason('Ice Comet', 77), nil, 'Suite 103: cast tracker hook lets other spells through')
     assert_eq(plugin.immunityReason('Mesmerize', 78), nil, 'Suite 103: a gnoll has no immunities')
@@ -18142,7 +17662,8 @@ end)()
     local env = { runtime = rt, os = setmetatable({ clock = function() return clock end }, { __index = os }) }
     local markSung = loadFunc(src, 'markSung', env)
     markSung('1_Aegolism', 'Clr')
-    assert_eq(rt.sungBuffs['1_Aegolism'], true, 'Suite 105: non-bard marks stay a plain true')
+    assert_type(rt.sungBuffs['1_Aegolism'], 'table', 'Suite 105: non-bard marks are a releasable record too')
+    assert_eq(rt.sungBuffs['1_Aegolism'].other, true, 'Suite 105: non-bard record is flagged for its chat wording')
     markSung('1_Selo', 'Brd')
     local st = rt.sungBuffs['1_Selo']
     assert_type(st, 'table', 'Suite 105: bard marks are a record')
@@ -18551,7 +18072,7 @@ do
         }
         local ctrl = { plugins = {}, show_inv = true }
         local core = {
-            VERSION = '3.1', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
+            VERSION = '3.2', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
             colors = { GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 } },
             px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
             preBeginWindow = noop, postBeginWindow = noop,
@@ -18808,6 +18329,25 @@ do
         inv.net.processGives()
         assert_true(inv.state.net.log[1].text:find('NO TRADE', 1, true) ~= nil, 'Suite 108: the live NO TRADE flag stops the give')
         assert_eq(#bn.broadcasts, 0, 'Suite 108: no change hint before anyone asked for our snapshot')
+        -- Trade window closed but the item never left (receiver cancelled): not a success
+        inv.probe.locate = function(id, cmd) return { cmd = cmd, name = 'Peridot', count = 5, stackable = true, nodrop = false } end
+        core.mq.TLO.FindItemCount = function() return function() return 5 end end
+        inv.net.enqueueGive({ itemId = 1001, notifyCmd = 'in pack1 1', name = 'Peridot', to = 'Taker' })
+        inv.net.processGives()
+        assert_true(inv.state.net.log[1].text:find('cancelled', 1, true) ~= nil, 'Suite 108: a trade that closes with the item still here is reported as cancelled')
+        local left = 5
+        core.mq.TLO.FindItemCount = function() return function() return left end end
+        w.onDelay = function()
+            local last = w.cmds[#w.cmds] or ''
+            if last:find('/itemnotify', 1, true) then w.cursorId = 1001
+            elseif last:find('/target id 77', 1, true) then w.targetId = 77
+            elseif last == '/click left target' then w.tradeOpen = true
+            elseif last:find('TRDW_Trade_Button', 1, true) then w.tradeOpen = false w.cursorId = 0 left = 0 end
+        end
+        inv.net.enqueueGive({ itemId = 1001, notifyCmd = 'in pack1 1', name = 'Peridot', to = 'Taker' })
+        inv.net.processGives()
+        assert_true(inv.state.net.log[1].text:find('Gave Peridot to Taker', 1, true) ~= nil, 'Suite 108: the item leaving the bags confirms the give')
+        core.mq.TLO.FindItemCount = nil
     end
 
     -- 6. Message handlers: request -> pages, give (trusted / untrusted), trade accept, result, changed
@@ -18827,7 +18367,7 @@ do
         assert_true(bn.subs['inv:request'] ~= nil and bn.subs['inv:give'] ~= nil and bn.subs['inv:page'] ~= nil, 'Suite 108: handlers subscribed')
         bn.subs['inv:request']({ want = 'all' }, { character = 'Boss' })
         bn.subs['inv:request']({ want = 'all' }, { character = 'Boss' })
-        assert_eq(#inv.state.net.pendingRequests, 2, 'Suite 108: requests queue for the tick')
+        assert_eq(#inv.state.net.pendingRequests, 1, 'Suite 108: requests queue for the tick (a repeat from the same box coalesces)')
         inv.net.serveRequests()
         local pages = {}
         for _, m in ipairs(bn.sent) do if m.kind == 'inv:page' then pages[#pages + 1] = m end end
@@ -18842,10 +18382,25 @@ do
         assert_eq(#bn.broadcasts, 1, 'Suite 108: a content change is announced once someone asked')
         inv.net.announceChanged()
         assert_eq(#bn.broadcasts, 1, 'Suite 108: the same generation is not announced twice')
+        -- Per-sender rate limit: an immediate re-ask is refused, not re-served
+        bn.sent = {}
+        bn.subs['inv:request']({}, { character = 'Boss' })
+        assert_eq(#inv.state.net.pendingRequests, 0, 'Suite 108: a request right after one was served is rate limited')
+        assert_true(bn.sent[1] ~= nil and bn.sent[1].data.refused == true and bn.sent[1].data.reason:find('too often', 1, true) ~= nil, 'Suite 108: the rate-limited asker is told why')
+        -- Untrusted senders get a refusal
+        w.nowMs = w.nowMs + 5000
+        bn.trust = false
+        bn.sent = {}
+        bn.subs['inv:request']({}, { character = 'Boss' })
+        assert_eq(#inv.state.net.pendingRequests, 0, 'Suite 108: an untrusted snapshot request is not queued')
+        assert_true(bn.sent[1] ~= nil and bn.sent[1].data.refused == true and bn.sent[1].data.reason:find('not trusted', 1, true) ~= nil, 'Suite 108: untrusted asker refused')
+        bn.trust = true
         -- Sharing off refuses
+        w.nowMs = w.nowMs + 5000
         inv.cfg.share = false
         bn.sent = {}
         bn.subs['inv:request']({}, { character = 'Boss' })
+        assert_eq(#inv.state.net.pendingRequests, 1, 'Suite 108: a request after the rate window is queued')
         inv.net.serveRequests()
         assert_true(bn.sent[1].kind == 'inv:page' and bn.sent[1].data.refused == true, 'Suite 108: sharing off answers with a refusal')
         inv.cfg.share = true
@@ -18888,6 +18443,15 @@ do
         -- Give result from a remote giver
         bn.subs['inv:give_result']({ ok = true, name = 'Gem 1', to = 'Boss' }, { character = 'Taker' })
         assert_true(inv.state.net.log[1].text:find('Taker gave Gem 1 to Boss', 1, true) ~= nil, 'Suite 108: a remote result is logged')
+        -- Trade accept is gated like a give: Accept Gives switch + boxnet trust
+        inv.cfg.acceptGives = false
+        bn.subs['inv:trade_accept']({ name = 'Gem 1' }, { character = 'Taker' })
+        assert_true(inv.state.net.acceptTrades.taker == nil, 'Suite 108: trade accept ignored while gives are off')
+        inv.cfg.acceptGives = true
+        bn.trust = false
+        bn.subs['inv:trade_accept']({ name = 'Gem 1' }, { character = 'Taker' })
+        assert_true(inv.state.net.acceptTrades.taker == nil, 'Suite 108: trade accept from an untrusted box ignored')
+        bn.trust = true
         -- Trade accept: click Trade once the giver's window shows their name, then log the receipt
         bn.subs['inv:trade_accept']({ name = 'Gem 1' }, { character = 'Taker' })
         w.cmds = {}
@@ -19013,7 +18577,7 @@ do
         }
         local ctrl = { plugins = {} }
         local core = {
-            VERSION = '3.1', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
+            VERSION = '3.2', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
             colors = { GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 } },
             px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
             preBeginWindow = noop, postBeginWindow = noop,
@@ -20267,6 +19831,356 @@ do
         'Suite 112: zoning in restores the zone\'s anchor')
     local _, zoneSaves = src:gsub('runtime%.saveZoneAnchor%(%)', '')
     assert_true(zoneSaves >= 3, 'Suite 112: Set / Clear / radius all update the zone entry')
+end
+
+
+-- ============================================================================
+-- Suite 113: GM Commands plugin (tac/gm_commands.lua) -- reference data,
+-- argument parsing, line building, danger marks, search, the /say send path,
+-- confirmation, history / favourites round-trip, /ac gm, off by default.
+-- ============================================================================
+print('--- Suite 113: GM Commands plugin ---')
+do
+    local printed = {}
+    local quietPrint = function(...) printed[#printed + 1] = table.concat({ ... }, ' ') end
+    local noop = function() end
+    local passthrough = function(_, v) return v end
+    local mockImGui = setmetatable({
+        Checkbox = passthrough, Button = function() return false end, SmallButton = function() return false end,
+        IsItemHovered = function() return false end, IsItemClicked = function() return false end,
+        BeginTable = function() return false end, BeginChild = function() return false end,
+        Begin = function() return false, false end, BeginPopupContextWindow = function() return false end,
+        BeginPopup = function() return false end, BeginCombo = function() return false end,
+        SliderInt = function(_, v) return v, false end, InputTextWithHint = function(_, _, v) return v, false end,
+        Selectable = function() return false end, GetContentRegionAvail = function() return 800, 500 end,
+    }, { __index = function() return function() end end })
+
+    local function makeWorld()
+        local w = { cmds = {}, saves = 0, gm = true, target = nil, zone = 'poknowledge' }
+        local mq = {
+            cmd = function(c) w.cmds[#w.cmds + 1] = c end,
+            cmdf = function(f, ...) w.cmds[#w.cmds + 1] = string.format(f, ...) end,
+            TLO = {
+                Me = { GM = function() return w.gm end, X = function() return 1 end, Y = function() return 2 end, Z = function() return 3 end, Heading = { Degrees = function() return 90 end } },
+                Target = {
+                    ID = function() return w.target and w.target.id or 0 end,
+                    CleanName = function() return w.target and w.target.name end,
+                    Type = function() return w.target and w.target.type end,
+                    Level = function() return w.target and w.target.level end,
+                },
+                Zone = { ShortName = function() return w.zone end },
+            },
+        }
+        local ctrl = { plugins = {} }
+        local core = {
+            VERSION = '3.2', ctrl = ctrl, mq = mq, ImGui = mockImGui, runtime = {}, DATA = {},
+            colors = { GOLD = { 1, 1, 1, 1 }, ARC = { 1, 1, 1, 1 }, MUTED = { 1, 1, 1, 1 }, GOOD = { 1, 1, 1, 1 }, WARN = { 1, 1, 1, 1 }, ERR = { 1, 1, 1, 1 } },
+            px = function(n) return n end, pushTheme = noop, popTheme = noop, accent = noop, setTooltip = noop,
+            preBeginWindow = noop, postBeginWindow = noop,
+            saveLoadout = function() w.saves = w.saves + 1 end,
+        }
+        return core, w, ctrl
+    end
+
+    local function loadGm()
+        local fn = assert(loadfile('TAC/lua/tac/gm_commands.lua'))
+        local ok, inst = pcall(fn)
+        assert_true(ok and type(inst) == 'table', 'Suite 113: gm_commands.lua loads')
+        return inst
+    end
+
+    local origPrint = print
+    print = quietPrint
+
+    -- 1. Declaration & reference data
+    do
+        local gm = loadGm()
+        assert_eq(gm.id, 'gm_commands', 'Suite 113: plugin id')
+        assert_eq(gm.defaultEnabled, false, 'Suite 113: off by default')
+        assert_eq(gm.window and gm.window.flag, 'show_gm_commands', 'Suite 113: declares the show_gm_commands window')
+        assert_eq(gm.hasThread, false, 'Suite 113: no fiber (nothing waits)')
+        assert_true(#gm.COMMANDS >= 150, 'Suite 113: the reference holds every command (' .. #gm.COMMANDS .. ')')
+        local known = {}
+        for _, c in ipairs(gm.CATEGORIES) do known[c] = true end
+        local seen = {}
+        for _, e in ipairs(gm.COMMANDS) do
+            assert_true(known[e.cat] == true, 'Suite 113: ' .. e.name .. ' is in a listed category')
+            assert_true(seen[e.name] == nil, 'Suite 113: ' .. e.name .. ' listed once')
+            seen[e.name] = true
+            assert_true(e.syntax:sub(1, 1 + #e.name) == '#' .. e.name, 'Suite 113: ' .. e.name .. ' syntax starts with its own name')
+            assert_true(type(e.desc) == 'string' and e.desc ~= '', 'Suite 113: ' .. e.name .. ' has a description')
+            for _, sub in ipairs(e.subs or {}) do
+                assert_true(gm.logic.subName(sub.syntax) ~= '', 'Suite 113: ' .. e.name .. ' sub has a name: ' .. sub.syntax)
+            end
+        end
+        for _, want in ipairs({ 'zone', 'goto', 'npcedit', 'set', 'show', 'find', 'corpse', 'ban', 'worldshutdown', 'nudge', 'tune', 'npcspawn', 'advnpcspawn', 'grid', 'wp', 'wpadd', 'rules', 'logs', 'task', 'guild', 'dz', 'instance', 'databuckets', 'entityvariable', 'zonevariable' }) do
+            assert_true(gm.BY_NAME[want] ~= nil, 'Suite 113: reference has #' .. want)
+        end
+        assert_eq(#gm.BY_NAME.npcedit.subs, 102, 'Suite 113: every #npcedit column (faction_amount once)')
+        assert_eq(#gm.BY_NAME.set.subs, 55, 'Suite 113: every #set subcommand')
+        assert_eq(#gm.BY_NAME.show.subs, 51, 'Suite 113: every #show subcommand')
+        assert_eq(#gm.BY_NAME.find.subs, 20, 'Suite 113: every #find subcommand')
+        assert_eq(#gm.STATUS_LEVELS, 13, 'Suite 113: the account status table')
+        assert_eq(gm.STATUS_LEVELS[13][2], 'GMImpossible', 'Suite 113: status 150 is GMImpossible')
+        -- destructive marks
+        for _, d in ipairs({ 'ban', 'ipban', 'delacct', 'worldshutdown', 'shutdown', 'emptyinventory', 'killallnpcs', 'depopzone', 'unscribespells', 'npceditmass' }) do
+            assert_true(gm.BY_NAME[d].danger, 'Suite 113: #' .. d .. ' is marked destructive')
+        end
+        assert_true(not gm.BY_NAME.zone.danger and not gm.BY_NAME.heal, 'Suite 113: #zone is not destructive; #heal is a #set alias, not a command')
+        -- quick bar lines are all valid # lines
+        for _, q in ipairs(gm.QUICK) do
+            assert_true(gm.logic.normalizeLine(q[2]) == q[2], 'Suite 113: quick bar line is a # line: ' .. q[2])
+        end
+    end
+
+    -- 2. Pure logic: args, sub names, line building, danger, search, normalize
+    do
+        local gm = loadGm()
+        local L = gm.logic
+        local a = L.parseArgs('#zone [Zone ID|Short Name] [X] [Y] [Z]')
+        assert_eq(#a, 4, 'Suite 113: four [tokens] -> four args')
+        assert_eq(a[1].kind, 'zone', 'Suite 113: zone token gets the This zone helper')
+        assert_nil(a[1].choices, 'Suite 113: a token with spaces is free text, not choices')
+        assert_eq(a[2].kind, 'x', 'Suite 113: X token')
+        assert_eq(a[4].kind, 'z', 'Suite 113: Z token')
+        local g = L.parseArgs('#goto [Player Name | X] [Y] [Z] [H]')
+        assert_eq(g[1].kind, 'name', 'Suite 113: name token gets the Target helper')
+        assert_eq(g[4].kind, 'h', 'Suite 113: H token')
+        local c = L.parseArgs('gm [on|off]')
+        assert_true(c[1].choices and c[1].choices[1] == 'on' and c[1].choices[2] == 'off', 'Suite 113: [on|off] offers choices')
+        local m = L.parseArgs('#suspendmulti [Name One|Name Two|...] [Days] [Reason]')
+        assert_nil(m[1].choices, 'Suite 113: an ellipsis token is not a choice list')
+        assert_eq(#L.parseArgs('#loc'), 0, 'Suite 113: no tokens, no args')
+        assert_eq(L.subName('reload task [Task ID]'), 'reload task', 'Suite 113: multi-word sub name')
+        assert_eq(L.subName('featuresave'), 'featuresave', 'Suite 113: bare sub name')
+        assert_eq(L.buildLine(gm.BY_NAME.zone, nil, { 'poknowledge', '', '', '' }), '#zone poknowledge', 'Suite 113: blank args are dropped')
+        assert_eq(L.buildLine(gm.BY_NAME.zone, nil, { ' poknowledge ', '10', '20', '30' }), '#zone poknowledge 10 20 30', 'Suite 113: args trimmed and ordered')
+        local gmSub
+        for _, sub in ipairs(gm.BY_NAME.set.subs) do if L.subName(sub.syntax) == 'gm' then gmSub = sub end end
+        assert_eq(L.buildLine(gm.BY_NAME.set, gmSub, { 'on' }), '#set gm on', 'Suite 113: subcommand line')
+        assert_eq(L.buildLine(gm.BY_NAME.corpse, nil, {}), '#corpse', 'Suite 113: bare command with subs')
+        local delSub
+        for _, sub in ipairs(gm.BY_NAME.corpse.subs) do if L.subName(sub.syntax) == 'deletenpccorpses' then delSub = sub end end
+        assert_true(L.isDanger(gm.BY_NAME.corpse, delSub), 'Suite 113: destructive subcommand')
+        assert_true(not L.isDanger(gm.BY_NAME.corpse, nil), 'Suite 113: the parent of a destructive sub is not itself destructive')
+        assert_true(L.lineDanger('#ban Bob spam'), 'Suite 113: lineDanger sees a destructive command')
+        assert_true(L.lineDanger('#corpse deletenpccorpses'), 'Suite 113: lineDanger sees a destructive sub')
+        assert_true(not L.lineDanger('#corpse listnpc'), 'Suite 113: lineDanger clears a safe sub')
+        assert_true(not L.lineDanger('#corpse deletenpccorpsesx'), 'Suite 113: sub match is whole-word')
+        assert_true(L.lineDanger('#setpass acct pw'), 'Suite 113: a destructive #set alias is destructive')
+        assert_true(L.lineDanger('#lock on'), 'Suite 113: #lock (server_locked alias) is destructive')
+        assert_true(not L.lineDanger('#heal'), 'Suite 113: #heal alias is safe')
+        assert_true(not L.lineDanger('#nosuchcmd 1'), 'Suite 113: unknown commands are not flagged')
+        assert_true(not L.lineDanger('/say #nosuch'), 'Suite 113: lineDanger tolerates a /say prefix')
+        assert_eq(L.normalizeLine('zone pok'), '#zone pok', 'Suite 113: a bare command gets its #')
+        assert_eq(L.normalizeLine('  #heal  '), '#heal', 'Suite 113: trimmed')
+        assert_eq(L.normalizeLine('/say #heal'), '#heal', 'Suite 113: /say prefix stripped')
+        assert_nil(L.normalizeLine('/camp'), 'Suite 113: a slash command is refused')
+        assert_nil(L.normalizeLine(''), 'Suite 113: empty refused')
+        assert_nil(L.normalizeLine('#'), 'Suite 113: bare # refused')
+        assert_nil(L.normalizeLine('# zone'), 'Suite 113: "# zone" refused')
+        local hits = L.search('deletenpc')
+        assert_true(#hits == 1 and hits[1].entry.name == 'corpse' and hits[1].sub == delSub, 'Suite 113: search finds a subcommand')
+        local fi = L.search('#fi')
+        local sawItem = false
+        for _, h in ipairs(fi) do if h.entry.name == 'find' and h.sub and L.subName(h.sub.syntax) == 'item' then sawItem = true end end
+        assert_true(sawItem, 'Suite 113: search matches legacy aliases (#fi -> #find item) and ignores the #')
+        assert_eq(#L.search(''), 0, 'Suite 113: empty search, no rows')
+        assert_eq(#L.search('ZONE poknowledge xyz'), 0, 'Suite 113: no match, no rows')
+        local trav = L.byCategory('Travel & Zones')
+        assert_true(#trav >= 10 and trav[1].name < trav[#trav].name, 'Suite 113: category list is sorted')
+        assert_eq(L.targetLabel('npc'), 'your targeted NPC', 'Suite 113: target label')
+        assert_nil(L.targetLabel(nil), 'Suite 113: no target kind, no label')
+    end
+
+    -- 3. Sending: /say, history, confirmation, favourites, settings round-trip
+    do
+        local core, w, ctrl = makeWorld()
+        local gm = loadGm()
+        gm.onInit(core)
+        assert_eq(ctrl.show_gm_commands, false, 'Suite 113: seeds show_gm_commands = false')
+        assert_true(gm.run('zone poknowledge'), 'Suite 113: run sends a safe line')
+        assert_eq(w.cmds[1], '/say #zone poknowledge', 'Suite 113: the line goes out as /say #...')
+        assert_eq(gm.settings.history[1].line, '#zone poknowledge', 'Suite 113: sent line lands in history')
+        assert_true(w.saves >= 1, 'Suite 113: history is persisted')
+        assert_eq(gm.run('#ban Bob spam'), false, 'Suite 113: a destructive line is held')
+        assert_eq(gm.state.confirm, '#ban Bob spam', 'Suite 113: ...waiting for confirmation')
+        assert_eq(#w.cmds, 1, 'Suite 113: nothing sent while waiting')
+        assert_true(gm.run(gm.state.confirm, true), 'Suite 113: force sends the held line')
+        assert_eq(w.cmds[2], '/say #ban Bob spam', 'Suite 113: confirmed line sent')
+        gm.state.confirm = nil
+        gm.settings.confirmDanger = false
+        assert_true(gm.run('#ban Bob spam'), 'Suite 113: Confirm off sends destructive lines directly')
+        assert_eq(#gm.settings.history, 2, 'Suite 113: a re-sent line moves to the top instead of duplicating')
+        assert_eq(gm.settings.history[1].line, '#ban Bob spam', 'Suite 113: newest first')
+        gm.settings.confirmDanger = true
+        assert_eq(gm.run('/camp'), false, 'Suite 113: a slash command is refused')
+        assert_true(gm.state.status:find('not a # command', 1, true) ~= nil, 'Suite 113: ...and the status says why')
+        assert_eq(#w.cmds, 3, 'Suite 113: refused line never sent')
+
+        assert_true(gm.addFavorite('heal'), 'Suite 113: pin normalises the line')
+        assert_true(gm.isFavorite('#heal'), 'Suite 113: pinned')
+        assert_eq(gm.addFavorite('#heal'), false, 'Suite 113: no duplicate pins')
+        assert_true(gm.removeFavorite('#heal'), 'Suite 113: unpin')
+        assert_eq(gm.isFavorite('#heal'), false, 'Suite 113: unpinned')
+        gm.addFavorite('#gm on')
+
+        gm.settings.historyMax = 5
+        for i = 1, 8 do gm.run('#loc ' .. i) end
+        assert_eq(#gm.settings.history, 5, 'Suite 113: history is capped at History lines')
+
+        local saved = gm.onSaveSettings()
+        assert_eq(saved.confirmDanger, true, 'Suite 113: confirm saved')
+        assert_eq(saved.historyMax, 5, 'Suite 113: history cap saved')
+        assert_eq(#saved.history, 5, 'Suite 113: history saved')
+        assert_eq(saved.favorites[1], '#gm on', 'Suite 113: favourites saved')
+        local gm2 = loadGm()
+        gm2.onLoadSettings(saved)
+        assert_eq(gm2.settings.favorites[1], '#gm on', 'Suite 113: favourites loaded')
+        assert_eq(gm2.settings.history[1].line, '#loc 8', 'Suite 113: history loaded newest first')
+        gm2.onLoadSettings({ historyMax = 9999, history = { 'bad', { line = 5 }, { line = '#ok' } }, favorites = { 1, '#fine' } })
+        assert_eq(gm2.settings.historyMax, 100, 'Suite 113: history cap clamped')
+        assert_eq(#gm2.settings.history, 1, 'Suite 113: malformed history rows dropped')
+        assert_eq(#gm2.settings.favorites, 1, 'Suite 113: malformed favourites dropped')
+
+        -- per-character settings: a fresh onInit (next character, no saved
+        -- settings) starts from defaults instead of the previous history
+        gm2.onLoadSettings(saved)
+        gm2.onInit(core)
+        assert_eq(#gm2.settings.history, 0, 'Suite 113: onInit resets history to defaults')
+        assert_eq(#gm2.settings.favorites, 0, 'Suite 113: onInit resets favourites to defaults')
+        gm2.onLoadSettings(saved)
+        gm2.onDestroy()
+        assert_eq(#gm2.settings.history, 0, 'Suite 113: onDestroy resets history')
+        assert_eq(gm2.settings.confirmDanger, true, 'Suite 113: onDestroy resets confirm')
+
+        -- credential lines: sent, but never in history / favourites / chat
+        local nBefore = #w.cmds
+        local histTop = gm.settings.history[1].line
+        gm.settings.confirmDanger = false
+        assert_true(gm.run('#set password acct hunter2'), 'Suite 113: #set password is still sent from the window')
+        assert_eq(w.cmds[nBefore + 1], '/say #set password acct hunter2', 'Suite 113: ...with its arguments')
+        assert_true(gm.run('#setpass acct hunter2'), 'Suite 113: #setpass alias sent')
+        assert_true(gm.run('#SETLSINFO me@x.y hunter2'), 'Suite 113: #setlsinfo alias sent')
+        assert_true(gm.run('#set loginserver_info me@x.y hunter2'), 'Suite 113: #set loginserver_info sent')
+        gm.settings.confirmDanger = true
+        assert_eq(gm.settings.history[1].line, histTop, 'Suite 113: credential lines never enter history')
+        assert_true(gm.state.status:find('hunter2', 1, true) == nil, 'Suite 113: status line is redacted')
+        assert_true(gm.state.lastSent:find('hunter2', 1, true) == nil, 'Suite 113: lastSent is redacted')
+        assert_eq(gm.addFavorite('#setpass acct hunter2'), false, 'Suite 113: credential lines cannot be pinned')
+        assert_true(gm.logic.lineSecret('#set password a b') and gm.logic.lineSecret('#setpass a b')
+            and gm.logic.lineSecret('/say #setlsinfo a b') and gm.logic.lineSecret('#set loginserver_info a b'),
+            'Suite 113: lineSecret resolves #set subcommands and their aliases')
+        assert_true(not gm.logic.lineSecret('#set gm on') and not gm.logic.lineSecret('#zone pok'), 'Suite 113: other lines are not secret')
+        assert_eq(gm.logic.redactLine('#set password acct pw'), '#set password <redacted>', 'Suite 113: redactLine keeps the command words')
+        assert_eq(gm.logic.redactLine('#zone pok'), '#zone pok', 'Suite 113: redactLine leaves other lines alone')
+        local gm3 = loadGm()
+        gm3.onLoadSettings({ history = { { line = '#setpass a pw' }, { line = '#loc' } }, favorites = { '#set password a pw', '#heal' } })
+        assert_eq(#gm3.settings.history, 1, 'Suite 113: credential history rows from old saves are dropped')
+        assert_eq(gm3.settings.favorites[1], '#heal', 'Suite 113: credential favourites from old saves are dropped')
+        assert_eq(gm3.settings.history[1].danger, false, 'Suite 113: history rows carry their danger flag')
+
+        -- polls
+        w.target = { id = 5, name = 'a_rat', type = 'NPC', level = 3 }
+        gm.onZoned()
+        assert_eq(gm.state.gm, true, 'Suite 113: GM flag polled')
+        assert_eq(gm.state.target and gm.state.target.name, 'a_rat', 'Suite 113: target polled')
+        assert_eq(gm.state.zone, 'poknowledge', 'Suite 113: zone polled')
+
+        -- selection
+        gm.select(gm.BY_NAME.zone, nil)
+        gm.state.args[1] = 'x'
+        gm.select(gm.BY_NAME.zone, nil)
+        assert_eq(gm.state.args[1], 'x', 'Suite 113: re-selecting the same command keeps its args')
+        gm.select(gm.BY_NAME['goto'], nil)
+        assert_nil(gm.state.args[1], 'Suite 113: a new selection clears the args')
+
+        -- settings panel and window render without the widgets doing anything
+        local enumNames = { 'ImGuiCond', 'ImGuiWindowFlags', 'ImGuiTableFlags', 'ImGuiTableColumnFlags', 'ImGuiComboFlags', 'ImGuiInputTextFlags' }
+        local savedEnums = {}
+        for _, n in ipairs(enumNames) do
+            savedEnums[n] = rawget(_G, n)
+            rawset(_G, n, setmetatable({}, { __index = function() return 0 end }))
+        end
+        local savedBit = rawget(_G, 'bit')
+        if not savedBit then rawset(_G, 'bit', { bor = function(...) local r = 0 for _, v in ipairs({ ... }) do r = r + v end return r end }) end
+        ctrl.show_gm_commands = true
+        local okDraw, errDraw = pcall(gm.onDrawUI)
+        assert_true(okDraw, 'Suite 113: onDrawUI renders (' .. tostring(errDraw) .. ')')
+        local okSet, errSet = pcall(gm.onDrawSettings)
+        assert_true(okSet, 'Suite 113: onDrawSettings renders (' .. tostring(errSet) .. ')')
+        -- the draw pass with the window actually open (Begin returns true) and a pending confirm
+        core.ImGui.Begin = function() return true, true end
+        core.ImGui.BeginChild = function() return true end
+        core.ImGui.BeginTable = function() return true end
+        core.ImGui.BeginPopup = function() return true end
+        core.ImGui.BeginPopupModal = function() return true end
+        gm.select(gm.BY_NAME.set, gm.BY_NAME.set.subs[1])
+        gm.state.showLevels = true
+        gm.state.confirm = '#ban Bob'
+        okDraw, errDraw = pcall(gm.onDrawUI)
+        assert_true(okDraw, 'Suite 113: onDrawUI renders the open window (' .. tostring(errDraw) .. ')')
+        gm.select(gm.BY_NAME['goto'], nil)
+        okDraw, errDraw = pcall(gm.onDrawUI)
+        assert_true(okDraw, 'Suite 113: onDrawUI renders arg boxes with helpers (' .. tostring(errDraw) .. ')')
+        core.ImGui.Begin = function() return false, false end
+        core.ImGui.BeginChild = function() return false end
+        core.ImGui.BeginTable = function() return false end
+        core.ImGui.BeginPopup = function() return false end
+        core.ImGui.BeginPopupModal = nil
+        for _, n in ipairs(enumNames) do rawset(_G, n, savedEnums[n]) end
+        if not savedBit then rawset(_G, 'bit', nil) end
+        gm.onDestroy()
+    end
+
+    -- 4. /ac gm
+    do
+        local core, w, ctrl = makeWorld()
+        local gm = loadGm()
+        gm.onInit(core)
+        assert_true(gm.onCommand('gm', { 'gm' }), 'Suite 113: /ac gm handled')
+        assert_eq(ctrl.show_gm_commands, true, 'Suite 113: /ac gm opens the window')
+        gm.onCommand('gm', { 'gm' })
+        assert_eq(ctrl.show_gm_commands, false, 'Suite 113: /ac gm toggles it closed')
+        assert_true(gm.onCommand('gm', { 'gm', 'zone', 'poknowledge' }), 'Suite 113: /ac gm <line> handled')
+        assert_eq(w.cmds[1], '/say #zone poknowledge', 'Suite 113: /ac gm zone poknowledge sends #zone poknowledge')
+        gm.onCommand('gmcmd', { 'gmcmd', '#heal' })
+        assert_eq(w.cmds[2], '/say #heal', 'Suite 113: /ac gmcmd #heal keeps the #')
+        gm.onCommand('gm', { 'gm', 'worldshutdown' })
+        assert_eq(#w.cmds, 2, 'Suite 113: a destructive line from the command line is held')
+        assert_eq(gm.state.confirm, '#worldshutdown', 'Suite 113: ...for the window to confirm')
+        assert_eq(ctrl.show_gm_commands, true, 'Suite 113: ...which is opened to show it')
+        printed = {}
+        gm.state.confirm = nil
+        gm.settings.confirmDanger = false
+        gm.onCommand('gm', { 'gm', 'setpass', 'acct', 'hunter2' })
+        gm.onCommand('gm', { 'gm', '#set', 'password', 'acct', 'hunter2' })
+        gm.settings.confirmDanger = true
+        assert_eq(#w.cmds, 2, 'Suite 113: /ac gm refuses credential commands (may arrive over the Box Network)')
+        assert_true(printed[1] and printed[1]:find('refused', 1, true) ~= nil and not table.concat(printed, ' '):find('hunter2', 1, true),
+            'Suite 113: ...and the refusal echo is redacted')
+        printed = {}
+        gm.onCommand('gm', { 'gm', 'help' })
+        assert_true(printed[1] and printed[1]:find('usage', 1, true) ~= nil, 'Suite 113: /ac gm help prints usage')
+        assert_eq(gm.onCommand('parcels', { 'parcels' }), false, 'Suite 113: other commands ignored')
+        assert_true(type(gm.help) == 'table' and #gm.help >= 2, 'Suite 113: help lines')
+    end
+
+    -- 5. Core wiring
+    do
+        local t = readFile('TAC/lua/triune.lua')
+        assert_true(t:find("'gm_commands.lua',", 1, true) ~= nil, 'Suite 113: discover() known-plugin probe lists gm_commands.lua')
+        assert_true(t:find('if c.show_gm_commands == nil then c.show_gm_commands = false end', 1, true) ~= nil, 'Suite 113: sanitize seeds show_gm_commands')
+        assert_true(t:find('show_gm_commands         = false,', 1, true) ~= nil, 'Suite 113: default loadout has show_gm_commands')
+        assert_true(t:find("{ cmd = '/ac gm [<#command args>]'", 1, true) ~= nil, 'Suite 113: Help tab lists /ac gm')
+        local psrc = readFile('TAC/lua/tac/gm_commands.lua')
+        assert_true(psrc:find('mq.delay(', 1, true) == nil, 'Suite 113: the plugin never blocks the core')
+        assert_true(psrc:find("mq.cmdf('/say %s', line)", 1, true) ~= nil, 'Suite 113: # lines go out through /say')
+        assert_true(select(2, psrc:gsub("mq%.cmdf?%(", '')) == 1, 'Suite 113: sendNow() is the only way a line is typed')
+        assert_true(psrc:find('defaultEnabled     = false,', 1, true) ~= nil, 'Suite 113: ships disabled')
+    end
+
+    print = origPrint
 end
 
 print(string.format('\n=== Results: %d passed, %d failed ===', pass, fail))
