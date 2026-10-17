@@ -7,7 +7,11 @@ local function box(name, zone)
     local mq = { TLO = {
         EQBC = { Connected = function() return b.connected end, Setting = function() return setmetatable({}, { __call = function() return true end }) end },
         EverQuest = { PID = function() return 1234 end, Server = function() return 'NMS' end },
-        Me = { CleanName = function() return name end },
+        Me = { CleanName = function() return name end, Combat = function() return b.attackOn == true end,
+            CombatState = function() return b.combatState or 'ACTIVE' end, XTargetSlots = function() return 1 end,
+            XTarget = function() return {ID=function()return b.xtarId or 0 end} end },
+        Target = {ID=function()return b.targetId or 0 end, CleanName=function()return 'Test NPC' end,
+            PctHPs=function()return 50 end, Type=function()return 'NPC' end},
         Zone = { ShortName = function() return b.zone end },
         Group = { Member = function(n)
             if not b.group[n:lower()] then return nil end
@@ -110,6 +114,17 @@ assert(not pcall(adapter.decode,'s9:short'))
 assert(not pcall(adapter.encode,{n=math.huge}))
 local value = adapter.decode(adapter.encode({s='a\0b\n', n=-42, b=false, nested={1,2}}))
 assert(value.s == 'a\0b\n' and value.n == -42 and value.b == false)
+-- Created By: NeroMorte - Transport preserves exact attack-toggle/XTarget evidence, not aggregate combat.
+B.targetId, B.xtarId, B.attackOn, B.combatState = 77, 77, false, 'COMBAT'
+now=now+1; B.plugin.onTick();flush()
+local fed=A.core.boxnet.peerTarget('Bob',3)
+assert(fed and fed.id==77 and fed.engaged and fed.combat and not fed.attackOn and fed.onXtarget,
+    'hurt NPC / COMBAT state must not masquerade as the MA Attack toggle')
+B.attackOn=true;now=now+1;B.plugin.onTick();flush()
+fed=A.core.boxnet.peerTarget('Bob',3);assert(fed.attackOn and fed.onXtarget)
+B.xtarId=0;now=now+6;B.plugin.onTick();flush()
+fed=A.core.boxnet.peerTarget('Bob',3);assert(fed.attackOn and not fed.onXtarget)
+now=now+4;assert(A.core.boxnet.peerTarget('Bob',3)==nil,'stale MA permission must expire')
 -- Stopping EQBC selection disables wire handling; explicit Actors preserves old behavior.
 B.plugin.onCommand('net',{'net','transport','actors'}); B.plugin.onTick()
 assert(B.plugin.cfg.transport == 'actors' and not B.plugin.net.eqbc)

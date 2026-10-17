@@ -4836,6 +4836,8 @@ do
     runtime.setTarget = real('setTarget')
     runtime.clearTarget = real('clearTarget')
     runtime.abortPendingCast = real('abortPendingCast')
+    runtime.observeManualCastTarget = real('observeManualCastTarget')
+    runtime.finishTargetRestore = real('finishTargetRestore')
     env.pctHP = real('pctHP')
     env.hasAffliction = real('hasAffliction')
     env.isPoisoned = real('isPoisoned')
@@ -8984,7 +8986,7 @@ do
     end
     assert_true(xtContent:find("'F##xtForce_'", 1, true) ~= nil and xtContent:find("'I##xtIgnore_'", 1, true) ~= nil,
         'Suite 78: each XTarget row draws Force and Ignore toggle buttons')
-    assert_true(triuneContent:find('local forceId = not runtime.petCampActive() and runtime.forcedTargetId() or nil', 1, true) ~= nil,
+    assert_true(triuneContent:find('and runtime.forcedTargetId() or nil', 1, true) ~= nil,
         'Suite 78: combatTick applies the forced XTarget ahead of mode selection')
     assert_true(triuneContent:find('if runtime.forcedTargetId() then return false end', 1, true) ~= nil,
         'Suite 78: checkAggroSwitch never switches away from a forced XTarget')

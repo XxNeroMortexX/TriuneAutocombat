@@ -652,6 +652,7 @@ local function sampleFingerprint()
         burn     = (ctrl and ctrl.burn == true) or false,
         ma       = (ctrl and ctrl.ma_name) or '',
         combat   = combat,
+        attackOn = tlo(function() return mq.TLO.Me.Combat() end, false) == true,
         sitting  = tlo(function() return mq.TLO.Me.Sitting() end, false) == true,
         targetId = tid,
         -- Detrimental counters so other boxes can cure us without NetBots / EQBC.
@@ -670,6 +671,17 @@ local function sampleFingerprint()
         s.engaged = combat or ((s.targetHp or 100) < 100)
     end
     return s
+end
+
+-- Created By: NeroMorte - Read the reporting MA's own slots, independent of Manual Auto XTarget filters.
+local function targetOnXtarget(id)
+    if not id or id <= 0 then return false end
+    local count = tonumber(tlo(function() return mq.TLO.Me.XTargetSlots() end, 13)) or 13
+    for i = 1, math.min(100, math.max(0, count)) do
+        local found = tlo(function() return mq.TLO.Me.XTarget(i).ID() end, 0)
+        if found == id then return true end
+    end
+    return false
 end
 
 local function snapshot(sample)
@@ -698,6 +710,7 @@ local function snapshot(sample)
         z       = tlo(function() return mq.TLO.Me.Z() end, 0),
         pull    = core.runtime and core.runtime.pullState or nil,
         ver     = core.VERSION,
+        attackOn = sample.attackOn == true,
         counters = sample.counters,
     }
     local classes = core.myClasses
@@ -713,6 +726,7 @@ local function snapshot(sample)
             type    = tlo(function() return mq.TLO.Target.Type() end, ''),
             since   = net.targetSince,
             engaged = sample.engaged == true,
+            onXtarget = targetOnXtarget(tid),
         }
     end
     local petId = tlo(function() return mq.TLO.Me.Pet.ID() end, 0)
@@ -736,7 +750,7 @@ local function fingerprint(s)
     return table.concat({
         s.zone or '', s.dzInstanceKey or '', tostring(s.inDynamicZone), s.mode or '', s.submode or '', tostring(s.running), tostring(s.burn),
         s.ma or '', tostring(tid), engaged,
-        tostring(s.combat), tostring(s.sitting),
+        tostring(s.combat), tostring(s.attackOn), tostring(s.sitting),
         tostring((c.poison or 0) > 0), tostring((c.disease or 0) > 0), tostring((c.curse or 0) > 0), tostring((c.corruption or 0) > 0),
     }, '|')
 end
@@ -1340,7 +1354,8 @@ function api.peerTarget(name, maxAgeSec)
     if not p then return nil end
     local t = p.hb.target
     if type(t) ~= 'table' or type(t.id) ~= 'number' or t.id <= 0 then return false end
-    return { id = t.id, name = t.name, hp = t.hp, type = t.type, engaged = t.engaged == true, combat = p.hb.combat == true, age = age, since = t.since }
+    return { id = t.id, name = t.name, hp = t.hp, type = t.type, engaged = t.engaged == true, combat = p.hb.combat == true, attackOn = p.hb.attackOn == true,
+        onXtarget = t.onXtarget == true, age = age, since = t.since }
 end
 
 -- Bumped on every onInit. A consumer that cached a subscription can compare

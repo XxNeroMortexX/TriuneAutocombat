@@ -213,6 +213,9 @@ local function sanitizeModeConfig(c)
         c.submode = 'Hunt'
     end
 
+    -- Edited By: NeroMorte - Persist opt-in strict assisting and selectable Manual cast-target behavior.
+    if c.assist_require_ma_attack == nil then c.assist_require_ma_attack = false end
+    if c.manual_allow_target_switch == nil then c.manual_allow_target_switch = true end
     if c.assist_self_defense == nil then c.assist_self_defense = true end
     if c.assist_behind == nil then c.assist_behind = true end
     if c.hunter_z_plane == nil then c.hunter_z_plane = 15 end
@@ -353,6 +356,7 @@ local function defaultCtrl()
         mode                 = 'Manual',
         submode              = 'Hunt',
         manual_auto_xtarget  = true,
+        manual_allow_target_switch = true, -- Edited By: NeroMorte - Player selection wins during Manual casts.
         manual_stick         = true,
         manual_auto_nav      = false,
         pull_style           = 'Melee',
@@ -377,6 +381,7 @@ local function defaultCtrl()
         custom_ma_list       = {},
         assist_at            = 98,
         assist_self_defense  = true,
+        assist_require_ma_attack = false, -- Edited By: NeroMorte - Keep existing assist behavior until explicitly enabled.
         assist_behind        = true,
         chase                = true,
         chase_dist           = 15,
@@ -3957,6 +3962,9 @@ function runtime.abortPendingCast(orig, id, keepHostile)
     castTracker.targetRequired = nil
     castTracker.castStartTime  = 0
     if orig and orig ~= id and not keepHostile then
+        -- Edited By: NeroMorte - A target changed during a yielding setup belongs to the Manual player.
+        if ctrl.mode == 'Manual' and ctrl.manual_allow_target_switch ~= false
+            and (mq.TLO.Target.ID() or 0) ~= id then return end
         if orig > 0 then
             if isSpawnAlive(orig) and (mq.TLO.Target.ID() or 0) ~= orig then
                 runtime.setTarget(orig)
@@ -3967,8 +3975,43 @@ function runtime.abortPendingCast(orig, id, keepHostile)
     end
 end
 
+-- Created By: NeroMorte - Observe explicit Manual target changes before enforcing a cast recipient.
+function runtime.observeManualCastTarget()
+    if ctrl.mode ~= 'Manual' or ctrl.manual_allow_target_switch == false or not castTracker.activeSpell then return end
+    local expected = castTracker.activeTargetId
+    if not expected or not castTracker.targetRequired then return end
+    local current = mq.TLO.Target.ID() or 0
+    if current == expected or (current > 0 and not isHostileTarget(current)) then return end
+    runtime.manualCastTarget = current
+    runtime.manualCastSource = expected
+    -- Offensive casts need not re-select their original NPC. Friendly casts keep
+    -- their real recipient and commit the player's requested target on completion.
+    if isHostileTarget(expected) then castTracker.targetRequired = false end
+end
+
+-- Created By: NeroMorte - Restore only our temporary target; never overwrite a newer Manual selection.
+function runtime.finishTargetRestore()
+    local original, expected, requested = runtime.restoreTargetId, runtime.restoreFromTargetId or runtime.manualCastSource, runtime.manualCastTarget
+    runtime.restoreTargetId, runtime.restoreFromTargetId, runtime.manualCastTarget, runtime.manualCastSource = nil, nil, nil, nil
+    local current = mq.TLO.Target.ID() or 0
+    local manual = ctrl.mode == 'Manual' and ctrl.manual_allow_target_switch ~= false
+    if manual and expected ~= nil and current ~= expected then return end
+    local id = manual and requested ~= nil and requested or original
+    if id == nil then return end
+    if id == 0 then
+        if current > 0 then runtime.clearTarget() end
+    elseif isSpawnAlive(id) and current ~= id then
+        runtime.setTarget(id)
+    end
+end
+
 local function getActiveTargetRequiredCastingId()
     if not isCastingOrStarting() then return nil end
+    -- Edited By: NeroMorte - Do not let native-cast fallback re-lock an explicitly changed offensive target.
+    if ctrl and ctrl.mode == 'Manual' and ctrl.manual_allow_target_switch ~= false
+        and runtime.manualCastTarget ~= nil and castTracker
+        and runtime.manualCastSource == castTracker.activeTargetId
+        and isHostileTarget(castTracker.activeTargetId) then return nil end
 
     if castTracker and castTracker.targetRequired and castTracker.activeTargetId and castTracker.activeTargetId > 0 then
         return castTracker.activeTargetId
@@ -6944,6 +6987,7 @@ end
 -- Called when the logged-in character changes: load that toon's saved setup, or
 -- detect classes fresh if it's new.
 function runtime.onCharacterChanged()
+    runtime.manualCastTarget, runtime.manualCastSource, runtime.restoreFromTargetId, runtime.restoreTargetId = nil, nil, nil, nil
     loadout = { gems = {}, aas = {}, discs = {}, actions = {}, clickies = {} }
     ctrl = defaultCtrl()
     runtime.pullState = 'IDLE'; runtime.pullTargetId = 0
@@ -9324,6 +9368,8 @@ UI.HELP_COMMANDS = (function() return {
         { cmd = '/ac range [dist]',                   desc = 'Set engagement distance for the active style (melee 5-50, ranged/spell 5-200); /ac meleerange and /ac rangeddist target a specific one' },
         { cmd = '/ac xtardist [25-300]',              desc = 'Configure max XTarget / assist engagement chase distance (default 150)' },
         { cmd = '/ac chasedist [5-100]',              desc = 'Configure following distance (how far to stay back) from Main Assist (default 15)' },
+        { cmd = '/ac maattack [on|off]', desc = 'Require MA Attack ON and its target on the MA XTarget list before assisting (fresh Box Net report required)' },
+        { cmd = '/ac targetswitch [on|off]', desc = 'Allow Manual combat target changes during casts; friendly casts finish before the queued switch' },
         { cmd = '/ac selfdefense [on|off]',           desc = 'Toggle Assist mode self-defense when attacked while MA has no target' },
         { cmd = '/ac assistbehind [on|off]',          desc = 'Toggle Assist mode positioning behind NPC in combat (default: on)' },
         { cmd = '/ac manualstick [on|off]',           desc = 'Manual mode: stick to / chase the NPC being fought (default: on). Off = you drive.' },
@@ -12850,6 +12896,17 @@ function UI.drawControlTab()
             end
         end
 
+        -- Edited By: NeroMorte - Preserve player target changes without removing the old cast-lock option.
+        local allowSwitch = ImGui.Checkbox('Allow Manual Target Switching##manualTargetSwitch', ctrl.manual_allow_target_switch ~= false)
+        if allowSwitch ~= (ctrl.manual_allow_target_switch ~= false) then
+            ctrl.manual_allow_target_switch = allowSwitch
+            runtime.manualCastTarget, runtime.manualCastSource = nil, nil
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then
+            UI.setTooltip('On: keep your newly selected combat target. Heals/cures finish on their required recipient, then switch to your chosen mob.\nOff: retain the previous cast target lock and restoration behavior.')
+        end
+
         ctrl.manual_auto_xtarget = ImGui.Checkbox('Auto-Target Hostiles on XTarget##manualAutoXtar',
             ctrl.manual_auto_xtarget ~= false)
         if ImGui.IsItemHovered() then
@@ -13789,6 +13846,18 @@ function UI.drawControlTab()
         if runtime.maStatusMsg and os.clock() < (runtime.maStatusTimer or 0) then
             accent(WARN, runtime.maStatusMsg)
         end
+
+        -- Edited By: NeroMorte - One permission controls approach, attacks, offensive actions and pets.
+        local requireAttack = ImGui.Checkbox('Require MA Attack On##assistRequireAttack', ctrl.assist_require_ma_attack == true)
+        if requireAttack ~= (ctrl.assist_require_ma_attack == true) then
+            ctrl.assist_require_ma_attack = requireAttack
+            runtime.maTargetCache = nil
+            runtime.saveLoadout(true)
+        end
+        if ImGui.IsItemHovered() then
+            UI.setTooltip('On: only assist the MA target while the MA has Attack ON and that mob is on the MA XTarget list. Requires a fresh same-zone report from updated Triune/Box Net on the MA.\nApproach, attacks, offensive spells/AAs/clickies and pets wait together. Self-Defense and Force do not bypass this option.\nOff: keep the existing engaged-target and Self-Defense behavior. Assist At % still applies.')
+        end
+        if ctrl.assist_require_ma_attack then ImGui.TextDisabled('Waiting requires a fresh MA Attack + XTarget report; Self-Defense cannot override it.') end
 
         ImGui.SetNextItemWidth(UI.px(160))
         ctrl.assist_at = ImGui.SliderInt('Assist At %', ctrl.assist_at or 98, 1, 100, '%d%%')
@@ -18193,6 +18262,11 @@ function runtime.maTargetId()
         local gated = (ctrl.mode == 'Assist')
         local maxNav = (ctrl and ctrl.xtar_nav_dist) or 150
         local fed = runtime.boxnetMaTarget(maId)
+        -- Edited By: NeroMorte - Combat state / HP loss is not the MA's Attack toggle.
+        if gated and ctrl.assist_require_ma_attack == true then
+            runtime.maTargetBlocksDefense = true
+            if type(fed) ~= 'table' or fed.attackOn ~= true or fed.onXtarget ~= true then return nil end
+        end
         local id
         if fed ~= nil then
             runtime.legacyAssist = nil
@@ -18226,9 +18300,22 @@ end
 function runtime.assistTargetId()
     local id = runtime.maTargetId()
     if id then return id, false end
+    if ctrl.mode == 'Assist' and ctrl.assist_require_ma_attack == true then return nil, false end
     if runtime.maTargetBlocksDefense or ctrl.assist_self_defense == false then return nil, false end
     local defender = runtime.findSelfDefenseTarget((ctrl and ctrl.xtar_nav_dist) or 150)
     return defender, defender ~= nil
+end
+
+-- Created By: NeroMorte - Withdraw revoked assist commands once, without restarting idle follow each tick.
+function runtime.waitForMaAttack()
+    local maId = runtime.maPcId()
+    if pursuit.id and pursuit.id > 0 and pursuit.id ~= maId then stopMoving() end
+    if mq.TLO.Me.Combat() then mq.cmd('/attack off') end
+    if mq.TLO.Me.AutoFire() then mq.cmd('/autofire off') end
+    if (petState.lastCmdTargetId or 0) > 0 then
+        sendPetCmd('back', 'all')
+        petState.lastCmdTargetId = 0
+    end
 end
 
 -- Created By: NeroMorte - Positive target/aggro-holder evidence outranks a generic
@@ -18870,6 +18957,9 @@ function runtime.resolveTargetId(token, cls, when, spellName, pct, extra)
     local cname = ''
     pcall(function() cname = s.CleanName() or '' end)
     if cname ~= '' and isIgnored(cname) then return nil end
+    -- Edited By: NeroMorte - All hostile action recipients share strict MA permission.
+    if ctrl.mode == 'Assist' and ctrl.assist_require_ma_attack == true and isHostileTarget(id)
+        and id ~= runtime.assistTargetId() then return nil end
     if (stype == 'NPC' or stype == 'Pet') and isHostileTarget(id) and (ctrl.mode == 'Assist')
         and not runtime.targetIsEngaged(id) then
         return nil
@@ -19272,10 +19362,10 @@ function runtime.castGem(i, g, id)
         if g.cls ~= 'Brd' then
             -- Spell has a cast time: keep target on ally until cast finishes, then restore combat target!
             runtime.restoreTargetId = orig
-        elseif orig > 0 then
-            mq.cmdf('/timed 1 /target id %d', orig)
+            runtime.restoreFromTargetId = id
         else
-            mq.cmd('/timed 1 /target clear')
+            -- Edited By: NeroMorte - Conditional tick-side restoration also protects bard target changes.
+            runtime.restoreTargetId, runtime.restoreFromTargetId = orig, id
         end
     end
     if g.cls == 'Brd' and wasAttacking and not mq.TLO.Me.Combat() then
@@ -19392,9 +19482,12 @@ function runtime.fireAA(name, a, id)
     if orig ~= id and not keepHostile then
         if castMs > 0 then
             runtime.restoreTargetId = orig
+            runtime.restoreFromTargetId = id
         else
             mq.delay(60)
-            if orig > 0 and mq.TLO.Target.ID() ~= orig then
+            if orig > 0 and mq.TLO.Target.ID() ~= orig
+                and (ctrl.mode ~= 'Manual' or ctrl.manual_allow_target_switch == false
+                    or (mq.TLO.Target.ID() or 0) == id) then
                 mq.cmdf('/target id %d', orig)
             elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
                 mq.cmd('/target clear')
@@ -19941,9 +20034,12 @@ runtime.useClickie = function(c, id)
     if orig ~= id and not keepHostile then
         if castMs > 0 then
             runtime.restoreTargetId = orig
+            runtime.restoreFromTargetId = id
         else
             mq.delay(60)
-            if orig > 0 and mq.TLO.Target.ID() ~= orig then
+            if orig > 0 and mq.TLO.Target.ID() ~= orig
+                and (ctrl.mode ~= 'Manual' or ctrl.manual_allow_target_switch == false
+                    or (mq.TLO.Target.ID() or 0) == id) then
                 mq.cmdf('/target id %d', orig)
             elseif orig == 0 and (mq.TLO.Target.ID() or 0) == id then
                 mq.cmd('/target clear')
@@ -23922,6 +24018,7 @@ runtime.fullStop = function()
     -- drop any half-finished downtime gem swap so the next start is clean
     runtime.pendingDowntimeReady = nil
     runtime.pendingBardSong = nil
+    runtime.manualCastTarget, runtime.manualCastSource, runtime.restoreFromTargetId, runtime.restoreTargetId = nil, nil, nil, nil
     runtime.interruptedSwap = nil
     runtime.isSwitchingSpells = false
     runtime.switchingSlot = 0
@@ -24499,6 +24596,7 @@ local function combatTick()
     local isCastingNow = isCastingOrStarting()
 
     if isCastingNow then
+        runtime.observeManualCastTarget()
         castTracker.wasCasting = true
         local reqTargetId = getActiveTargetRequiredCastingId()
         if reqTargetId and reqTargetId > 0 and isSpawnAlive(reqTargetId) then
@@ -24556,15 +24654,7 @@ local function combatTick()
         castTracker.activeKind     = nil
         castTracker.targetRequired = nil
         clearCursor()
-        if runtime.restoreTargetId ~= nil then
-            local rId = runtime.restoreTargetId
-            runtime.restoreTargetId = nil
-            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
-                runtime.setTarget(rId)
-            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
-                runtime.clearTarget()
-            end
-        end
+        runtime.finishTargetRestore()
     end
 
     checkStuck()
@@ -24601,7 +24691,9 @@ local function combatTick()
         runtime.lastXtPruneAt = os.clock()
         runtime.pruneXtOverrides()
     end
-    local forceId = not runtime.petCampActive() and runtime.forcedTargetId() or nil
+    local forceId = not runtime.petCampActive()
+        and not (ctrl.mode == 'Assist' and ctrl.assist_require_ma_attack == true)
+        and runtime.forcedTargetId() or nil
     if forceId and (mq.TLO.Target.ID() or 0) ~= forceId and setTarget(forceId) then
         stopMoving()
         pursuit.id = 0
@@ -25130,6 +25222,7 @@ local function combatTick()
         else
             id, isSelfDefense = runtime.assistTargetId()
         end
+        if not id and ctrl.assist_require_ma_attack == true then runtime.waitForMaAttack() end
 
         if ctrl.submode == 'Backline' then
             local closingOnMob = false
@@ -25466,7 +25559,9 @@ local function combatTick()
             -- Self-directed modes: character is leading combat directly, skip external MA aggro gate.
             -- Assist modes: require player/tank has started hitting AND HP threshold met.
             local selfDirected = (ctrl.mode == 'Manual' or ctrl.mode == 'Puller')
-            local engageOk = selfDirected or (playerHasAggro(tid) and playerIsEngagingTarget(tid))
+            local engageOk = selfDirected
+                or (ctrl.mode == 'Assist' and ctrl.assist_require_ma_attack == true and runtime.assistTargetId() == tid)
+                or (playerHasAggro(tid) and playerIsEngagingTarget(tid))
             if tgtHp <= assistThreshold then
                 if engageOk then
                     -- Threshold met: send attack.
@@ -25679,15 +25774,7 @@ local function combatTick()
     categoryRunners.clickies = function()
     prepareCastState()
     if combatReady and not runtime.trashMode and not isCasting() and not isMoveActive() and canCastMove and loadout.clickies and #loadout.clickies > 0 then
-        if not isCasting() and runtime.restoreTargetId ~= nil then
-            local rId = runtime.restoreTargetId
-            runtime.restoreTargetId = nil
-            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
-                runtime.setTarget(rId)
-            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
-                runtime.clearTarget()
-            end
-        end
+        if not isCasting() and runtime.restoreTargetId ~= nil then runtime.finishTargetRestore() end
         for _, c in ipairs(loadout.clickies) do
             local cPct = tonumber(c.pct)
             if cPct == nil then cPct = 100 end
@@ -25725,15 +25812,7 @@ local function combatTick()
     local gemCasted = false
 
     if combatReady and not spellCastedThisTick and not isCasting() and not isMoveActive() and canCastMove then
-        if not isCasting() and runtime.restoreTargetId ~= nil then
-            local rId = runtime.restoreTargetId
-            runtime.restoreTargetId = nil
-            if rId > 0 and isSpawnAlive(rId) and mq.TLO.Target.ID() ~= rId then
-                runtime.setTarget(rId)
-            elseif rId == 0 and (mq.TLO.Target.ID() or 0) > 0 then
-                runtime.clearTarget()
-            end
-        end
+        if not isCasting() and runtime.restoreTargetId ~= nil then runtime.finishTargetRestore() end
         if not runtime.trashMode and loadout.gems then
             local gemOrder = runtime.spellIndicesForPass(loadout.gems, prioritySpellPass)
             for _, i in ipairs(gemOrder) do
@@ -25961,6 +26040,20 @@ local function triuneCommand(...)
         runtime.setRunning(false)
     elseif cmd == 'restart' or cmd == 'reload' then
         runtime.restartScript()
+    elseif cmd == 'maattack' or cmd == 'targetswitch' then
+        -- Edited By: NeroMorte - Per-character controls also work from existing EQBC/Box Net commands.
+        local key = cmd == 'maattack' and 'assist_require_ma_attack' or 'manual_allow_target_switch'
+        local was = cmd == 'maattack' and ctrl[key] == true or (cmd == 'targetswitch' and ctrl[key] ~= false)
+        local value = args[2] and tostring(args[2]):lower() or ''
+        if value == 'on' or value == '1' then ctrl[key] = true
+        elseif value == 'off' or value == '0' then ctrl[key] = false
+        elseif value == '' or value == 'toggle' then ctrl[key] = not was
+        else print('Usage: /ac ' .. cmd .. ' [on|off|toggle]'); return end
+        runtime.maTargetCache = nil
+        if cmd == 'targetswitch' then runtime.manualCastTarget, runtime.manualCastSource = nil, nil end
+        runtime.saveLoadout(true)
+        print('[Triune] ' .. (cmd == 'maattack' and 'Require MA Attack On' or 'Allow Manual Target Switching')
+            .. ': ' .. (ctrl[key] and 'ON' or 'OFF'))
     elseif cmd == 'status' then
         local modeStr = ctrl.mode
         if MODES.SUBMODES[ctrl.mode] then modeStr = modeStr .. ' (' .. ctrl.submode .. ')' end

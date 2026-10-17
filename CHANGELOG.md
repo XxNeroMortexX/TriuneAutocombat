@@ -2,6 +2,9 @@
 
 ## 2026-10-17
 
+- **Edited By: NeroMorte — Make Manual cast-target switching selectable.** `Allow Manual Target Switching` (on by default, `/ac targetswitch on|off`) preserves a newly selected hostile or cleared target during offensive casts and deferred/instant support restoration. Heals and cures retain their real recipient, then use the queued Manual selection. Bards use conditional tick-side restoration instead of stale delayed target commands. Off retains the previous casting lock/restoration behavior.
+- **Edited By: NeroMorte — Add opt-in strict MA attack permission.** `Require MA Attack On` (`/ac maattack on|off`, off by default) requires a fresh same-zone Box Net report of the exact Attack toggle and the MA target's own XTarget membership. Movement, attacks, offensive recipients and supporting pets share permission; Self-Defense and Force do not bypass it. Revoke an old hostile approach/pet dispatch once while permitting normal MA follow. Box Net reports the Attack toggle separately from aggregate combat/damaged-target engagement; old/stale reports cannot grant strict permission.
+
 - **Created By: NeroMorte — Add the Gennro 3.2 test installer.** Verify all changed runtime Lua links, preserve `ingame.cfg` and untracked files, back up character loadouts and print the exact previous-commit rollback. Allow switching from the separate Flag Tracker/HUD test without requiring it to be an ancestor.
 
 - **Edited By: NeroMorte — Integrate Gennro 3.2 through `a630d0e` on a test branch.** Bring in engine, plugin, UI, persistence and tooling fixes while preserving the fork's updater, EQBC connections, Manual/MA ownership, Trash Mode and Camp movement rules. Keep the existing per-character Global/zone lists, saved-zone browser, JSON sharing and clear/delete controls; route the upstream XTarget zone-ignore shortcut through that API.

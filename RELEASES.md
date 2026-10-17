@@ -6,6 +6,8 @@ history of every change stays in [CHANGELOG.md](CHANGELOG.md).
 
 ## 3.2-Morte.11-test
 
+Follow-up: selectable Manual target switching (`/ac targetswitch`) preserves newer selections during offensive casts and support restoration. Opt-in strict assisting (`/ac maattack`) requires a fresh MA Attack ON + own-XTarget report and gates hostile approach/actions/pets together. Previous behavior remains selectable; heal/cure recipients remain protected.
+
 Test integration of Gennro 3.2 with NeroMorte's existing features. Keep the current Global/zone NPC list UI, JSON sharing and management, Manual/MA target ownership, fixed Camp radius, optional pet return, XYZ movement, EQBC connections, updater mappings and verified AA purchase guards. Add upstream casting/healing, chat, inventory, map, persistence and performance fixes, plus optional GM Commands. Upstream pet reconciliation does not replace the fork's unique remaining pet/class inference. No change to MQ2WebUpdate engine binaries; native gameplay validation is pending.
 
 ---

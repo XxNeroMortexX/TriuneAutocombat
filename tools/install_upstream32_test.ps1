@@ -136,7 +136,8 @@ Write-Host "Verified Gennro 3.2 / Morte.11-test: $Revision"
 Write-Host "Backups: $Backup"
 Write-Host 'Existing Lua links, ingame.cfg and untracked updater files were preserved. No stash was applied.'
 Write-Host 'Flag Tracker/HUD remain on their separate test branch; this checkout does not include them.'
-Write-Host 'The strict MA Attack On option is not part of this integration yet.'
+Write-Host 'On Assist bots: /ac maattack on requires MA Attack ON plus its XTarget; /ac maattack off keeps existing behavior.'
+Write-Host 'On your Manual main: /ac targetswitch on preserves new selections during casts; off keeps the previous behavior.'
 Write-Host 'Now start Triune with /lua run triune. Check the 3.2 / Morte.11-test title, zone lists, Assist, Camp/Hunt, healing and Auto AA.'
 Write-Host "To roll back: stop Triune in every client, then git -C '$Dev' switch --detach '$BeforeCommit'"
 
