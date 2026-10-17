@@ -118,12 +118,19 @@ local function npcContext()
 end
 local function observe(line)
     if not config().listen then return end
+    -- Reject ordinary combat/chat without any native TLO reads; only candidate events need context.
+    local kind = classify(line, false)
+    local npc = ''
+    if not kind then
+        if not config().dialogue or type(line) ~= 'string' or not line:find(' says,', 1, true) then return end
+        npc = clean(npcContext(), 80) or ''
+        local speaker = line:match('^(.-) says,')
+        kind = classify(line, speaker and npc ~= '' and speaker:lower() == npc:lower())
+    end
+    if not kind then return end
     local name, server = identity()
     if name == '' or server == '' then return end
-    local npc = clean(npcContext(), 80) or ''
-    local speaker = type(line) == 'string' and line:match('^(.-) says,')
-    local kind = classify(line, speaker and npc ~= '' and speaker:lower() == npc:lower())
-    if not kind then return end
+    if npc == '' then npc = clean(npcContext(), 80) or '' end
     local text = clean(line)
     local signature = kind .. ':' .. text
     local now = timestamp()

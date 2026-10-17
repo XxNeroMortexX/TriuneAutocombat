@@ -43,6 +43,12 @@ assert(not a.classify("Other says, 'You have received a flag!'", false))
 assert(not a.classify("Other tells you, 'You have received a character flag!'"))
 assert(not a.classify('[Flag Tracker] Mortefreddo | Flag: You have received a character flag!'))
 assert(not a.classify('You hit a rat for 20 points of damage.'))
+local nativeReads = 0
+local originalName = a.testCore.mq.TLO.Me.CleanName
+a.testCore.mq.TLO.Me.CleanName = function() nativeReads = nativeReads + 1; return 'Mortefreddo' end
+event('You hit a rat for 20 points of damage.')
+assert(nativeReads == 0, 'ordinary combat messages should not query character or target TLOs')
+a.testCore.mq.TLO.Me.CleanName = originalName
 config.flag_tracker.rules = { { text = 'custom unlock %s', kind = 'Flag' } }
 assert(a.classify('custom unlock %s recorded') == 'Flag' and not a.classify('custom unlock abc recorded'))
 event('You have received a character flag!'); event('You have received a character flag!')
@@ -85,6 +91,13 @@ local packet = a.state.outbound[1]
 b.receiveWebsite(packet, { character = 'Fake', server = 'NMS' }); assert(not b.state.bots.mortefreddo.website)
 b.receiveWebsite(packet, { character = 'Mortefreddo', server = 'NMS' })
 assert(b.state.bots.mortefreddo.website.rows[1].done)
+-- Out-of-order website chunks are committed only when all parts arrived.
+local future = {id=w.id, at=w.at+1, summary=w.summary, accountWide=true, rows={w.rows[2]}}
+b.receiveWebsite({name='Mortefreddo',server='NMS',part=2,parts=2,website=future}, {character='Mortefreddo',server='NMS'})
+assert(b.state.bots.mortefreddo.website.at==w.at)
+future.rows={w.rows[1]}
+b.receiveWebsite({name='Mortefreddo',server='NMS',part=1,parts=2,website=future}, {character='Mortefreddo',server='NMS'})
+assert(b.state.bots.mortefreddo.website.at==w.at+1 and #b.state.bots.mortefreddo.website.rows==2)
 -- History replay: an offline bot catches events without rebroadcast loops.
 a.state.outbound = {}; aCallbacks['flags:request']({ server = 'NMS' }, { character = 'BotTwo', server = 'NMS' })
 assert(#a.state.outbound >= 1)
