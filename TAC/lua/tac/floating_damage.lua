@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/floating_damage.lua — Triune Floating Damage Text Plugin
@@ -366,13 +367,23 @@ function plugin.onInit(coreApi)
         spawnFloater('CRIT HEAL!', 'holy', tonumber(dmgStr) or 0)
     end)
 
-    reg('TacHealCrit2', 'You#*#critical heal#*#(#1#)#*#', function(_, dmgStr)
+    -- Player chat always carries the spoken text after ", '" ("You tell your
+    -- party, '...'", "Bob says, '...'"); system combat lines never do. The loose
+    -- fallbacks below must not fire on someone typing the trigger words.
+    local function isChatLine(line)
+        return type(line) ~= 'string' or line:find(", '", 1, true) ~= nil
+    end
+
+    reg('TacHealCrit2', 'You#*#critical heal#*#(#1#)#*#', function(line, dmgStr)
+        if isChatLine(line) then return end
         spawnFloater('CRIT HEAL!', 'holy', tonumber(dmgStr) or 0)
     end)
 
     -- DoT crits name the caster's spell ("... from your <spell> ..."), so
-    -- "your" is required to keep other casters' ticks out.
-    reg('TacDotCrit', '#*#your#*#critical dot#*#(#1#)#*#', function(_, dmgStr)
+    -- "your" is required to keep other casters' ticks out; the captured value
+    -- must be a plain number and the line must not be chat.
+    reg('TacDotCrit', '#*#your#*#critical dot#*#(#1#)#*#', function(line, dmgStr)
+        if isChatLine(line) or not tonumber(dmgStr) then return end
         spawnFloater('CRIT DOT!', 'spellcrit', tonumber(dmgStr) or 0)
     end)
 end

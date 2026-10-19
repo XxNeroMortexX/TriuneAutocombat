@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 -- Created by: NeroMorte - NeroMorte/Triune release and updater version metadata.
 --
 -- This file identifies the installed NeroMorte release and the updater engine
@@ -18,11 +19,11 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - Approved cumulative Morte.10 release; engine remains independent.
-    version = 'Morte.10',
+    -- Edited By: NeroMorte - Publish the game-tested Gennro 3.2 integration; engine remains independent.
+    version = 'Morte.11',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
-    basedOnGennro = '3.1',
+    basedOnGennro = '3.2',
 
     channel = 'stable',
 }

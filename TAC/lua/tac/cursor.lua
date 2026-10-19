@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/cursor.lua — Triune Cursor Item Manager Plugin
@@ -45,6 +46,10 @@ local state = {
     confirmDestroy  = false,
     autoClearOnPick = false,
     pendingAction   = nil, -- 'clear' | 'destroy'
+    -- Item the Destroy button was clicked for; destroyCursor() refuses to run
+    -- unless the cursor still holds this exact item id.
+    destroyTargetId   = nil,
+    destroyTargetName = nil,
     statusMsg       = '',
     sessionHistory  = {},  -- newest first: { time, name, qty, action }
     -- In-flight /autoinventory sequence (one command per tick)
@@ -137,7 +142,10 @@ local function stepClear()
         state.statusMsg = 'Failed or cursor empty.'
         -- Back off: do not hammer /autoinventory on an item that cannot be
         -- inventoried; auto-clear resumes for a different item after the wait.
-        state.autoClearBlockedId = c.itemId
+        -- Block the item actually stuck on the cursor (a sequence may have
+        -- inventoried several items before reaching one it cannot place).
+        local stuck = cursorItem()
+        state.autoClearBlockedId = (stuck and stuck.ID()) or c.itemId
         state.autoClearRetryAt = os.clock() + AUTO_CLEAR_BACKOFF_SEC
         print(string.format('\ay[Triune Cursor]\ax Could not inventory [%s] after %d attempts; auto-clear paused for %ds and not retried for this item.', c.name, c.attempts, AUTO_CLEAR_BACKOFF_SEC))
         return true
@@ -147,10 +155,17 @@ local function stepClear()
     return false
 end
 
-local function destroyCursor()
+local function destroyCursor(expectedId, expectedName)
+    -- One confirmation covers one destroy.
+    state.confirmDestroy = false
     local item = cursorItem()
     if not item then
         state.statusMsg = 'Cursor is empty.'
+        return false
+    end
+    local curId = item.ID() or 0
+    if not expectedId or expectedId <= 0 or curId ~= expectedId then
+        state.statusMsg = string.format('Destroy cancelled: the cursor no longer holds [%s].', tostring(expectedName or 'the selected item'))
         return false
     end
     local itemName = tostring(item.Name() or 'Item')
@@ -164,6 +179,13 @@ end
 
 local function tick()
     if state.clearing then
+        -- Never let a destroy queued during a clearing sequence fire on
+        -- whatever item the sequence leaves on the cursor.
+        if state.pendingAction == 'destroy' then
+            state.pendingAction = nil
+            state.destroyTargetId, state.destroyTargetName = nil, nil
+            state.statusMsg = 'Destroy cancelled: cursor was being cleared.'
+        end
         stepClear()
         return
     end
@@ -177,7 +199,9 @@ local function tick()
         end
     elseif action == 'destroy' then
         state.pendingAction = nil
-        destroyCursor()
+        local id, name = state.destroyTargetId, state.destroyTargetName
+        state.destroyTargetId, state.destroyTargetName = nil, nil
+        destroyCursor(id, name)
     elseif state.autoClearOnPick then
         if os.clock() < (state.autoClearRetryAt or 0) then return end
         local item = cursorItem()
@@ -280,6 +304,8 @@ local function drawWindow()
     ImGui.PushStyleColor(ImGuiCol.ButtonHovered, 0.90, 0.30, 0.30, 1.0)
     if ImGui.Button('Destroy Item', core.px(130), core.px(26)) then
         state.pendingAction = 'destroy'
+        state.destroyTargetId = itemId
+        state.destroyTargetName = itemName
     end
     ImGui.PopStyleColor(2)
     if ImGui.IsItemHovered() and hasItem then

@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/spellbook.lua — Triune Spellbook Browser Plugin
@@ -644,6 +645,12 @@ local function publishList()
         end
         return lvlA < lvlB
     end)
+    -- Per-row strings the browser table needs every frame, built once here.
+    for _, it in ipairs(outList) do
+        it.lname = it.name:lower()
+        it.selLabel = it.name .. '##sel_' .. it.name
+        it.kindLabel = KIND_LABELS[it.kind] or (it.kind and it.kind ~= '' and it.kind:upper()) or 'Other'
+    end
     activeSpellsCache = outList
     activeSpellsClass = listBuild.cls
     activeSpellsGen = listBuild.gen
@@ -782,6 +789,94 @@ local function gamedbPlugin()
     return nil
 end
 
+-- Filtered browser rows, re-derived only when the published list or one of
+-- the filter inputs changes (not every frame).
+local filterCache = { list = nil, cat = nil, minLvl = nil, maxLvl = nil, scribedOnly = nil, text = nil, rows = {} }
+
+local function filteredSpells(classSpells, cat, minLvl, maxLvl, scribedOnly, text)
+    local fc = filterCache
+    if fc.list == classSpells and fc.cat == cat and fc.minLvl == minLvl and fc.maxLvl == maxLvl
+        and fc.scribedOnly == scribedOnly and fc.text == text then
+        return fc.rows
+    end
+    local rows = {}
+    for _, item in ipairs(classSpells) do
+        local kind, lvl = item.kind, item.level
+        local passCat = (cat == 'ALL') or (kind == cat)
+            or (cat == 'other' and (not kind or kind == '' or not KIND_LABELS[kind]))
+        local passLvl = (type(lvl) == 'number' and lvl >= minLvl and lvl <= maxLvl)
+        local passScribed = (not scribedOnly or item.scribed)
+        local passText = (text == '' or (item.lname or item.name:lower()):find(text, 1, true) ~= nil)
+        if passCat and passLvl and passScribed and passText then rows[#rows + 1] = item end
+    end
+    fc.list, fc.cat, fc.minLvl, fc.maxLvl, fc.scribedOnly, fc.text = classSpells, cat, minLvl, maxLvl, scribedOnly, text
+    fc.rows = rows
+    return rows
+end
+
+-- Gem slot names, read on the main loop (onTick) so the draw pass never
+-- touches Me.NumGems / Me.Gem.
+local gemInfo = { at = 0, numGems = 8, names = {} }
+local GEM_POLL_SEC = 0.25
+
+local function pollGems()
+    local now = os.clock()
+    if (now - gemInfo.at) < GEM_POLL_SEC then return end
+    gemInfo.at = now
+    local n = 8
+    pcall(function() n = mq.TLO.Me.NumGems() or 8 end)
+    gemInfo.numGems = n
+    for g = 1, n do
+        local nm = 'Empty'
+        pcall(function()
+            local val = mq.TLO.Me.Gem(g).Name()
+            if val and val ~= '' and val ~= 'NULL' then nm = val end
+        end)
+        gemInfo.names[g] = nm
+    end
+end
+
+local function drawSpellRow(item)
+    local name, lvl, kind = item.name, item.level, item.kind
+    ImGui.TableNextRow()
+
+    ImGui.TableSetColumnIndex(0)
+    ImGui.Text(tostring(lvl))
+
+    ImGui.TableSetColumnIndex(1)
+    ImGui.TextColored(0.8, 0.8, 0.2, 1.0, item.kindLabel or KIND_LABELS[kind] or 'Other')
+
+    ImGui.TableSetColumnIndex(2)
+    local isSel = (state.selectedSpell and state.selectedSpell.name == name)
+    local _, pressed = ImGui.Selectable(item.selLabel or (name .. '##sel_' .. name), isSel, ImGuiSelectableFlags.SpanAllColumns)
+    if pressed then
+        state.selectedSpell = { name = name, level = lvl, kind = kind, bene = item.bene }
+    end
+    if ImGui.IsItemClicked(1) then
+        showSpellInfo(name)
+    end
+    if ImGui.IsItemHovered() then
+        local db = gamedbPlugin()
+        local dbId = db and db.spellIdByName and db.spellIdByName(name, lvl) or nil
+        if dbId and ImGui.IsItemClicked(2) then db.popout('spells', dbId) end
+        local tip = string.format("%s (Level %s %s)\n- Left-click: Select for memorizing\n- Right-click: Show spell info in EQ%s",
+            name, tostring(lvl), KIND_LABELS[kind] or (kind and kind ~= '' and kind:upper()) or 'Spell',
+            dbId and '\n- Middle-click: Database card' or '')
+        local dbLines = dbId and db.spellSummary and db.spellSummary(dbId) or nil
+        if dbLines and #dbLines > 0 then
+            tip = tip .. '\n\n' .. table.concat(dbLines, '\n')
+        end
+        ImGui.SetTooltip('%s', tip)
+    end
+
+    ImGui.TableSetColumnIndex(3)
+    if item.scribed then
+        ImGui.TextColored(0.2, 0.9, 0.3, 1.0, "[Scribed]")
+    else
+        ImGui.TextDisabled("[Unscribed]")
+    end
+end
+
 local function drawWindow()
     if not ctrl.show_spellbook then return end
 
@@ -909,59 +1004,24 @@ local function drawWindow()
             local maxLvl = tonumber(state.lvlMax) or 125
             local currentFilter = tostring(state.searchFilter or ''):lower()
 
-            for _, item in ipairs(classSpells) do
-                local name = item.name
-                local lvl = item.level
-                local bene = item.bene
-                local kind = item.kind
-                local scribed = item.scribed
-
-                local passCat = (state.selectedCategory == 'ALL')
-                    or (kind == state.selectedCategory)
-                    or (state.selectedCategory == 'other' and (not kind or kind == '' or not KIND_LABELS[kind]))
-                local passLvl = (type(lvl) == 'number' and lvl >= minLvl and lvl <= maxLvl)
-                local passScribed = (not state.scribedOnly or scribed)
-                local passText = (currentFilter == '' or name:lower():find(currentFilter, 1, true) ~= nil)
-
-                if passCat and passLvl and passScribed and passText then
-                    ImGui.TableNextRow()
-
-                    ImGui.TableSetColumnIndex(0)
-                    ImGui.Text(tostring(lvl))
-
-                    ImGui.TableSetColumnIndex(1)
-                    ImGui.TextColored(0.8, 0.8, 0.2, 1.0,
-                        KIND_LABELS[kind] or (kind and kind ~= '' and kind:upper()) or 'Other')
-
-                    ImGui.TableSetColumnIndex(2)
-                    local isSel = (state.selectedSpell and state.selectedSpell.name == name)
-                    if ImGui.Selectable(name .. "##sel_" .. name, isSel, ImGuiSelectableFlags.SpanAllColumns) then
-                        state.selectedSpell = { name = name, level = lvl, kind = kind, bene = bene }
-                    end
-                    if ImGui.IsItemClicked(1) then
-                        showSpellInfo(name)
-                    end
-                    if ImGui.IsItemHovered() then
-                        local db = gamedbPlugin()
-                        local dbId = db and db.spellIdByName and db.spellIdByName(name, lvl) or nil
-                        if dbId and ImGui.IsItemClicked(2) then db.popout('spells', dbId) end
-                        local tip = string.format("%s (Level %s %s)\n- Left-click: Select for memorizing\n- Right-click: Show spell info in EQ%s",
-                            name, tostring(lvl), KIND_LABELS[kind] or (kind and kind ~= '' and kind:upper()) or 'Spell',
-                            dbId and '\n- Middle-click: Database card' or '')
-                        local dbLines = dbId and db.spellSummary and db.spellSummary(dbId) or nil
-                        if dbLines and #dbLines > 0 then
-                            tip = tip .. '\n\n' .. table.concat(dbLines, '\n')
-                        end
-                        ImGui.SetTooltip('%s', tip)
-                    end
-
-                    ImGui.TableSetColumnIndex(3)
-                    if scribed then
-                        ImGui.TextColored(0.2, 0.9, 0.3, 1.0, "[Scribed]")
-                    else
-                        ImGui.TextDisabled("[Unscribed]")
+            local rows = filteredSpells(classSpells, state.selectedCategory, minLvl, maxLvl, state.scribedOnly == true, currentFilter)
+            -- Only the visible rows are submitted when the clipper is available.
+            local clipper = nil
+            local ClipperClass = ImGui.ListClipper or (mq.imgui and mq.imgui.ListClipper) or rawget(_G, 'ImGuiListClipper')
+            if type(ClipperClass) == 'table' and ClipperClass.new then
+                local okC, c = pcall(ClipperClass.new)
+                if okC and c then clipper = c end
+            end
+            if clipper then
+                clipper:Begin(#rows)
+                while clipper:Step() do
+                    for i = clipper.DisplayStart + 1, clipper.DisplayEnd do
+                        local item = rows[i]
+                        if item then drawSpellRow(item) end
                     end
                 end
+            else
+                for _, item in ipairs(rows) do drawSpellRow(item) end
             end
             ImGui.EndTable()
         end
@@ -972,8 +1032,7 @@ local function drawWindow()
 
     -- Right Pane: Current Gem Loadout
     if ImGui.BeginChild('##SpellGemsPane', rightW, contentH, true, ImGuiWindowFlags and ImGuiWindowFlags.HorizontalScrollbar or 0) then
-        local numGems = 8
-        pcall(function() numGems = mq.TLO.Me.NumGems() or 8 end)
+        local numGems = gemInfo.numGems or 8
 
         ImGui.TextColored(0.4, 0.8, 1.0, 1.0, "SPELL GEMS")
         ImGui.SameLine()
@@ -997,13 +1056,7 @@ local function drawWindow()
         ImGui.Separator()
 
         for g = 1, numGems do
-            local currentSpell = "Empty"
-            pcall(function()
-                local val = mq.TLO.Me.Gem(g).Name()
-                if val and val ~= "" and val ~= "NULL" then
-                    currentSpell = val
-                end
-            end)
+            local currentSpell = gemInfo.names[g] or "Empty"
 
             local pendingSpell = state.pendingQueue[g]
             local isPending = (pendingSpell ~= nil)
@@ -1111,6 +1164,7 @@ function plugin.onTick()
     refresh()
     processQueue()
     stepSpellScan()
+    if ctrl and ctrl.show_spellbook then pollGems() end
 end
 
 function plugin.onDrawUI()

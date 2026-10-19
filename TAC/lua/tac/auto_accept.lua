@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/auto_accept.lua — Triune Auto-Accept Plugin
@@ -72,32 +73,57 @@ local function ensureList()
     return c.auto_accept_names
 end
 
-local function isListed(nameOrId)
-    if not nameOrId or nameOrId == '' or nameOrId == 0 then return false end
+-- Trimmed sender / character name, or nil unless it is a plain EQ character
+-- name (letters only). Anything else (spaces, digits, punctuation, "Player_123")
+-- can never authorize and is never used for a spawn search.
+local function cleanName(s)
+    if s == nil then return nil end
+    s = tostring(s):gsub('^%s+', ''):gsub('%s+$', '')
+    if s:match('^%a+$') then return s end
+    return nil
+end
+
+-- Authorization is by exact (case-insensitive) character name only. Spawn IDs
+-- are reused across zones / sessions, so a stored id is only a display hint and
+-- never authorizes on its own; an optional id is accepted for API compatibility
+-- and ignored.
+local function isListed(name, _hintId)
+    local n = cleanName(name)
+    if not n then return false end
     local list = ensureList()
     if not list then return false end
-    local targetNum = tonumber(nameOrId)
-    local targetStr = tostring(nameOrId):lower():gsub('^%s+', ''):gsub('%s+$', '')
+    local nLower = n:lower()
     for _, entry in ipairs(list) do
-        local eName, eId = getPlayerInfo(entry)
-        if targetNum and targetNum > 0 and eId > 0 and eId == targetNum then return true end
-        if targetStr ~= '' and eName ~= '' and eName:lower() == targetStr then return true end
+        local eName = getPlayerInfo(entry)
+        if eName ~= '' and eName:lower() == nLower then return true end
     end
     return false
 end
 
+-- Exact PC lookup. With an id the spawn must also carry the given name (the id
+-- is only a same-session hint); with a name only, 'pc =Name' (exact match).
 local function resolveSpawn(name, id)
     local mq = core and core.mq
     if not (mq and mq.TLO and mq.TLO.Spawn) then return nil end
+    local n = nil
+    if name ~= nil and name ~= '' then
+        n = cleanName(name)
+        if not n then return nil end
+    end
     local sp = nil
     pcall(function()
         if id and id > 0 then
             sp = mq.TLO.Spawn(string.format('id %d', id))
+            if sp and sp() and n then
+                local cn = sp.CleanName() or ''
+                if cn:lower() ~= n:lower() then sp = nil end
+            end
         end
-        if not (sp and sp() and (sp.ID() or 0) > 0) and name and name ~= '' then
-            sp = mq.TLO.Spawn(string.format('pc =%s', name))
-            if not (sp and sp() and (sp.ID() or 0) > 0) then
-                sp = mq.TLO.Spawn(string.format('pc %s', name))
+        if not (sp and sp() and (sp.ID() or 0) > 0) and n then
+            sp = mq.TLO.Spawn(string.format('pc =%s', n))
+            if sp and sp() then
+                local cn = sp.CleanName() or ''
+                if cn:lower() ~= n:lower() then sp = nil end
             end
         end
     end)
@@ -131,17 +157,19 @@ local function addName(nameOrId, optionalId)
         end)
     end
 
-    if name == '' and id > 0 then name = string.format('Player_%d', id) end
-    if name == '' and id == 0 then return end
+    -- Entries authorize by name only, so a name is required (an id is resolved
+    -- to the PC's name while that PC is in zone).
+    name = cleanName(name)
+    if not name then
+        print(string.format('\ar[Triune Auto-Accept]\ax Could not add \ay%s\ax: enter a character name (letters only), or an ID of a player currently in zone.', s))
+        return
+    end
 
     local found = false
     for _, entry in ipairs(list) do
-        local eName, eId = getPlayerInfo(entry)
-        if (id > 0 and eId > 0 and eId == id) or (name ~= '' and eName ~= '' and eName:lower() == name:lower()) then
-            if type(entry) == 'table' then
-                if id > 0 then entry.id = id end
-                if name ~= '' and (entry.name == '' or entry.name:find('^Player_')) then entry.name = name end
-            end
+        local eName = getPlayerInfo(entry)
+        if eName ~= '' and eName:lower() == name:lower() then
+            if type(entry) == 'table' and id > 0 then entry.id = id end
             found = true
             break
         end
@@ -207,32 +235,22 @@ end
 local function isAllowed(senderName, senderId)
     local c = ctrl()
     if not c then return false end
-    if (not senderName or senderName == '') and (not senderId or senderId == 0) then return false end
-    if senderName then
-        senderName = tostring(senderName):gsub('^%s+', ''):gsub('%s+$', '')
-    end
+    -- Authorization is by exact character name only; the id is at most a
+    -- same-session hint used to confirm the spawn for the guild check.
+    senderName = cleanName(senderName)
+    if not senderName then return false end
 
     -- 1. Accept from anyone
     if c.auto_accept_anyone then return true end
 
-    -- 2. Whitelist match (by ID or case-insensitive name)
-    if senderId and senderId > 0 and isListed(senderId) then return true end
-    if senderName and senderName ~= '' and isListed(senderName) then return true end
+    -- 2. Whitelist match (case-insensitive exact name)
+    if isListed(senderName) then return true end
 
-    local sLower = senderName and senderName:lower() or ''
+    local sLower = senderName:lower()
     local sIdNum = tonumber(senderId) or 0
     local mq = core and core.mq
 
-    -- Resolve the sender's ID from the zone when only a name was given.
-    if sIdNum == 0 and senderName and senderName ~= '' then
-        local sp = resolveSpawn(senderName, 0)
-        if sp then
-            pcall(function() sIdNum = sp.ID() or 0 end)
-            if isListed(sIdNum) then return true end
-        end
-    end
-
-    -- 3. Group member match
+    -- 3. Group member match (by name)
     if c.auto_accept_group and mq and mq.TLO and mq.TLO.Group then
         local isGrp = false
         pcall(function()
@@ -240,10 +258,8 @@ local function isAllowed(senderName, senderId)
             for i = 1, memCount do
                 local mem = mq.TLO.Group.Member(i)
                 if mem and mem() then
-                    local mId = mem.ID and mem.ID() or 0
                     local mName = mem.CleanName and mem.CleanName() or ''
-                    if (sIdNum > 0 and mId > 0 and mId == sIdNum) or
-                       (sLower ~= '' and mName ~= '' and mName:lower() == sLower) then
+                    if mName ~= '' and mName:lower() == sLower then
                         isGrp = true
                         break
                     end
@@ -451,29 +467,51 @@ local function readConfirmationText(mq)
     return text
 end
 
--- True only when the dialog text reads like an expedition / DZ invite and
--- carries none of the reject words (rez prompts, corpse, fellowship removal).
+-- True only when the dialog text carries an explicit invite phrase for an
+-- expedition / DZ / task and none of the reject words (rez prompts, corpse,
+-- quit / delete / remove confirmations).
 local function isDzInviteText(text)
     if type(text) ~= 'string' then return false end
     local tLower = text:lower()
-    if tLower:find('percent') or tLower:find('corpse') or tLower:find('resurrect') or tLower:find('remove') then return false end
-    if not (tLower:find('expedition') or tLower:find('dynamic zone') or tLower:find('task') or tLower:find('dzadd') or tLower:find('dz')) then return false end
+    if tLower:find('percent', 1, true) or tLower:find('corpse', 1, true) or tLower:find('resurrect', 1, true)
+        or tLower:find('remove', 1, true) or tLower:find('quit', 1, true) or tLower:find('delete', 1, true) then
+        return false
+    end
+    if not (tLower:find('has invited you to join', 1, true) or tLower:find('invites you to join', 1, true)) then return false end
+    if not (tLower:find('expedition', 1, true) or tLower:find('dynamic zone', 1, true) or tLower:find('task', 1, true)) then return false end
     return true
 end
 
-local function acceptDzInvite(who, label)
-    local now = os.clock()
-    if lastDzAcceptAt and (now - lastDzAcceptAt) <= 1.5 then return end
-    lastDzAcceptAt = now
+-- Sender name from the dialog's own text ("Name has invited you to join ..." /
+-- "Name invites you to join ..."), or nil.
+local function parseDzSender(text)
+    if type(text) ~= 'string' then return nil end
+    local t = text:gsub('^%s+', '')
+    return t:match('^(%a+)%s+has%s+invited%s+you') or t:match('^(%a+)%s+invites%s+you')
+end
+
+-- Accept the open DZ / expedition confirmation dialog, but only when its own
+-- text is an invite and the sender named in it passes isAllowed. Chat-event
+-- names are never trusted for this: /dzaccept answers whatever invite is pending.
+local function acceptDzDialog(label)
+    local c = ctrl()
     local mq = core and core.mq
-    if not mq then return end
-    -- Only click Yes when the open dialog is actually a DZ / expedition invite.
-    local confText = readConfirmationText(mq)
-    if confText and isDzInviteText(confText) then
-        mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup')
+    if not (c and mq and mq.TLO and mq.TLO.Window) then return false end
+    local text = readConfirmationText(mq)
+    if not text or not isDzInviteText(text) then return false end
+    local sender = parseDzSender(text)
+    if sender then
+        if not isAllowed(sender) then return false end
+    elseif not c.auto_accept_anyone then
+        return false
     end
+    local now = os.clock()
+    if lastDzAcceptAt and (now - lastDzAcceptAt) <= 1.5 then return false end
+    lastDzAcceptAt = now
+    mq.cmd('/notify ConfirmationDialogBox Yes_Button leftmouseup')
     mq.cmd('/dzaccept')
-    print(string.format('\ag[Triune Auto-Accept]\ax Accepted %s invite from \ay%s\ax.', label or 'expedition / dynamic zone', who or 'sender'))
+    print(string.format('\ag[Triune Auto-Accept]\ax Accepted %s invite from \ay%s\ax.', label or 'expedition / dynamic zone', sender or 'sender'))
+    return true
 end
 
 -- ----------------------------------------------------------------------------
@@ -513,31 +551,19 @@ local function pollTrade(c, mq, now)
         local lbl = mq.TLO.Window('TradeWnd').Child('TRDW_HisName')
         if lbl and lbl() then traderName = lbl.Text() end
     end)
-    pcall(function()
-        local tgt = mq.TLO.Target
-        if tgt and tgt() and tgt.Type() == 'PC' then
-            local tgtName = tgt.CleanName() or ''
-            if not traderName or traderName == '' then
-                traderName = tgtName
-                traderId = tgt.ID() or 0
-            elseif tgtName ~= '' and tgtName:lower() == traderName:lower() then
-                -- Only trust the target's ID when it is the person named in the trade window.
-                traderId = tgt.ID() or 0
-            end
-        end
-    end)
-    if traderName and traderName ~= '' and traderId == 0 then
-        local sp = resolveSpawn(traderName, 0)
-        if sp then pcall(function() traderId = sp.ID() or 0 end) end
-    end
+    -- Authorize by the name the trade window itself shows; never fall back to
+    -- the current target (it need not be the trade partner).
+    traderName = cleanName(traderName)
+    if not traderName then return end
+    local sp = resolveSpawn(traderName, 0)
+    if sp then pcall(function() traderId = sp.ID() or 0 end) end
 
-    if not ((traderName and traderName ~= '') or traderId > 0) then return end
     if not isAllowed(traderName, traderId) then return end
     if lastTradeAcceptAt and (now - lastTradeAcceptAt) <= 1.5 then return end
     lastTradeAcceptAt = now
     mq.cmd('/notify TradeWnd TRDW_Trade_Button leftmouseup')
     if traderId > 0 then
-        print(string.format('\ag[Triune Auto-Accept]\ax Accepted trade from \ay%s\ax (ID: \at%d\ax).', traderName or 'Unknown', traderId))
+        print(string.format('\ag[Triune Auto-Accept]\ax Accepted trade from \ay%s\ax (ID: \at%d\ax).', traderName, traderId))
     else
         print(string.format('\ag[Triune Auto-Accept]\ax Accepted trade from \ay%s\ax.', traderName))
     end
@@ -548,43 +574,9 @@ local function pollDzConfirmation(c, mq)
     local confOpen = false
     pcall(function() confOpen = mq.TLO.Window('ConfirmationDialogBox').Open() end)
     if not confOpen then return end
-
-    local text = readConfirmationText(mq) or ''
-    local tLower = text:lower()
-    -- Ignore rez prompts or fellowship removals; require an invite phrase
-    if not isDzInviteText(text) then return end
-
-    local candidateName = text:match('^([%a%d]+)%s+has%s+invited%s+you') or text:match('^([%a%d]+)%s+invites%s+you')
-    local candidateId = 0
-    if candidateName and candidateName ~= '' then
-        local sp = resolveSpawn(candidateName, 0)
-        if sp then pcall(function() candidateId = sp.ID() or 0 end) end
-    end
-
-    local allowed = false
-    if c.auto_accept_anyone then
-        allowed = true
-    elseif candidateName and candidateName ~= '' then
-        allowed = isAllowed(candidateName, candidateId)
-    else
-        -- No sender in the dialog text: fall back to scanning it for a whitelisted name / id.
-        for _, n in ipairs(ensureList() or {}) do
-            local eName, eId = getPlayerInfo(n)
-            -- Whole-word match only ("Bob" must not match "Bobbette"); ids are not
-            -- matched as bare digit substrings.
-            local namePat = eName ~= '' and ('%f[%w]' .. eName:lower():gsub('%W', '%%%0') .. '%f[%W]') or nil
-            if namePat and tLower:find(namePat) then
-                allowed = true
-                candidateName = eName
-                candidateId = eId
-                break
-            end
-        end
-    end
-
-    if allowed then
-        acceptDzInvite(candidateName or (candidateId > 0 and tostring(candidateId)) or 'sender', 'expedition / dynamic zone')
-    end
+    -- acceptDzDialog re-reads the dialog, requires an invite phrase and checks
+    -- the sender named in the dialog itself against the rules.
+    acceptDzDialog('expedition / dynamic zone')
 end
 
 function plugin.onTick()
@@ -640,8 +632,10 @@ function plugin.onInit(coreApi)
     local function onDzInvite(label)
         return function(_, inviter)
             local cc = ctrl()
-            if cc and cc.auto_dzadd and inviter and isAllowed(inviter) then
-                acceptDzInvite(inviter, label)
+            -- The chat line only prompts a check; the open dialog's own sender
+            -- decides (the window poll catches dialogs that open later).
+            if cc and cc.auto_dzadd and inviter then
+                acceptDzDialog(label)
             end
         end
     end
@@ -769,10 +763,10 @@ local function drawPanel()
     ImGui.Separator()
 
     accent(GOLD, 'Whitelisted Players:')
-    ImGui.TextDisabled('Specific character names and player IDs allowed to trigger auto-accept (case-insensitive):')
+    ImGui.TextDisabled('Character names allowed to trigger auto-accept (exact name, case-insensitive). An ID only resolves a player in zone to their name.')
 
     ImGui.SetNextItemWidth(core.px(170))
-    local enteredText, enterPressed = ImGui.InputTextWithHint('##autoAcceptAddInput', 'Player Name or ID', inputName,
+    local enteredText, enterPressed = ImGui.InputTextWithHint('##autoAcceptAddInput', 'Character Name (or in-zone ID)', inputName,
         (ImGuiInputTextFlags and ImGuiInputTextFlags.EnterReturnsTrue) or 0)
     if enteredText ~= nil then inputName = enteredText end
     ImGui.SameLine()
@@ -783,7 +777,7 @@ local function drawPanel()
         end
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Add the entered player name or ID to the auto-accept whitelist.')
+        ImGui.SetTooltip('%s', 'Add the entered character name to the auto-accept whitelist (an ID is resolved to the name of that player in zone).')
     end
 
     ImGui.SameLine()
@@ -796,11 +790,11 @@ local function drawPanel()
         end
     end
     if ImGui.IsItemHovered() then
-        ImGui.SetTooltip('%s', 'Target a player character (PC) in-game and click to add their Name and Player ID.')
+        ImGui.SetTooltip('%s', 'Target a player character (PC) in-game and click to add their name.')
     end
 
-    local tgtName, tgtId = currentPcTarget()
-    local targetListed = (tgtId > 0 and isListed(tgtId)) or (tgtName and tgtName ~= '' and isListed(tgtName))
+    local tgtName = currentPcTarget()
+    local targetListed = tgtName and tgtName ~= '' and isListed(tgtName)
     local canRemove = (selectedPlayer and selectedPlayer ~= '') or targetListed
 
     ImGui.SameLine()
@@ -809,8 +803,6 @@ local function drawPanel()
         if selectedPlayer and selectedPlayer ~= '' then
             removeName(selectedPlayer)
             selectedPlayer = nil
-        elseif tgtId > 0 and isListed(tgtId) then
-            removeName(tgtId)
         elseif tgtName and tgtName ~= '' then
             removeName(tgtName)
         end
@@ -844,7 +836,7 @@ local function drawPanel()
     )
     if ImGui.BeginTable('autoAcceptWhitelistTable', 3, tableFlags, 0, 180) then
         ImGui.TableSetupColumn('Player Name', (ImGuiTableColumnFlags and ImGuiTableColumnFlags.WidthStretch) or 0)
-        ImGui.TableSetupColumn('Player ID', (ImGuiTableColumnFlags and ImGuiTableColumnFlags.WidthFixed) or 0, core.px(95))
+        ImGui.TableSetupColumn('Last Seen ID', (ImGuiTableColumnFlags and ImGuiTableColumnFlags.WidthFixed) or 0, core.px(95))
         ImGui.TableSetupColumn('Action', (ImGuiTableColumnFlags and ImGuiTableColumnFlags.WidthFixed) or 0, core.px(75))
         ImGui.TableHeadersRow()
 
@@ -856,7 +848,8 @@ local function drawPanel()
 
             ImGui.TableSetColumnIndex(0)
             ImGui.PushID('aa_row_name_' .. i)
-            if ImGui.Selectable(eName, isSelected, (ImGuiSelectableFlags and ImGuiSelectableFlags.SpanAllColumns) or 0) then
+            local _, rowPressed = ImGui.Selectable(eName, isSelected, (ImGuiSelectableFlags and ImGuiSelectableFlags.SpanAllColumns) or 0)
+            if rowPressed then
                 selectedPlayer = eName
             end
             ImGui.PopID()
@@ -864,6 +857,9 @@ local function drawPanel()
             ImGui.TableSetColumnIndex(1)
             if eId > 0 then
                 ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(eId))
+                if ImGui.IsItemHovered() then
+                    ImGui.SetTooltip('%s', 'Spawn ID when this player was added. Informational only: spawn IDs are reused, so authorization is by name.')
+                end
             else
                 ImGui.TextDisabled('--')
             end

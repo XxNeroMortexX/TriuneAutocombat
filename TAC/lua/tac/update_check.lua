@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/update_check.lua — Triune Update Checker Plugin
@@ -540,6 +541,7 @@ local function finishResponse(code, body)
         cmp       = cmp,
     }
     st.lastError = nil
+    st.autoDone = true
     cfg.lastCheckAt = os.time()
     cfg.lastTag = tag
     saveSettings()
@@ -656,7 +658,7 @@ local function drawNotice()
     if ImGui.Button((copiedRecently and 'Copied!' or 'Copy Release Link') .. '##updCopy', core.px(150), core.px(24)) then
         copyLink(r.url)
     end
-    core.setTooltip('%s', r.url)
+    if ImGui.IsItemHovered() then core.setTooltip('%s', r.url) end
     ImGui.SameLine()
     if r.newer then
         if ImGui.Button('Skip This Version##updSkip', core.px(140), core.px(24)) then
@@ -665,13 +667,13 @@ local function drawNotice()
             saveSettings()
             chat('Skipping %s. /ac update unskip to be reminded again.', r.tag)
         end
-        core.setTooltip('No more popups or chat notices for %s. Newer releases still notify.', r.tag)
+        if ImGui.IsItemHovered() then core.setTooltip('No more popups or chat notices for %s. Newer releases still notify.', r.tag) end
         ImGui.SameLine()
         if ImGui.Button('Remind Me Later##updLater', core.px(130), core.px(24)) then
             st.noticeOpen = false
             st.remindLater = true
         end
-        core.setTooltip('Closes this notice for the rest of this session.')
+        if ImGui.IsItemHovered() then core.setTooltip('Closes this notice for the rest of this session.') end
     else
         if ImGui.Button('Close##updClose', core.px(100), core.px(24)) then
             st.noticeOpen = false
@@ -725,10 +727,10 @@ function plugin.onTick()
             st.autoDone = true
             return
         end
-        if startCheck(false) then
-            -- One automatic check per session; a failure retries after RETRY_AFTER_S.
-            st.autoDone = true
-        end
+        -- One automatic check per session: autoDone is set only when a check
+        -- succeeds (finishResponse); a failure leaves it false so the
+        -- RETRY_AFTER_S schedule set by the error path triggers another try.
+        startCheck(false)
     end
 end
 
@@ -780,7 +782,9 @@ function plugin.onDrawSettings()
 
     local autoVal = ImGui.Checkbox('Check for new releases automatically##updAuto', cfg.autoCheck)
     if autoVal ~= cfg.autoCheck then cfg.autoCheck = autoVal; saveSettings() end
-    core.setTooltip(string.format('Runs one check %d s after Triune loads (per character), with the frequency below.', STARTUP_DELAY_S))
+    if ImGui.IsItemHovered() then
+        core.setTooltip(string.format('Runs one check %d s after Triune loads (per character), with the frequency below.', STARTUP_DELAY_S))
+    end
 
     local curIdx = 1
     for i, f in ipairs(FREQUENCIES) do if f == cfg.frequency then curIdx = i end end
@@ -792,7 +796,7 @@ function plugin.onDrawSettings()
 
     local popVal = ImGui.Checkbox('Open a popup when a newer release is found##updPopup', cfg.popup)
     if popVal ~= cfg.popup then cfg.popup = popVal; saveSettings() end
-    core.setTooltip('Off: only the chat notice.')
+    if ImGui.IsItemHovered() then core.setTooltip('Off: only the chat notice.') end
 
     ImGui.Dummy(0, core.px(4))
     if st.checking then

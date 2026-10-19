@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/hud_unitframes.lua — Triune Popout Unit Frames HUD Plugin
@@ -805,7 +806,7 @@ local function drawUnitFramesWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
 
     local show
-    local winTitle = 'Triune Target & Player v' .. (core.VERSION or '3.1') .. '###triuneUnitFrames'
+    local winTitle = 'Triune Target & Player v' .. (core.VERSION or '3.2') .. '###triuneUnitFrames'
     ctrl.show_unit_frames, show = ImGui.Begin(winTitle, ctrl.show_unit_frames, core.windowFlags and core.windowFlags('unit_frames', winFlags) or winFlags)
 
     if not ctrl.show_unit_frames then
@@ -989,7 +990,7 @@ local function drawTargetWindow()
     ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, core.px(2), core.px(1))
 
     local show
-    local winTitle = 'Triune Target v' .. (core.VERSION or '3.1') .. '###triuneTargetWindow'
+    local winTitle = 'Triune Target v' .. (core.VERSION or '3.2') .. '###triuneTargetWindow'
     ctrl.show_target_window, show = ImGui.Begin(winTitle, ctrl.show_target_window, core.windowFlags and core.windowFlags('target_window', winFlags) or winFlags)
 
     if not ctrl.show_target_window then

@@ -8,15 +8,25 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name to release (e.g., v1.6)'
-        required: false
+        description: 'Tag name to release (e.g., v3.2)'
+        required: true
         type: string
 
 permissions:
   contents: write
 
 jobs:
+  # Same checks as CI (syntax, version sync, luacheck, unit tests, theme),
+  # run against the tag being released. Publishing waits for all of them.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ inputs.tag_name || github.ref }}
+    permissions:
+      contents: read
+
   package-and-release:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -24,6 +34,27 @@ jobs:
         with:
           # On manual runs package the requested tag, not whatever branch was selected.
           ref: ${{ inputs.tag_name || github.ref }}
+
+      - name: Verify tag matches VERSION
+        env:
+          TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          TAG="$TAG_NAME"
+          if [ -z "$TAG" ]; then
+            echo "::error::No tag name - push a v* tag or pass tag_name to the manual run."
+            exit 1
+          fi
+          VER="${TAG#v}"; VER="${VER#V}"
+          MAIN=$(grep -oP "^local VERSION\s+= '\K[^']+" TAC/lua/triune.lua || true)
+          if [ -z "$MAIN" ]; then
+            echo "::error::Could not read local VERSION from TAC/lua/triune.lua"
+            exit 1
+          fi
+          if [ "$VER" != "$MAIN" ]; then
+            echo "::error::Tag $TAG does not match local VERSION = '$MAIN' in TAC/lua/triune.lua"
+            exit 1
+          fi
+          echo "Tag $TAG matches VERSION $MAIN"
 
       - name: Generate Release Notes
         env:
@@ -34,6 +65,8 @@ jobs:
 
           tag = os.environ.get('TAG_NAME', '')
           version = re.sub(r'^[vV]', '', tag).strip()
+          if not version:
+              sys.exit('::error::No tag name given')
 
           # RELEASES.md holds a short, hand-written summary per release
           # (## <version> headings). CHANGELOG.md keeps the detailed history
@@ -52,8 +85,7 @@ jobs:
                   notes = body
                   break
           if notes is None:
-              heading, _, notes = entries[0].partition('\n')
-              print(f'::warning::No "## {version}" entry in RELEASES.md, using the top entry ({heading.strip()})')
+              sys.exit(f'::error::RELEASES.md has no "## {version}" entry - add the release summary before tagging')
 
           # Drop the trailing entry separator if the author left one in.
           notes = re.sub(r'\n---\s*$', '', notes.strip()) + '\n'

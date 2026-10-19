@@ -8,8 +8,15 @@ std = "luajit"
 -- Maximum line length (disabled — some UI lines are naturally long)
 max_line_length = false
 
--- MacroQuest / ImGui globals that MQ injects at runtime
+-- Globals the scripts assign (DATA is the shared game-data table)
 globals = {
+    "DATA",
+}
+
+-- Read-only globals (can be read but not assigned)
+read_globals = {
+    -- MacroQuest / ImGui globals that MQ injects at runtime (read-only:
+    -- luacheck flags any accidental assignment to them)
     "mq",
     "ImGui",
     "ImGuiCond",
@@ -33,11 +40,6 @@ globals = {
     "ImVec4",
     "IM_COL32",
     "bit",
-    "DATA",
-}
-
--- Read-only globals (can be read but not assigned)
-read_globals = {
     "clearCursor",
     os = { fields = { "clock", "time", "date", "difftime" } },
     string = { fields = { "format", "find", "match", "gmatch", "gsub",
@@ -56,29 +58,6 @@ files["TAC/config/triune_data.lua"] = {
     ignore = { "" },
 }
 
-files["TAC/lua/kissedit/*"] = {
-    -- Legacy code with different conventions
-    ignore = { "" },
-}
-files["TAC/lua/kissedit/**/*"] = {
-    ignore = { "" },
-}
-
-files["TAC/lua/triune.lua"] = {
-    -- classPlausible is tested by test_pure_logic.lua test suite
-    ignore = { "211/classPlausible" },
-}
-
-files["TAC/lua/triune_buttons.lua"] = {
-    -- Standalone duplicated color palette constants
-    ignore = { "211/GOOD", "211/WARN", "211/ERR", "211/MUTED" },
-}
-
-files["TAC/lua/triune_buffbot.lua"] = {
-    -- Standalone duplicated ImGui theme popCol helper
-    ignore = { "211/popCol" },
-}
-
 -- Common suppressions for the MQ pcall-guard pattern, ImGui callbacks, and formatting
 ignore = {
     "611",           -- line contains only whitespace
@@ -87,7 +66,7 @@ ignore = {
     "621",           -- inconsistent indentation
     "212",           -- unused argument (event handlers, ImGui callbacks)
     "212/_%w*",      -- unused loop variable starting with _
-    "431",           -- shadowing upvalue (very common with pcall patterns)
+    "431",           -- shadowing upvalue (very common with pcall patterns; ~10 hits in TAC/)
     "432",           -- shadowing upvalue argument
     "542",           -- empty if branch (used deliberately with a comment to short-circuit an elseif chain)
 }

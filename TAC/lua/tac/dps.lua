@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/dps.lua — Triune DPS Parser Plugin
@@ -145,12 +146,12 @@ local rt = {
     currentTargetId = 0,
     currentTargetName = 'None',
     lastZoneShort = nil,   -- zone short name at the last auto-reset (zone-change detection)
-    
+
     -- Current Fight Overall Totals
     playerDamage = 0,
     petDamage = 0,
     totalDamage = 0,
-    
+
     -- Hit / Miss / Crit Counters for Current Fight
     playerHits = 0,
     playerMisses = 0,
@@ -158,17 +159,17 @@ local rt = {
     petHits = 0,
     petMisses = 0,
     petCrits = 0,
-    
+
     -- Attack Type Breakdown Maps
     playerBreakdown = {},
     petBreakdown = {},
     selectedPetTab = 'All Pets',
-    
+
     -- History of Completed Fights
     history = {},
     nextHistoryId = 1,
     selectedHistoryIndex = 1,
-    
+
     -- Encounter Inspector State
     inspectorOpen = false,
     inspectedFight = nil,
@@ -184,7 +185,7 @@ local petState = {
 -- ============================================================================
 local function calculateCategoryTotals(playerBreakdown, petBreakdown)
     local totals = { melee = 0, skill = 0, spell = 0, dot = 0, ds = 0 }
-    
+
     local function processTable(tbl)
         if type(tbl) ~= 'table' then return end
         for _, data in pairs(tbl) do
@@ -205,9 +206,9 @@ local function calculateCategoryTotals(playerBreakdown, petBreakdown)
             end
         end
     end
-    
+
     processTable(playerBreakdown)
-    
+
     if type(petBreakdown) == 'table' then
         for _, pData in pairs(petBreakdown) do
             if type(pData) == 'table' and type(pData.attacks) == 'table' then
@@ -215,7 +216,7 @@ local function calculateCategoryTotals(playerBreakdown, petBreakdown)
             end
         end
     end
-    
+
     return totals
 end
 
@@ -313,7 +314,7 @@ local function parseMeleeSentence(sentence)
     if not sentence or sentence == '' then return nil, nil, nil end
     local cleanS = cleanLine(sentence)
     local lowerS = cleanS:lower()
-    
+
     for _, vp in ipairs(VERB_PATTERNS) do
         -- Tier 1: Check if line starts directly with the verb (e.g. "punch a cleric...", "kick a cleric...")
         local sStart, sEnd = lowerS:find(vp.start)
@@ -337,7 +338,7 @@ local function parseMeleeSentence(sentence)
             end
         end
     end
-    
+
     return nil, nil, nil
 end
 
@@ -427,7 +428,7 @@ end
 local function isPetActor(actorStr)
     if not actorStr or actorStr == '' then return false end
     if isPlayerActor(actorStr) then return false end
-    
+
     -- Explicit owner tag indicates a pet; only ours when the owner is us
     local owner = actorStr:match("%([Oo]wner:%s*(.-)%s*%)")
     if owner then
@@ -435,29 +436,39 @@ local function isPetActor(actorStr)
         if myName == '' then return true end
         return owner:gsub("%W", ""):lower() == myName:gsub("%W", ""):lower()
     end
-    
+
     local cleanActor = actorStr:gsub("%W", ""):lower()
-    
+
     -- Matches "Your pet" / "your pet"
-    if cleanActor == 'yourpet' or cleanActor:find('yourpet') or actorStr:sub(1,8):lower() == 'your pet' then
+    if cleanActor == 'yourpet' or actorStr:sub(1,8):lower() == 'your pet' then
         return true
     end
-    
-    -- Check Active Pet Clean Name (cached Pet.CleanName; the old second
-    -- Pet.ID / Pet.CleanName round-trip could only match what this already did)
+
+    -- Exact match on the active pet's CleanName (cached Pet.CleanName). Only an
+    -- exact name: other players' pets / mobs that merely contain or end in
+    -- "pet", "animated" or "corpse" are not ours.
     local pName = getPetName()
     if pName and pName ~= '' and pName ~= 'NULL' then
         local cleanPName = pName:gsub("%W", ""):lower()
-        if cleanPName ~= '' and (cleanActor == cleanPName or cleanActor:find(cleanPName, 1, true)) then
+        if cleanPName ~= '' and cleanActor == cleanPName then
             return true
         end
     end
-    
-    -- Matches swarm pets / generic pet suffixes (e.g. "...'s pet" or "... pet") or Animated Corpse
-    if cleanActor:sub(-3) == 'pet' or cleanActor:find('corpse') or cleanActor:find('animated') then
+
+    -- Our own swarm pets ("Gennro`s pet" / "Gennro's warder")
+    local myName = getMyPlayerName()
+    if myName ~= '' then
+        local poss = actorStr:lower():match("^(.-)[`']s%s")
+        if poss and poss:gsub("%W", "") == myName:gsub("%W", ""):lower() then
+            return true
+        end
+    end
+
+    -- A pet already credited to us this fight (seen earlier with "(Owner: <me>)")
+    if rt.petBreakdown and rt.petBreakdown[cleanLine(actorStr)] then
         return true
     end
-    
+
     -- Anything else (mobs hitting us, other players, their pets) is not ours
     return false
 end
@@ -717,20 +728,24 @@ end
 -- ----------------------------------------------------------------------------
 function isGroupMember(name)
     if not name or name == '' then return false end
-    local bn = core and rawget(core, 'boxnet')
-    if type(bn) == 'table' and type(bn.isGroupMember) == 'function' then
-        local okBn, v = pcall(bn.isGroupMember, name)
-        if okBn then return v == true end
-    end
+    -- Own bounded cache first: mob names flow through here too (isFriendlyTarget)
     local key = tostring(name):lower()
     local now = nowMs()
     local c = lookups.group[key]
     if c and (now - c.at) < LOOKUP_TTL_MS then return c.v end
-    local ok, isMember = pcall(function()
-        local m = mq.TLO.Group.Member(name)
-        return m ~= nil and m() ~= nil and (m.ID() or 0) > 0
-    end)
-    local v = ok and isMember == true
+    local v
+    local bn = core and rawget(core, 'boxnet')
+    if type(bn) == 'table' and type(bn.isGroupMember) == 'function' then
+        local okBn, bv = pcall(bn.isGroupMember, name)
+        if okBn then v = (bv == true) end
+    end
+    if v == nil then
+        local ok, isMember = pcall(function()
+            local m = mq.TLO.Group.Member(name)
+            return m ~= nil and m() ~= nil and (m.ID() or 0) > 0
+        end)
+        v = ok and isMember == true
+    end
     if not c then
         -- Mob names flow through here too (isFriendlyTarget): keep it bounded.
         if lookups.groupN >= GROUP_CACHE_MAX then lookups.group, lookups.groupN = {}, 0 end
@@ -855,7 +870,7 @@ local function drawMeterTable(rows, summary, tableId, detailed, barH)
         if ImGui.IsItemHovered() then
             local split = (r.petDmg or 0) > 0 and string.format('\nPlayer %s / Pet %s', fmtNum(r.playerDmg), fmtNum(r.petDmg)) or ''
             local state = r.live and 'fighting' or (summary.live and 'idle' or ('last fight' .. (r.at and (' at ' .. r.at) or '')))
-            ImGui.SetTooltip(string.format('%s - %s\n%s damage over %.0fs%s%s', tostring(r.name), state, fmtNum(r.dmg), r.dur or 0,
+            ImGui.SetTooltip('%s', string.format('%s - %s\n%s damage over %.0fs%s%s', tostring(r.name), state, fmtNum(r.dmg), r.dur or 0,
                 r.target and ('\nTarget: ' .. tostring(r.target)) or '', split))
         end
         ImGui.TableSetColumnIndex(1)
@@ -891,12 +906,12 @@ local function endFightSession()
         rt.inFight = false
         return
     end
-    
+
     local dur = getCurrentFightDuration()
     local totalDps = getFightDPS(rt.totalDamage, dur)
     local timestamp = os.date("%H:%M:%S")
     local totals = calculateCategoryTotals(rt.playerBreakdown, rt.petBreakdown)
-    
+
     table.insert(rt.history, 1, {
         id = rt.nextHistoryId,
         targetName = (isValidMobName(rt.currentTargetName)) and rt.currentTargetName or 'Unknown',
@@ -923,13 +938,13 @@ local function endFightSession()
         petBreakdown = deepCopyMultiPetBreakdown(rt.petBreakdown),
         timestamp = timestamp,
     })
-    
+
     rt.nextHistoryId = rt.nextHistoryId + 1
     if #rt.history > MAX_HISTORY then
         table.remove(rt.history)
     end
     shareFight(rt.history[1])
-    
+
     rt.inFight = false
     rt.currentTargetId = 0
     touched()
@@ -939,16 +954,16 @@ local function startFightIfNeeded(targetName)
     local now = mq.gettime()
     local ok, tid = pcall(function() return mq.TLO.Target.ID() end)
     local targetId = (ok and tid and tid > 0) and tid or 0
-    
+
     local cleanTarget = isValidMobName(targetName) and cleanLine(targetName) or nil
     local tloTargetName = nil
     local ok2, tar = pcall(function() return mq.TLO.Target.CleanName() end)
     if ok2 and tar and isValidMobName(tar) then
         tloTargetName = tar
     end
-    
+
     local validTargetName = cleanTarget or tloTargetName or 'Target'
-    
+
     if not rt.inFight then
         rt.inFight = true
         rt.fightStartTime = now
@@ -994,7 +1009,16 @@ end
 -- 1. Unified Melee & Special Skill Hit Handler: "#1# for #2#" or "#1# for #2# points of damage#3#"
 local function onUnifiedMeleeHit(line, sentenceRaw, dmgStrRaw, extraRaw)
     if cfg.paused then return end
-    
+
+    -- The catch-all also matches chat ("Bob says, 'kicked a mob for 500'"):
+    -- drop say/tell/shout/auction/channel lines before parsing them as damage.
+    local lowerLine = tostring(line or ''):lower()
+    if lowerLine:find(" says,", 1, true) or lowerLine:find(" says out", 1, true)
+       or lowerLine:find(" tells ", 1, true) or lowerLine:find(" shouts,", 1, true)
+       or lowerLine:find(" auctions,", 1, true) or lowerLine:find(", '", 1, true) then
+        return
+    end
+
     -- Filter out non-melee spell lines. With the 2-capture catch-all '#1# for #2#'
     -- the "points of non-melee damage" text lands in #2# (dmgStrRaw), so check
     -- every capture; the dedicated spell/DoT/DS/proc events own those lines.
@@ -1005,20 +1029,20 @@ local function onUnifiedMeleeHit(line, sentenceRaw, dmgStrRaw, extraRaw)
        or lowerSentence:find(" by your ") or lowerSentence:find("has healed") then
         return
     end
-    
+
     local actor, verb, target = parseMeleeSentence(sentenceRaw)
     if not actor or not verb or not target then return end
     if not isValidCombatTarget(target) then return end
     -- Mobs hitting us / our pet / a groupmate are incoming damage, not ours
     if isFriendlyTarget(target) then return end
-    
+
     local dmg = parseDamageValue(dmgStrRaw)
     if not dmg or dmg <= 0 then return end
-    
+
     local cat = getVerbCategory(verb)
     local extra = cleanLine(extraRaw or '')
     local isCrit = (extra:find("Critical") or extra:find("Crippling") or line:find("Critical") or line:find("Crippling")) and true or false
-    
+
     if isPlayerActor(actor) then
         -- Player Hit
         startFightIfNeeded(target)
@@ -1077,7 +1101,7 @@ local function onUnifiedSpellHit(line, actorRaw, targetRaw, dmgStrRaw, extraRaw)
     local actor = cleanLine(actorRaw)
     local target = cleanLine(targetRaw)
     local extra = cleanLine(extraRaw)
-    
+
     if isValidCombatTarget(target) and not isFriendlyTarget(target) then
         local dmg = parseDamageValue(dmgStrRaw)
         if dmg then
@@ -1112,13 +1136,13 @@ local function onPlayerDoTHit(line, targetRaw, dmgStrRaw, spellRaw)
     if cfg.paused then return end
     local target = cleanLine(targetRaw)
     local spell = cleanLine(spellRaw)
-    
+
     -- DoT3 ('#1# has taken #2# damage from your #3#.') also matches the DoT1/DoT2
     -- lines with #2# = "50 points of"; only handle when the capture is a bare number
     -- so each tick is counted once.
     local dmgClean = cleanLine(dmgStrRaw):gsub(",", "")
     if not dmgClean:match("^%d+$") then return end
-    
+
     if isValidCombatTarget(target) and not isFriendlyTarget(target) then
         local dmg = parseDamageValue(dmgStrRaw)
         if dmg then
@@ -1136,7 +1160,7 @@ end
 local function onPlayerDSHit(line, targetRaw, verbRaw, dsTypeRaw, dmgStrRaw)
     if cfg.paused then return end
     local target = cleanLine(targetRaw)
-    
+
     if isValidCombatTarget(target) and not isFriendlyTarget(target) then
         local dmg = parseDamageValue(dmgStrRaw)
         if dmg then
@@ -1154,7 +1178,7 @@ local function onCriticalHit(line, actorRaw, dmgStrRaw)
     if cfg.paused then return end
     local actor = cleanLine(actorRaw)
     local dmg = parseDamageValue(dmgStrRaw)
-    
+
     if isPlayerActor(actor) then
         rt.playerCrits = rt.playerCrits + 1
         creditCrit(rt.playerBreakdown, dmg)
@@ -1177,10 +1201,10 @@ local function onCriticalBlast(line, actorRaw, dmgStrRaw, spellRaw)
     local spell = cleanLine(spellRaw or '')
     spell = spell:match("%((.-)%)") or spell
     local dmg = parseDamageValue(dmgStrRaw)
-    
+
     -- Skip when the matching non-melee hit line already carried "(Critical blast!)"
     if dmg and not noteSpellCrit(dmg) then return end
-    
+
     if isPlayerActor(actor) then
         rt.playerCrits = rt.playerCrits + 1
         if spell ~= '' and rt.playerBreakdown[spell] then
@@ -1209,12 +1233,12 @@ end
 local function onUnifiedMiss(line, actorRaw, verbRaw, targetRaw)
     if cfg.paused then return end
     if not rt.inFight then return end
-    
+
     local actor = cleanLine(actorRaw or '')
     local verb = cleanLine(verbRaw or '')
     local target = cleanLine(targetRaw or '')
     if actor == '' or target == '' then return end
-    
+
     -- Multi-word skills ("flying kick a mob") split across #2#/#3#; let the
     -- sentence parser re-join them when it recognises the verb.
     if verb ~= '' then
@@ -1223,9 +1247,9 @@ local function onUnifiedMiss(line, actorRaw, verbRaw, targetRaw)
             actor, verb, target = pActor, pVerb, pTarget
         end
     end
-    
+
     if not isValidCombatTarget(target) or isFriendlyTarget(target) then return end
-    
+
     local cat = (verb ~= '') and getVerbCategory(verb) or 'Melee'
     local attackName = (verb ~= '') and (verb:sub(1,1):upper() .. verb:sub(2):lower()) or 'Miss'
     if isPlayerActor(actor) then
@@ -1253,10 +1277,10 @@ local function onMobSlain(line, targetRaw)
     local target = cleanLine(targetRaw)
     target = target:gsub("[!%.%?]+$", "")
     if not isValidMobName(target) then return end
-    
+
     local current = cleanLine(rt.currentTargetName or '')
     local nameMatches = isValidMobName(current) and current:lower() == target:lower()
-    
+
     local targetDead = false
     if not nameMatches then
         local okId, tId = pcall(function() return mq.TLO.Target.ID() end)
@@ -1264,27 +1288,15 @@ local function onMobSlain(line, targetRaw)
         local targetId = (okId and tId and tId > 0) and tId or 0
         targetDead = (okDead and tDead == true) and targetId > 0 and targetId == rt.currentTargetId
     end
-    
+
     if nameMatches or targetDead then
         endFightSession()
     end
 end
 
--- 8. Mob Damaged by DS / Environmental Non-Melee
-local function onMobHitByNonMelee(line, mobRaw, dmgStrRaw, extraRaw)
-    if cfg.paused then return end
-    local mob = cleanLine(mobRaw)
-    if isValidMobName(mob) then
-        local dmg = parseDamageValue(dmgStrRaw)
-        if dmg then
-            startFightIfNeeded(mob)
-            rt.playerHits = rt.playerHits + 1
-            rt.playerDamage = rt.playerDamage + dmg
-            rt.totalDamage = rt.totalDamage + dmg
-            recordHit(rt.playerBreakdown, 'Damage Shield / Non-Melee', dmg, false, false, false, 'Proc/DS')
-        end
-    end
-end
+-- 8. "#1# was hit by non-melee for N" is intentionally NOT parsed: EQ prints it
+-- for other players' damage shields and nukes too, so it cannot be credited to
+-- us. Our own damage shield is counted by the "is <verb> by your" DS events.
 
 -- Register Event Listeners
 local registeredEvents = {}
@@ -1305,7 +1317,7 @@ local function registerEvents()
     -- Standard & Server Abbreviated Melee & Skill Hit Patterns
     -- Matches "Tenekis crushes a forlorn revenant for 204" and "punch a cleric of hate for 607"
     regEvent('DPS_MeleeHitShort', '#1# for #2#', onUnifiedMeleeHit)
-    
+
     -- Dedicated Critical Hit & Critical Blast Event Patterns
     -- Third-person ("Genro scores a critical hit! (835)") and the player's own
     -- first-person lines ("You score a critical hit! (420)", "You deliver a
@@ -1319,37 +1331,38 @@ local function registerEvents()
     regEvent('DPS_CritBlastYou', 'You deliver a critical blast! (#1#)#2#', function(line, dmgStr, spellStr)
         onCriticalBlast(line, 'You', dmgStr, spellStr)
     end)
-    
+
     -- Spell / Non-Melee Patterns (Plural & Singular)
     regEvent('DPS_SpellHitPlural', '#1# hit #2# for #3# points of non-melee damage#4#', onUnifiedSpellHit)
     regEvent('DPS_SpellHitSingular', '#1# hit #2# for #3# point of non-melee damage#4#', onUnifiedSpellHit)
-    regEvent('DPS_ProcHitPlural', '#1# is struck by #2# for #3# points of damage#4#', onUnifiedSpellHit)
-    regEvent('DPS_ProcHitSingular', '#1# is struck by #2# for #3# point of damage#4#', onUnifiedSpellHit)
-    
-    -- Non-Melee DS / Environmental Patterns
-    regEvent('DPS_MobNonMeleePlural', '#1# was hit by non-melee for #2# points of damage#3#', onMobHitByNonMelee)
-    regEvent('DPS_MobNonMeleeSingular', '#1# was hit by non-melee for #2# point of damage#3#', onMobHitByNonMelee)
-    
+    -- Proc lines name the victim first ("<mob> is struck by <source> ..."):
+    -- swap so onUnifiedSpellHit gets (actor = source, target = victim).
+    local function onProcHit(line, victimRaw, sourceRaw, dmgStrRaw, extraRaw)
+        onUnifiedSpellHit(line, sourceRaw, victimRaw, dmgStrRaw, extraRaw)
+    end
+    regEvent('DPS_ProcHitPlural', '#1# is struck by #2# for #3# points of damage#4#', onProcHit)
+    regEvent('DPS_ProcHitSingular', '#1# is struck by #2# for #3# point of damage#4#', onProcHit)
+
     -- DoT Patterns (DoT3 also fires for the DoT1/DoT2 lines; onPlayerDoTHit
     -- ignores the non-numeric "50 points of" capture so each tick counts once)
     regEvent('DPS_PlayerDoT1', '#1# has taken #2# points of damage from your #3#.', onPlayerDoTHit)
     regEvent('DPS_PlayerDoT2', '#1# has taken #2# point of damage from your #3#.', onPlayerDoTHit)
     regEvent('DPS_PlayerDoT3', '#1# has taken #2# damage from your #3#.', onPlayerDoTHit)
-    
+
     -- Damage Shield Patterns
     regEvent('DPS_PlayerDSPlural', '#1# is #2# by your #3# for #4# points of damage.', onPlayerDSHit)
     regEvent('DPS_PlayerDSSingular', '#1# is #2# by your #3# for #4# point of damage.', onPlayerDSHit)
-    
+
     -- Standard & Abbreviated Miss Patterns (each wrapper maps MQ's capture
     -- order for that pattern onto onUnifiedMiss(line, actor, verb, target))
     regEvent('DPS_PlayerMissStandard', 'You try to #1# #2#, but miss!', onPlayerMissStandard)
     regEvent('DPS_PetMissStandard', '#1# tried to #2# #3#, but missed!', onUnifiedMiss)
     regEvent('DPS_MissShort', '#1# missed #2#', onMissShort)
-    
+
     -- Chat-driven Mob Slain Events
     regEvent('DPS_MobSlain1', '#1# has been slain#*#', onMobSlain)
     regEvent('DPS_MobSlain2', 'You have slain #1#!', onMobSlain)
-    
+
     -- Zone Change Auto-Reset: chat-driven fallback. "You have entered" also
     -- prefixes non-zone messages (levitation, PvP areas, "an area where ..."),
     -- so only reset when the zone short name actually changed; plugin.onZoned
@@ -1375,12 +1388,12 @@ local function reportDPS(channelOverride)
     local totalDps = getFightDPS(rt.totalDamage, dur)
     local playerDps = getFightDPS(rt.playerDamage, dur)
     local petDps = getFightDPS(rt.petDamage, dur)
-    
+
     local playerPct = rt.totalDamage > 0 and math.floor((rt.playerDamage / rt.totalDamage * 100) + 0.5) or 0
     local petPct = rt.totalDamage > 0 and math.floor((rt.petDamage / rt.totalDamage * 100) + 0.5) or 0
-    
+
     local target = (rt.currentTargetName ~= '' and rt.currentTargetName ~= 'None') and rt.currentTargetName or 'Combat'
-    
+
     local msg = string.format("[Triune DPS] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
         target, dur, totalDps, tostring(rt.totalDamage))
         
@@ -1389,15 +1402,15 @@ local function reportDPS(channelOverride)
     local skPct = rt.totalDamage > 0 and math.floor((totals.skill / rt.totalDamage * 100) + 0.5) or 0
     local spPct = rt.totalDamage > 0 and math.floor((totals.spell / rt.totalDamage * 100) + 0.5) or 0
     local dotPct = rt.totalDamage > 0 and math.floor((totals.dot / rt.totalDamage * 100) + 0.5) or 0
-    
+
     msg = msg .. string.format(" | Types: Melee %d%%, Skill %d%%, Spell %d%%, DoT %d%%", mPct, skPct, spPct, dotPct)
-    
+
     if rt.petDamage > 0 then
         msg = msg .. string.format(" | Player: %d DPS (%d%%) | Pet: %d DPS (%d%%)", playerDps, playerPct, petDps, petPct)
     else
         msg = msg .. string.format(" | Player: %d DPS", playerDps)
     end
-    
+
     local cmd = '/' .. channel .. ' ' .. msg
     mq.cmd(cmd)
 end
@@ -1407,15 +1420,15 @@ local function reportHistoricalFight(h, channelOverride)
     local channel = channelOverride or cfg.reportChannel or 'group'
     local playerDps = getFightDPS(h.playerDmg, h.duration)
     local petDps = getFightDPS(h.petDmg, h.duration)
-    
+
     local playerPct = h.totalDmg > 0 and math.floor((h.playerDmg / h.totalDmg * 100) + 0.5) or 0
     local petPct = h.totalDmg > 0 and math.floor((h.petDmg / h.totalDmg * 100) + 0.5) or 0
-    
+
     local mPct = h.totalDmg > 0 and math.floor(((h.meleeDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local skPct = h.totalDmg > 0 and math.floor(((h.skillDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local spPct = h.totalDmg > 0 and math.floor(((h.spellDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local dotPct = h.totalDmg > 0 and math.floor(((h.dotDmg or 0) / h.totalDmg * 100) + 0.5) or 0
-    
+
     local msg = string.format("[Triune DPS Log] Target: %s | Dur: %.0fs | Combined: %d DPS (%s dmg)",
         h.targetName, h.duration, h.peakDps, tostring(h.totalDmg))
         
@@ -1426,7 +1439,7 @@ local function reportHistoricalFight(h, channelOverride)
     else
         msg = msg .. string.format(" | Player: %d DPS", playerDps)
     end
-    
+
     local cmd = '/' .. channel .. ' ' .. msg
     mq.cmd(cmd)
 end
@@ -1461,7 +1474,7 @@ local function renderBreakdownTable(breakdownMap, showSourceColumn, tableId)
     if not ImGui.BeginTable(tId, showSourceColumn and 10 or 9, bit.bor(ImGuiTableFlags.Borders, ImGuiTableFlags.RowBg, ImGuiTableFlags.SizingFixedFit)) then
         return
     end
-    
+
     if showSourceColumn then
         ImGui.TableSetupColumn("Source", ImGuiTableColumnFlags.WidthFixed, core.px(55))
     end
@@ -1475,7 +1488,7 @@ local function renderBreakdownTable(breakdownMap, showSourceColumn, tableId)
     ImGui.TableSetupColumn("Crits", ImGuiTableColumnFlags.WidthFixed, core.px(45))
     ImGui.TableSetupColumn("Crit %", ImGuiTableColumnFlags.WidthFixed, core.px(50))
     ImGui.TableHeadersRow()
-    
+
     local sortedKeys = sortedKeysOf(breakdownMap)
 
     for _, name in ipairs(sortedKeys) do
@@ -1526,7 +1539,7 @@ local function renderBreakdownTable(breakdownMap, showSourceColumn, tableId)
         ImGui.TableNextColumn()
         ImGui.Text(string.format("%d%%", critPct))
     end
-    
+
     ImGui.EndTable()
 end
 
@@ -1611,14 +1624,14 @@ local function renderMultiPetDetails(petMap, tabBarId, tableIdPrefix, fightPetDm
         ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "No Active Pet Damage Recorded")
         return
     end
-    
+
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Pet Damage Breakdown:")
     ImGui.Spacing()
-    
+
     local tbId = tabBarId or "MultiPetTabBar"
     local tPrefix = tableIdPrefix or "PetTable"
     local totalPetDmg = fightPetDmg or rt.petDamage
-    
+
     if ImGui.BeginTabBar(tbId) then
         -- Tab 1: All Pets Combined
         if ImGui.BeginTabItem("All Pets Combined##" .. tbId) then
@@ -1656,7 +1669,7 @@ end
 -- ============================================================================
 local function renderHistoricalInspector(h, inTabMode)
     if not h then return end
-    
+
     -- Header Toolbar
     if inTabMode then
         if ImGui.Button("< Back to Fight List##InspectBackBtn", core.px(140), core.px(24)) then
@@ -1687,7 +1700,7 @@ local function renderHistoricalInspector(h, inTabMode)
         end
         ImGui.Spacing()
     end
-    
+
     -- Stats Banner
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Target:")
     ImGui.SameLine()
@@ -1700,26 +1713,26 @@ local function renderHistoricalInspector(h, inTabMode)
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Duration:")
     ImGui.SameLine()
     ImGui.Text(string.format("%.1fs", h.duration))
-    
+
     ImGui.Separator()
-    
+
     -- Key Performance Summary Cards
     local cardChildId = inTabMode and "InspectTabSummaryCards" or "InspectModalSummaryCards"
     ImGui.BeginChild(cardChildId, 0, core.px(65), true)
-    
+
     local totalDps = h.peakDps
     local playerDps = getFightDPS(h.playerDmg, h.duration)
     local petDps = getFightDPS(h.petDmg, h.duration)
     local playerPct = h.totalDmg > 0 and math.floor((h.playerDmg / h.totalDmg * 100) + 0.5) or 0
     local petPct = h.totalDmg > 0 and math.floor((h.petDmg / h.totalDmg * 100) + 0.5) or 0
-    
+
     -- Combined DPS Card
     ImGui.BeginGroup()
     ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], "COMBINED DPS")
     ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(totalDps))
     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Total Dmg", h.totalDmg))
     ImGui.EndGroup()
-    
+
     ImGui.SameLine(core.px(160))
     -- Player DPS Card
     ImGui.BeginGroup()
@@ -1727,7 +1740,7 @@ local function renderHistoricalInspector(h, inTabMode)
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], tostring(playerDps))
     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", h.playerDmg, playerPct))
     ImGui.EndGroup()
-    
+
     ImGui.SameLine(core.px(320))
     -- Pet DPS Card
     ImGui.BeginGroup()
@@ -1735,33 +1748,33 @@ local function renderHistoricalInspector(h, inTabMode)
     ImGui.TextColored(ARC[1], ARC[2], ARC[3], ARC[4], tostring(petDps))
     ImGui.TextColored(GOOD[1], GOOD[2], GOOD[3], GOOD[4], string.format("%d Dmg (%d%%)", h.petDmg, petPct))
     ImGui.EndGroup()
-    
+
     ImGui.EndChild()
-    
+
     -- Contribution Progress Bar
     local pFrac = h.totalDmg > 0 and (h.playerDmg / h.totalDmg) or 0
     ImGui.ProgressBar(pFrac, -1, core.px(14), string.format("Player %d%%  |  Pet %d%%", playerPct, petPct))
-    
+
     ImGui.Spacing()
-    
+
     -- Damage Type Category Metric Badges Summary
     local mPct = h.totalDmg > 0 and math.floor(((h.meleeDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local skPct = h.totalDmg > 0 and math.floor(((h.skillDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local spPct = h.totalDmg > 0 and math.floor(((h.spellDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local dotPct = h.totalDmg > 0 and math.floor(((h.dotDmg or 0) / h.totalDmg * 100) + 0.5) or 0
     local dsPct = h.totalDmg > 0 and math.floor(((h.dsDmg or 0) / h.totalDmg * 100) + 0.5) or 0
-    
+
     ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Category Metrics:")
     ImGui.SameLine()
     ImGui.TextColored(MUTED[1], MUTED[2], MUTED[3], MUTED[4], string.format("Melee: %d (%d%%) | Skills: %d (%d%%) | Spells: %d (%d%%) | DoTs: %d (%d%%) | DS: %d (%d%%)",
         h.meleeDmg or 0, mPct, h.skillDmg or 0, skPct, h.spellDmg or 0, spPct, h.dotDmg or 0, dotPct, h.dsDmg or 0, dsPct))
         
     ImGui.Spacing()
-    
+
     -- Navigation Tabs inside Inspector
     local mainTbId = inTabMode and "InspectTabMainTabBar" or "InspectModalMainTabBar"
     local tPrefix = inTabMode and "InspectTab" or "InspectModal"
-    
+
     if ImGui.BeginTabBar(mainTbId) then
         
         -- Overview Breakdown
@@ -1874,7 +1887,7 @@ local function drawMiniDpsGui()
                 ImGui.ProgressBar(pFrac, MINI_WIDTH, 15, splitText)
             end
             if ImGui.IsItemHovered() then
-                ImGui.SetTooltip(string.format('Player %s damage / Pet %s damage', fmtNum(rt.playerDamage), fmtNum(rt.petDamage)))
+                ImGui.SetTooltip('%s', string.format('Player %s damage / Pet %s damage', fmtNum(rt.playerDamage), fmtNum(rt.petDamage)))
             end
         end
 
@@ -1902,11 +1915,11 @@ local function drawMiniDpsGui()
         if ImGui.IsItemHovered() then ImGui.SetTooltip('Clear the current fight') end
         ImGui.SameLine()
         if ImGui.SmallButton('Report##MiniReportBtn') then reportDPS() end
-        if ImGui.IsItemHovered() then ImGui.SetTooltip('Report your parse to /' .. tostring(cfg.reportChannel or 'group')) end
+        if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report your parse to /' .. tostring(cfg.reportChannel or 'group')) end
         if cfg.compactGroup and boxnet() then
             ImGui.SameLine()
             if ImGui.SmallButton('Group##MiniGroupRptBtn') then reportGroupDPS() end
-            if ImGui.IsItemHovered() then ImGui.SetTooltip('Report the group meter to /' .. tostring(cfg.reportChannel or 'group')) end
+            if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report the group meter to /' .. tostring(cfg.reportChannel or 'group')) end
         end
         ImGui.SameLine()
         if ImGui.SmallButton('Full##MiniFullBtn') then
@@ -1926,7 +1939,7 @@ end
 -- ============================================================================
 local function drawDpsGui()
     if not ctrl.show_dps or cfg.compact then return end
-    
+
     core.pushTheme()
     core.preBeginWindow('dps')
     local open, draw = ImGui.Begin("Triune DPS Parser v" .. VERSION .. "###TriuneDPSWindow", ctrl.show_dps, core.windowFlags and core.windowFlags('dps', 0) or 0)
@@ -2206,7 +2219,7 @@ local function drawDpsGui()
                     end
                     ImGui.SameLine()
                     if ImGui.SmallButton('Report Group##MainGroupRpt') then reportGroupDPS() end
-                    if ImGui.IsItemHovered() then ImGui.SetTooltip('Report the meter to /' .. tostring(cfg.reportChannel or 'group')) end
+                    if ImGui.IsItemHovered() then ImGui.SetTooltip('%s', 'Report the meter to /' .. tostring(cfg.reportChannel or 'group')) end
                     ImGui.Spacing()
                     if #rows <= 1 then
                         ImGui.TextDisabled(cfg.meterScope == 'group'
@@ -2249,7 +2262,8 @@ local function drawDpsGui()
                 if ImGui.BeginCombo("Default Report Channel", channels[currentIdx]) then
                     for idx, ch in ipairs(channels) do
                         local isSel = (idx == currentIdx)
-                        if ImGui.Selectable(ch, isSel) then
+                        local _, chPressed = ImGui.Selectable(ch, isSel)
+                        if chPressed then
                             cfg.reportChannel = ch
                             changed = true
                         end
@@ -2273,8 +2287,10 @@ local function drawDpsGui()
                 ImGui.TextColored(GOLD[1], GOLD[2], GOLD[3], GOLD[4], "Group Meter (Box Network)")
                 local scopeLabel = cfg.meterScope == 'all' and 'All Boxes' or 'Group Members'
                 if ImGui.BeginCombo("Meter Scope", scopeLabel) then
-                    if ImGui.Selectable('Group Members', cfg.meterScope ~= 'all') then cfg.meterScope = 'group'; changed = true end
-                    if ImGui.Selectable('All Boxes', cfg.meterScope == 'all') then cfg.meterScope = 'all'; changed = true end
+                    local _, grpPressed = ImGui.Selectable('Group Members', cfg.meterScope ~= 'all')
+                    if grpPressed then cfg.meterScope = 'group'; changed = true end
+                    local _, allPressed = ImGui.Selectable('All Boxes', cfg.meterScope == 'all')
+                    if allPressed then cfg.meterScope = 'all'; changed = true end
                     ImGui.EndCombo()
                 end
                 if ImGui.IsItemHovered() then
@@ -2315,7 +2331,7 @@ local function drawDpsGui()
             ImGui.EndPopup()
         end
     end
-    
+
     if core.preEndWindow then core.preEndWindow('dps', false) end
     ImGui.End()
     core.popTheme()

@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field, need-check-nil
 -- ============================================================================
 -- TAC/lua/tac/boxnet.lua — Triune Box Network Plugin (MacroQuest Actors)
@@ -80,6 +81,7 @@ local PROBE_INTERVAL_SEC = 10.0   -- loopback RPC through the launcher while no 
 local PROBE_OK_INTERVAL_SEC = 60.0 -- ...backed off once a probe has succeeded (routing is known good)
 local PROBE_TIMEOUT_SEC  = 5.0    -- no reply within this -> "no answer"
 local GROUP_CACHE_SEC    = 1.0    -- api.isGroupMember answers from a cache this old
+local GROUP_CACHE_MAX    = 256    -- reset net.groupCache at this many names (mob names land here too)
 local SCOPES             = { 'all', 'zone', 'group' }
 
 -- ----------------------------------------------------------------------------
@@ -131,6 +133,7 @@ local net = {
     me             = nil,   -- cached Me.CleanName() (refreshed on init / zone)
     pid            = nil,   -- cached EverQuest.PID()
     groupCache     = {},    -- [lowerName] = { v = bool, at = sec } for api.isGroupMember
+    groupCacheN    = 0,     -- entries in groupCache (bounded by GROUP_CACHE_MAX)
 }
 
 local function refresh()
@@ -603,6 +606,10 @@ local function isGroupMemberCached(name)
     local c = net.groupCache[key]
     if c and (t - c.at) < GROUP_CACHE_SEC then return c.v end
     local v = isGroupMember(name)
+    if not c then
+        if (net.groupCacheN or 0) >= GROUP_CACHE_MAX then net.groupCache, net.groupCacheN = {}, 0 end
+        net.groupCacheN = (net.groupCacheN or 0) + 1
+    end
     net.groupCache[key] = { v = v, at = t }
     return v
 end
@@ -645,6 +652,7 @@ local function sampleFingerprint()
         burn     = (ctrl and ctrl.burn == true) or false,
         ma       = (ctrl and ctrl.ma_name) or '',
         combat   = combat,
+        attackOn = tlo(function() return mq.TLO.Me.Combat() end, false) == true,
         sitting  = tlo(function() return mq.TLO.Me.Sitting() end, false) == true,
         targetId = tid,
         -- Detrimental counters so other boxes can cure us without NetBots / EQBC.
@@ -663,6 +671,17 @@ local function sampleFingerprint()
         s.engaged = combat or ((s.targetHp or 100) < 100)
     end
     return s
+end
+
+-- Created By: NeroMorte - Read the reporting MA's own slots, independent of Manual Auto XTarget filters.
+local function targetOnXtarget(id)
+    if not id or id <= 0 then return false end
+    local count = tonumber(tlo(function() return mq.TLO.Me.XTargetSlots() end, 13)) or 13
+    for i = 1, math.min(100, math.max(0, count)) do
+        local found = tlo(function() return mq.TLO.Me.XTarget(i).ID() end, 0)
+        if found == id then return true end
+    end
+    return false
 end
 
 local function snapshot(sample)
@@ -691,6 +710,7 @@ local function snapshot(sample)
         z       = tlo(function() return mq.TLO.Me.Z() end, 0),
         pull    = core.runtime and core.runtime.pullState or nil,
         ver     = core.VERSION,
+        attackOn = sample.attackOn == true,
         counters = sample.counters,
     }
     local classes = core.myClasses
@@ -706,6 +726,7 @@ local function snapshot(sample)
             type    = tlo(function() return mq.TLO.Target.Type() end, ''),
             since   = net.targetSince,
             engaged = sample.engaged == true,
+            onXtarget = targetOnXtarget(tid),
         }
     end
     local petId = tlo(function() return mq.TLO.Me.Pet.ID() end, 0)
@@ -729,7 +750,7 @@ local function fingerprint(s)
     return table.concat({
         s.zone or '', s.dzInstanceKey or '', tostring(s.inDynamicZone), s.mode or '', s.submode or '', tostring(s.running), tostring(s.burn),
         s.ma or '', tostring(tid), engaged,
-        tostring(s.combat), tostring(s.sitting),
+        tostring(s.combat), tostring(s.attackOn), tostring(s.sitting),
         tostring((c.poison or 0) > 0), tostring((c.disease or 0) > 0), tostring((c.curse or 0) > 0), tostring((c.corruption or 0) > 0),
     }, '|')
 end
@@ -761,10 +782,16 @@ end
 -- re-enter the network (loops).
 local function normalizeLine(line)
     line = tostring(line or ''):gsub('^%s+', ''):gsub('%s+$', '')
-    if line:sub(1, 1) == '/' and not line:match('^/ac%f[%s]') and line ~= '/ac' then
+    -- Case-insensitive /ac detection (EQ accepts "/AC net ..."), looking past
+    -- a leading /nomodkey, so the nested-net guard below cannot be bypassed.
+    local rest = line
+    if rest:lower():match('^/nomodkey%f[%s]') then rest = rest:gsub('^%S+%s*', '') end
+    local low = rest:lower()
+    local isAc = low == '/ac' or low:match('^/ac%f[%s]') ~= nil
+    if line:sub(1, 1) == '/' and not isAc then
         return line
     end
-    line = line:gsub('^/ac%s+', ''):gsub('^/ac$', '')
+    if isAc then line = rest:sub(4):gsub('^%s+', '') end
     if line == '' then return nil, 'empty command' end
     local first = line:match('^(%S+)'):lower()
     if first == 'net' or first == 'boxnet' then return nil, 'nested net commands are not allowed' end
@@ -1079,6 +1106,9 @@ end
 local function handleCamp(message, payload, sender)
     local data = payload.data or {}
     local from = (sender and sender.character) or payload.from or '?'
+    -- Group-scoped broadcast: silently skip when the sender is not in our
+    -- group (same as handleBuffMe; broadcasts carry no rpc to reply to).
+    if data.scope == 'group' and not isGroupMember(from) then return end
     if not isTrusted(sender, payload) or not cfg.acceptCommands then
         replyTo(message, data, 1, { ok = false, reason = 'not trusted' })
         return
@@ -1324,7 +1354,8 @@ function api.peerTarget(name, maxAgeSec)
     if not p then return nil end
     local t = p.hb.target
     if type(t) ~= 'table' or type(t.id) ~= 'number' or t.id <= 0 then return false end
-    return { id = t.id, name = t.name, hp = t.hp, type = t.type, engaged = t.engaged == true, combat = p.hb.combat == true, age = age, since = t.since }
+    return { id = t.id, name = t.name, hp = t.hp, type = t.type, engaged = t.engaged == true, combat = p.hb.combat == true, attackOn = p.hb.attackOn == true,
+        onXtarget = t.onXtarget == true, age = age, since = t.since }
 end
 
 -- Bumped on every onInit. A consumer that cached a subscription can compare
@@ -1432,7 +1463,8 @@ local function drawQuickButtons(MUTED)
     ImGui.SetNextItemWidth(core.px(120))
     if ImGui.BeginCombo('##bnScope', scopeLabel(scope)) then
         for _, s in ipairs(SCOPES) do
-            if ImGui.Selectable(scopeLabel(s), s == scope) then
+            local _, pressed = ImGui.Selectable(scopeLabel(s), s == scope)
+            if pressed then
                 cfg.defaultScope = s
                 core.saveLoadout(true)
             end
@@ -1750,7 +1782,7 @@ function plugin.onInit(coreApi)
     net.inbox = {}
     net.rpcInbox = {}
     net.peers = {}
-    net.groupCache = {}
+    net.groupCache, net.groupCacheN = {}, 0
     net.lastRegisterAt = -1e9
     net.lastHeartbeatAt = -1e9
     net.lastFingerprint = nil
@@ -1804,7 +1836,7 @@ function plugin.onZoned()
     if not core then return end
     refresh()
     refreshName()
-    net.groupCache = {}
+    net.groupCache, net.groupCacheN = {}, 0
     sendHeartbeat(true)
 end
 

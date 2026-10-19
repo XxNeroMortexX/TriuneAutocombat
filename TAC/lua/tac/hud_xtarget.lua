@@ -1,3 +1,4 @@
+-- Edited By: NeroMorte - Integrate Gennro 3.2 fixes while preserving this fork's behavior.
 ---@diagnostic disable: undefined-global, undefined-field
 -- ============================================================================
 -- TAC/lua/tac/hud_xtarget.lua — Triune Popout Extended Target Window Plugin
@@ -486,17 +487,8 @@ function plugin.onDrawUI()
                 if ImGui.IsItemClicked() then
                     mq.cmdf('/target id %d', xtData.id)
                 end
-                ImGui.SameLine()
-                drawToggle('F##xtForce_' .. rowKey, isForced, forceW, 0.85, 0.25, 0.15,
-                    isForced and 'FORCED: the engine stays on this spawn until it dies, then moves on to the rest of the list. Click to release.'
-                        or 'Force target: stay on this spawn until it dies (any other Force is replaced).',
-                    function(on) core.setXtForce(xtData.id, on) end)
-                ImGui.SameLine()
-                drawToggle('I##xtIgnore_' .. rowKey, isIgnoredId, ignoreW, 0.25, 0.45, 0.80,
-                    isIgnoredId and 'IGNORED: the engine will not target or attack this spawn. Click to clear.'
-                        or 'Ignore this spawn until cleared (this one only; not the name-based ignore list).',
-                    function(on) core.setXtIgnore(xtData.id, on) end)
-
+                -- Menu and tooltip go right after the HP bar so they attach to
+                -- it (the last item), not to the Ignore toggle drawn after.
                 -- Right-click menu on target item
                 if ImGui.BeginPopupContextItem('##xtItemMenu_' .. rowKey) then
                     accent(conRgb, xtData.name)
@@ -519,7 +511,9 @@ function plugin.onDrawUI()
                         if core.addIgnore then
                             core.addIgnore(xtData.name)
                         end
-                        print(string.format('\ag[Triune]\ax Added %s to ignore list.', xtData.name))
+                    end
+                    if core.addZoneIgnore and ImGui.MenuItem('Add to Zone Ignore List##zign_' .. rowKey) then
+                        core.addZoneIgnore(xtData.name)
                     end
                     ImGui.EndPopup()
                 end
@@ -548,6 +542,17 @@ function plugin.onDrawUI()
                     table.insert(lines, 'Click to target | Right-click for options')
                     core.setTooltip('%s', table.concat(lines, '\n'))
                 end
+
+                ImGui.SameLine()
+                drawToggle('F##xtForce_' .. rowKey, isForced, forceW, 0.85, 0.25, 0.15,
+                    isForced and 'FORCED: the engine stays on this spawn until it dies, then moves on to the rest of the list. Click to release.'
+                        or 'Force target: stay on this spawn until it dies (any other Force is replaced).',
+                    function(on) core.setXtForce(xtData.id, on) end)
+                ImGui.SameLine()
+                drawToggle('I##xtIgnore_' .. rowKey, isIgnoredId, ignoreW, 0.25, 0.45, 0.80,
+                    isIgnoredId and 'IGNORED: the engine will not target or attack this spawn. Click to clear.'
+                        or 'Ignore this spawn until cleared (this one only; not the name-based ignore list).',
+                    function(on) core.setXtIgnore(xtData.id, on) end)
 
                 if stylePushed > 0 then
                     ImGui.PopStyleColor(stylePushed)

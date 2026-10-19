@@ -42,7 +42,7 @@ runtime.followGeometry=function() return {distance=state.distance,horizontal=8.6
 runtime.navCompletionDriver=function() return {arrived=function() return false end} end
 runtime.markUnreachable=function() state.unreachable=true end
 runtime.setTarget=function(id) state.target=id;state.selects=state.selects+1 end
-compile(helper('moveToward'),env)
+compile(helper('huntXtarMaxDist') .. '\n' .. helper('moveToward'),env)
 assert(runtime.desiredRange(80)==runtime.styleReach(80),'oversized melee approach disagrees with attack reach')
 assert(runtime.moveToward(80,runtime.desiredRange(80)), 'visible oversized target was not accepted at weapon reach')
 assert(not state.unreachable and state.clears==0,'already-reachable target was abandoned after 8 seconds')

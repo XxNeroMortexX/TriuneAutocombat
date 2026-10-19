@@ -17,6 +17,7 @@ local function check(targetType, beneficial, recipient, original, heal, moving, 
         lastCast = {},
         petCampActionAllowed = function() return true end, -- Original behavior with mode disabled.
         isHealAction = function() return heal end,
+        isRedirectableHeal = function() return heal end, -- Actual redirect classification is covered by the cure suite.
         isDetrimentalAction = function() return not beneficial end,
         isTargetInRange = function() return true end,
         setTarget = function(id) targets[#targets+1] = id; return true end,
@@ -94,10 +95,9 @@ print('PASS: Self spell target preservation, bard/abort paths, targeted buffs, a
 for _, bard in ipairs({false, true}) do
     local selected, _, state, commands, ok = check('Single', true, 42, 0, false, false, bard)
     assert(ok and selected[1] == 42)
+    assert(state.restoreTargetId == 0 and state.restoreFromTargetId == 42)
     if bard then
-        assert(commands[#commands] == '/timed 1 /target clear')
-    else
-        assert(state.restoreTargetId == 0)
+        assert(commands[#commands] ~= '/timed 1 /target clear', 'bard must use conditional tick-side restoration')
     end
 end
 print('PASS: targeted group casts restore empty targets while true Self spells keep them unchanged')
