@@ -19,13 +19,13 @@ version.schema = 1
 ---------------------------------------------------------------------------
 
 version.morte = {
-    -- Edited By: NeroMorte - Isolated Gennro 3.2 integration candidate; engine remains independent.
-    version = 'Morte.11-test',
+    -- Edited By: NeroMorte - Publish the game-tested Gennro 3.2 integration; engine remains independent.
+    version = 'Morte.11',
 
     -- Gennro Triune version this NeroMorte release was built/tested against.
     basedOnGennro = '3.2',
 
-    channel = 'test',
+    channel = 'stable',
 }
 
 ---------------------------------------------------------------------------

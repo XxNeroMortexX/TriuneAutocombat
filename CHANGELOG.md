@@ -1,5 +1,11 @@
 # Triune AutoCombat Change Log
 
+## 2026-10-19
+
+- **Edited By: NeroMorte — Release the game-tested Gennro 3.2 integration as stable Morte.11.** Promote the approved integration and selectable Manual/strict Main Assist policies to main, preserving the fork's zone-list sharing, Camp rules, AA guards and EQBC connections. Keep MQ2WebUpdate binaries and the separate Flag Tracker/HUD test unchanged.
+
+---
+
 ## 2026-10-17
 
 - **Edited By: NeroMorte — Make Manual cast-target switching selectable.** `Allow Manual Target Switching` (on by default, `/ac targetswitch on|off`) preserves a newly selected hostile or cleared target during offensive casts and deferred/instant support restoration. Heals and cures retain their real recipient, then use the queued Manual selection. Bards use conditional tick-side restoration instead of stale delayed target commands. Off retains the previous casting lock/restoration behavior.
