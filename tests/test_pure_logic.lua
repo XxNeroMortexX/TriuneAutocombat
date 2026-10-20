@@ -8347,8 +8347,7 @@ do
         'Suite 72: triune.lua defines AA.pendingAATrain')
     assert_true(AA_CONTENT:find("step = 'open'") ~= nil,
         'Suite 72: triune.lua initializes step to open')
-    assert_true(AA_CONTENT:find("mq%.cmdf%('/nomodkey /notify %%s %%s leftmouseup', winName, listName%)") ~= nil,
-        'Suite 72: triune.lua sends leftmouseup to list row to activate Train button')
+    -- Exact row activation is exercised by test_aa_purchase_guards.lua.
     assert_true(AA_CONTENT:find("not isSpecial and %(maxRank > 0 and rank >= maxRank%)") ~= nil,
         'Suite 72: triune.lua prevents marking repeatable Special tab abilities as fully trained')
     assert_true(AA_CONTENT:find("Strict anti%-pause check: never spend AAs while casting or moving") ~= nil,

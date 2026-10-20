@@ -5,7 +5,8 @@ local function world()
     local list = { Items = function() return #w.rows end,
         SelectedIndex = function() return w.selected end,
         Select = function(index) w.selected = index end,
-        LeftMouseUp = function() end,
+        -- MQ clicks the centre of a list, which can select a different row.
+        LeftMouseUp = function() w.selected = 1 end,
         List = function(row, col)
             if type(row) == 'string' then return 1 end -- Deliberately misleading partial lookup.
             if not w.rows[row] then return nil end
@@ -35,6 +36,7 @@ local function world()
             local command = string.format(fmt, ...); w.commands[#w.commands + 1] = command
             local selected = command:match('listselect (%d+)')
             if selected then w.selected = tonumber(selected) end
+            if command:find('AAW_GeneralList leftmouseup', 1, true) then w.selected = 1 end
             if command:find('AAW_TrainButton leftmouseup', 1, true) then
                 w.clicks = w.clicks + 1; w.points = w.points - 1
             end
@@ -51,6 +53,7 @@ local function world()
     w.aa.purchaseInfo = function(name) return { name = name, rank = w.rank or 0, maxRank = 5,
         cost = 1, minLevel = 0, canTrain = true, isSpecial = w.aa.isSpecialTabAA(name) } end
     w.list = list
+    w.win = win
     function w.queue()
         assert(w.aa.startAATrainWorkflow('Run Speed', false, true))
         w.aa.pendingAATrain.step = 'select_item'; w.aa.pendingAATrain.nextStepAt = -1
@@ -83,6 +86,23 @@ assert(w.clicks == 1 and w.nativeClicks == 0 and w.points == 99)
 assert(w.aa.pendingAATrain.step == 'verify')
 w.aa.processAATrainWorkflow(); assert(w.clicks == 1)
 w.aa.pendingAATrain = nil; w.aa.runPendingScan(); assert(scans == 1)
+
+-- Edited By: NeroMorte - Exercise the real open/close helpers, not copies.
+w = world()
+local opened = false
+w.win.Open = function() return opened end
+w.win.DoOpen = function() opened = true end
+w.win.DoClose = function() opened = false end
+assert(w.aa.openAAWindow(1) and #w.commands == 0)
+assert(w.aa.closeAAWindow() and #w.commands == 0)
+-- Failed/absent native methods use just the resolved, quoted window name.
+w.win.DoOpen = nil
+w.win.DoClose = nil
+assert(not w.aa.openAAWindow(1))
+assert(#w.commands == 1 and w.commands[1] == '/windowstate "AAWindow" open')
+opened = true
+assert(not w.aa.closeAAWindow())
+assert(#w.commands == 2 and w.commands[2] == '/windowstate "AAWindow" close')
 
 for _, change in ipairs({ function(x) x.ctrl.auto_aa_priorities['Run Speed'] = nil end,
     function(x) x.ctrl.auto_spend_aa = false end,
@@ -148,4 +168,4 @@ for _, asc in ipairs({ true, false }) do
 end
 table.sort = realSort
 print = savedPrint
-print('PASS: exact row identity, Fireworks aliases, one Train click, queued-selection/limits and combat guards, All mode and cap preservation')
+print('PASS: exact row identity, Fireworks aliases, one Train click, queued-selection/limits and combat guards, All mode and cap preservation, centre-click selection regression and single-window open/close')
