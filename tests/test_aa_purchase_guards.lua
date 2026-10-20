@@ -33,7 +33,9 @@ local function world()
         AltAbility = function() return nil end,
     }, AltAbility = function() return nil end },
         cmdf = function(fmt, ...)
-            local command = string.format(fmt, ...); w.commands[#w.commands + 1] = command
+            local command = string.format(fmt, ...)
+            assert(not command:match(' leftmousedown$'), 'Train must use one supported leftmouseup notification')
+            w.commands[#w.commands + 1] = command
             local selected = command:match('listselect (%d+)')
             if selected then w.selected = tonumber(selected) end
             if command:find('AAW_GeneralList leftmouseup', 1, true) then w.selected = 1 end

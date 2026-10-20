@@ -2152,8 +2152,7 @@ function AA.processAATrainWorkflow()
                     btn = AA.findChildRecursive(win, btnName)
                 end
                 if btn then
-                    -- Edited By: NeroMorte - Send one click pair through /notify only.
-                    mq.cmdf('/nomodkey /notify %s %s leftmousedown', winName, btnName)
+                    -- Edited By: NeroMorte - /notify leftmouseup already performs the full click.
                     mq.cmdf('/nomodkey /notify %s %s leftmouseup', winName, btnName)
                     clicked = true
                     break

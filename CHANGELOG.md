@@ -2,6 +2,8 @@
 
 ## 2026-10-19
 
+- **Edited By: NeroMorte — Remove the unsupported Train `leftmousedown` notification.** Send only `leftmouseup`, which performs the complete MacroQuest button click; retain post-purchase point verification. Make the actual trainer regression reject the unsupported notification.
+
 - **Edited By: NeroMorte — Preserve the selected AA row before Train.** Remove redundant list-centre clicks after exact row selection, which could select a different ability and trigger the purchase guard. Keep tab/name verification, combat gates and one Train click. Stop issuing duplicate open/close commands once the native AA window reaches the requested state; fallback targets only the resolved, quoted window name. Add regressions that emulate MacroQuest centre-click selection and exercise the real window helpers.
 
 - **Edited By: NeroMorte — Release the game-tested Gennro 3.2 integration as stable Morte.11.** Promote the approved integration and selectable Manual/strict Main Assist policies to main, preserving the fork's zone-list sharing, Camp rules, AA guards and EQBC connections. Keep MQ2WebUpdate binaries and the separate Flag Tracker/HUD test unchanged.
