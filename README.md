@@ -255,6 +255,8 @@ The Control tab's **Show Pull / Hunt Radius on EQ Map** toggle draws a green X a
 The main and compact Triune window titles show both Gennro and installed Morte versions. Before updating DLLs, stop Triune and unload the named plugin on other clients sharing the MQ folder; the independent handoff handles the current client. Close a running EQBC server before replacing its executable, then reopen it after updating.
 
 
+Auto AA selects the exact AA-window row once before verifying it and clicking Train. It does not click the centre of the list after selection; a changed selection still cancels the purchase. Window open/close uses the resolved AA window without sending commands to unused aliases.
+
 ### Gennro 3.2 / Morte.11 release
 
 The game-tested Gennro 3.2 integration is available on `main` as stable `Morte.11`. It preserves NeroMorte's existing zone-list UI, per-character lists, JSON sharing and clear/delete tools; the XTarget row's **Add to Zone Ignore List** uses the actual current zone. Auto AA keeps verified-purchase activation, repeatable limits and quiet messages. Camp keeps its fixed Pull Radius and optional pet-only return. Pet tracking keeps the existing unique remaining pet/class inference instead of assigning an unknown primary pet to the first unfilled class. Flag Tracker/HUD remain in their separate test PR. The release includes the selectable Manual target policy and strict MA Attack On option described below. Existing installations can stage and apply the Lua update through MQ2WebUpdate against `main`, then stop and start Triune on each client. MQ2WebUpdate engine binaries are unchanged.

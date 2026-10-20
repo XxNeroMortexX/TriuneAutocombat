@@ -25,7 +25,7 @@
 local plugin = {
     id                 = 'auto_aa',
     name               = 'Auto AA Spender',
-    version            = '1.2.1',
+    version            = '1.2.2',
     author             = 'Triune',
     description        = 'Automatically spends AA points by priority through the AA window, Fireworks cap spender, auto-summon, and the Auto AA window.',
     defaultEnabled     = true,
@@ -211,11 +211,9 @@ function AA.openAAWindow(attempt)
         pcall(function()
             if win and win.DoOpen then win.DoOpen() end
         end)
-        mq.cmdf('/windowstate %s open', winName)
-        if winName ~= 'AAWindow' then
-            mq.cmd('/windowstate AAWindow open')
-        end
-        mq.cmd('/windowstate AAWnd open')
+        -- Edited By: NeroMorte - Stop once opened; do not send commands to absent aliases.
+        if AA.isAAWindowOpen() then return true end
+        mq.cmdf('/windowstate "%s" open', winName)
     elseif attempt == 2 then
         mq.cmd('/nomodkey /keypress TOGGLE_ALTADVWIN')
     elseif attempt == 3 then
@@ -252,13 +250,9 @@ function AA.closeAAWindow()
     pcall(function()
         if win and win.DoClose then win.DoClose() end
     end)
-    mq.cmdf('/nomodkey /notify %s AAW_DoneButton leftmouseup', winName)
-    mq.cmdf('/nomodkey /notify %s DoneButton leftmouseup', winName)
-    mq.cmdf('/windowstate %s close', winName)
-    if winName ~= 'AAWindow' then
-        mq.cmd('/windowstate AAWindow close')
-    end
-    mq.cmd('/windowstate AAWnd close')
+    -- Edited By: NeroMorte - Use one resolved window, with no duplicate close clicks.
+    if not AA.isAAWindowOpen() then return true end
+    mq.cmdf('/windowstate "%s" close', winName)
     return not AA.isAAWindowOpen()
 end
 
@@ -2060,16 +2054,10 @@ function AA.processAATrainWorkflow()
                 task.nextStepAt = now + 0.15
                 return
             end
-            pcall(function()
-                if listObj and listObj.Select then
-                    listObj.Select(listIdx)
-                end
-                if listObj and listObj.LeftMouseUp then
-                    listObj.LeftMouseUp()
-                end
-            end)
+            -- Edited By: NeroMorte - listselect selects and notifies the exact row.
+            -- A subsequent LeftMouseUp clicks the list's centre and can replace
+            -- that selection with another AA before the Train guard runs.
             mq.cmdf('/nomodkey /notify %s %s listselect %d', winName, listName, listIdx)
-            mq.cmdf('/nomodkey /notify %s %s leftmouseup', winName, listName)
             task.listObj = listObj
             task.step = 'click_train'
             task.nextStepAt = now + 0.25
@@ -2164,8 +2152,7 @@ function AA.processAATrainWorkflow()
                     btn = AA.findChildRecursive(win, btnName)
                 end
                 if btn then
-                    -- Edited By: NeroMorte - Send one click pair through /notify only.
-                    mq.cmdf('/nomodkey /notify %s %s leftmousedown', winName, btnName)
+                    -- Edited By: NeroMorte - /notify leftmouseup already performs the full click.
                     mq.cmdf('/nomodkey /notify %s %s leftmouseup', winName, btnName)
                     clicked = true
                     break
